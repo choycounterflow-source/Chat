@@ -40,6 +40,9 @@ import {
   Edit3,
   Sparkles
 } from 'lucide-react';
+import { PWAInstallButton } from './components/PWAInstallButton';
+import { OfflineIndicator } from './components/OfflineIndicator';
+import { SecurityStudio } from './components/SecurityStudio';
 
 interface UserAccount {
   id: string;
@@ -131,6 +134,9 @@ export default function App() {
     oneSack: 0
   });
 
+  const [pricesSavedMsg, setPricesSavedMsg] = useState(false);
+  const [qtySavedMsg, setQtySavedMsg] = useState(false);
+
   const handleSaveDefaultQuantities = (e: React.FormEvent) => {
     e.preventDefault();
     setLedgerRows(ledgerRows.map(row => ({
@@ -141,7 +147,8 @@ export default function App() {
       halfSack: defaultQuantities.halfSack,
       oneSack: defaultQuantities.oneSack
     })));
-    alert('Quantities applied successfully to all milestone records!');
+    setQtySavedMsg(true);
+    setTimeout(() => setQtySavedMsg(false), 2500);
   };
 
   const [aiChatInput, setAiChatInput] = useState('');
@@ -171,21 +178,6 @@ export default function App() {
   const [newPostMedia, setNewPostMedia] = useState('');
   const [newPostType, setNewPostType] = useState<'text' | 'image' | 'video'>('image');
   const [newPostCategory, setNewPostCategory] = useState<'feed' | 'myday' | 'video'>('feed');
-
-  const [supabaseConfig, setSupabaseConfig] = useState({
-    url: 'https://your-project.supabase.co',
-    anonKey: 'eyJhbGciOiJIUzI1NiIsIn...',
-    secretKey: 'sbp_secret_key_...'
-  });
-
-  const [keyValuePairs, setKeyValuePairs] = useState<{ id: string; key: string; value: string }[]>([
-    { id: 'kv1', key: 'APP_VERSION', value: '2.5.0' },
-    { id: 'kv2', key: 'MAINTENANCE_MODE', value: 'false' },
-    { id: 'kv3', key: 'STORAGE_PROVIDER', value: 'Google One 5TB' }
-  ]);
-  const [newKvKey, setNewKvKey] = useState('');
-  const [newKvVal, setNewKvVal] = useState('');
-  const [cacheCleared, setCacheCleared] = useState(false);
 
   const [messages, setMessages] = useState<Message[]>([
     { id: 'm1', sender: 'Admin', receiver: 'VIP Group', text: 'Welcome to group chat.', time: '10:00 AM', mediaType: 'text', reactions: ['❤️', '👍'] }
@@ -313,27 +305,6 @@ export default function App() {
   const [isChoyAIPopupOpen, setIsChoyAIPopupOpen] = useState(false);
 
   const [shareCopied, setShareCopied] = useState(false);
-  const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
-  const [isInstalled, setIsInstalled] = useState(false);
-
-  useEffect(() => {
-    const handleBeforeInstallPrompt = (e: Event) => {
-      e.preventDefault();
-      setDeferredPrompt(e);
-    };
-    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
-    return () => window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
-  }, []);
-
-  const handleInstallPWA = async () => {
-    if (!deferredPrompt) {
-      alert('To install Choy Chat, use your browser menu and select "Add to Home Screen" or "Install App".');
-      return;
-    }
-    deferredPrompt.prompt();
-    const { outcome } = await deferredPrompt.userChoice;
-    if (outcome === 'accepted') setIsInstalled(true);
-  };
 
   const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
@@ -460,7 +431,12 @@ export default function App() {
               Login
             </button>
           </form>
+
+          <div className="pt-2 border-t border-emerald-800/80">
+            <PWAInstallButton fullWidth />
+          </div>
         </div>
+        <OfflineIndicator />
       </div>
     );
   }
@@ -662,18 +638,16 @@ export default function App() {
                 <button onClick={() => setActiveTab('admin_prices')} className={`px-3 py-2 rounded-xl flex items-center gap-2 ${activeTab === 'admin_prices' ? 'bg-indigo-600 text-white font-bold' : 'text-indigo-200 hover:bg-emerald-800'}`}>
                   <Sliders className="w-4 h-4 shrink-0" /><span className="hidden md:inline">Unit Prices Setup</span>
                 </button>
+                <button onClick={() => setActiveTab('admin_security')} className={`px-3 py-2 rounded-xl flex items-center gap-2 whitespace-nowrap shrink-0 ${activeTab === 'admin_security' ? 'bg-indigo-600 text-white font-bold' : 'text-indigo-200 hover:bg-emerald-800'}`}>
+                  <Key className="w-4 h-4 shrink-0" /><span>Security Studio</span>
+                </button>
               </>
             )}
           </nav>
         </div>
 
         <div className="hidden md:block pt-3 border-t border-emerald-800 space-y-2">
-          <button
-            onClick={handleInstallPWA}
-            className="w-full px-3 py-2 rounded-xl bg-emerald-400 text-slate-950 text-xs font-bold hover:bg-emerald-300 flex items-center justify-center gap-2 shadow"
-          >
-            <Download className="w-3.5 h-3.5" /> Install PWA
-          </button>
+          <PWAInstallButton fullWidth />
           <button onClick={handleLogout} className="w-full px-3 py-2 rounded-xl bg-emerald-950 text-red-300 text-xs font-semibold hover:bg-emerald-800 flex items-center justify-center gap-2">
             <LogOut className="w-3.5 h-3.5" /> Logout
           </button>
@@ -685,14 +659,16 @@ export default function App() {
         
         {/* TOP BAR */}
         <header className="flex flex-col px-4 py-3 border-b border-emerald-800 bg-emerald-900/50 shrink-0 gap-2.5">
-          <div className="flex items-center justify-between w-full">
-            <div className="w-8"></div>
+          <div className="flex items-center justify-between w-full gap-2">
+            <div className="flex items-center min-w-8">
+              <PWAInstallButton compact />
+            </div>
             <div className="text-center">
               <h1 className="text-lg md:text-xl font-black text-white tracking-widest uppercase">
                 CHOY CHAT
               </h1>
             </div>
-            <button onClick={handleShareApp} className="p-2 bg-emerald-900 border border-emerald-700 rounded-lg text-emerald-200 hover:text-white" title="Share">
+            <button onClick={handleShareApp} className="p-2 bg-emerald-900 border border-emerald-700 rounded-lg text-emerald-200 hover:text-white shrink-0" title="Share">
               <Share2 className="w-3.5 h-3.5" />
             </button>
           </div>
@@ -1134,7 +1110,7 @@ export default function App() {
                           <tr key={row.id} className="hover:bg-emerald-850">
                             <td className="p-3 sticky left-0 bg-emerald-900 font-bold text-white font-sans max-w-[120px] truncate">{row.name}</td>
                             <td className="p-3">
-                              <div className="flex items-center gap-1">
+                              <div className="flex items-center gap-1.5">
                                 <input
                                   type="number"
                                   value={row.fiveH}
@@ -1142,17 +1118,17 @@ export default function App() {
                                     const val = Number(e.target.value);
                                     setLedgerRows(ledgerRows.map(r => r.id === row.id ? { ...r, fiveH: val } : r));
                                   }}
-                                  className="w-12 p-1 bg-emerald-950 border border-emerald-700 rounded text-center text-white"
+                                  className={`w-12 p-1 bg-emerald-950 border-2 rounded text-center text-white font-bold ${row.fiveHType === 'blue' ? 'border-blue-500' : 'border-red-500'}`}
                                 />
                                 <button
+                                  type="button"
                                   onClick={() => {
                                     const nextType = row.fiveHType === 'blue' ? 'red' : 'blue';
                                     setLedgerRows(ledgerRows.map(r => r.id === row.id ? { ...r, fiveHType: nextType } : r));
                                   }}
-                                  className={`px-1.5 py-0.5 rounded text-[9px] font-bold uppercase ${row.fiveHType === 'blue' ? 'bg-blue-500/20 text-blue-400' : 'bg-red-500/20 text-red-400'}`}
-                                >
-                                  {row.fiveHType}
-                                </button>
+                                  aria-label="Toggle color"
+                                  className={`w-6 h-6 rounded-lg border-2 shadow-md transition-transform active:scale-95 ${row.fiveHType === 'blue' ? 'bg-blue-500 border-blue-200 shadow-blue-500/40' : 'bg-red-500 border-red-200 shadow-red-500/40'}`}
+                                />
                               </div>
                             </td>
                             <td className="p-3">
@@ -1225,13 +1201,25 @@ export default function App() {
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div className="p-4 rounded-2xl bg-blue-950/40 border border-blue-500/30">
-                  <div className="text-[10px] font-bold text-blue-300 uppercase">Total Blue</div>
-                  <div className="text-2xl font-black text-white font-mono">₱{totalBlue.toLocaleString()}</div>
+                <div className="p-4 rounded-2xl bg-blue-600/25 border-2 border-blue-500 shadow-lg shadow-blue-950/50 flex items-center justify-between">
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2">
+                      <span className="w-4 h-4 rounded-md bg-blue-500 border border-blue-200 inline-block shadow"></span>
+                      <span className="text-[10px] font-bold text-blue-200 uppercase">Total</span>
+                    </div>
+                    <div className="text-2xl font-black text-white font-mono">₱{totalBlue.toLocaleString()}</div>
+                  </div>
+                  <div className="w-2.5 h-12 rounded-full bg-blue-500"></div>
                 </div>
-                <div className="p-4 rounded-2xl bg-red-950/40 border border-red-500/30">
-                  <div className="text-[10px] font-bold text-red-300 uppercase">Total Red</div>
-                  <div className="text-2xl font-black text-white font-mono">₱{totalRed.toLocaleString()}</div>
+                <div className="p-4 rounded-2xl bg-red-600/25 border-2 border-red-500 shadow-lg shadow-red-950/50 flex items-center justify-between">
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2">
+                      <span className="w-4 h-4 rounded-md bg-red-500 border border-red-200 inline-block shadow"></span>
+                      <span className="text-[10px] font-bold text-red-200 uppercase">Total</span>
+                    </div>
+                    <div className="text-2xl font-black text-white font-mono">₱{totalRed.toLocaleString()}</div>
+                  </div>
+                  <div className="w-2.5 h-12 rounded-full bg-red-500"></div>
                 </div>
               </div>
             </div>
@@ -1400,10 +1388,14 @@ export default function App() {
                     />
                   </div>
                   <button
-                    onClick={() => alert('Unit prices saved successfully!')}
+                    type="button"
+                    onClick={() => {
+                      setPricesSavedMsg(true);
+                      setTimeout(() => setPricesSavedMsg(false), 2500);
+                    }}
                     className="w-full py-2.5 bg-emerald-400 text-slate-950 font-bold rounded-xl shadow mt-2"
                   >
-                    Save Unit Prices
+                    {pricesSavedMsg ? 'Unit Prices Saved!' : 'Save Unit Prices'}
                   </button>
                 </div>
               </div>
@@ -1460,11 +1452,27 @@ export default function App() {
                     type="submit"
                     className="w-full py-2.5 bg-cyan-400 text-slate-950 font-bold rounded-xl shadow mt-2"
                   >
-                    Save & Apply Quantities to All Milestones
+                    {qtySavedMsg ? 'Quantities Applied to All Milestones!' : 'Save & Apply Quantities to All Milestones'}
                   </button>
                 </form>
               </div>
             </div>
+          )}
+
+          {/* SECURITY STUDIO (ADMIN ONLY) */}
+          {activeTab === 'admin_security' && isAdmin && (
+            <SecurityStudio
+              usersList={usersList}
+              setUsersList={setUsersList}
+              blockedUsers={blockedUsers}
+              postsCount={posts.length}
+              mediaPostsCount={posts.filter((p) => Boolean(p.mediaUrl)).length}
+              messagesCount={messages.length}
+              mediaMessagesCount={messages.filter((m) => Boolean(m.mediaUrl)).length}
+              ledgerCount={ledgerRows.length}
+              ledgerTotalValue={ledgerRows.reduce((sum, r) => sum + calculateRowTotal(r), 0)}
+              knowledgeCount={knowledgeBase.length}
+            />
           )}
 
           {/* ANALYTICS */}
@@ -1472,7 +1480,9 @@ export default function App() {
             <div className="max-w-3xl mx-auto space-y-4">
               <div className="bg-emerald-900/60 border border-emerald-700/50 rounded-2xl p-5 space-y-4">
                 <h3 className="text-sm font-bold text-white flex items-center gap-2">
-                  <Award className="w-4 h-4 text-amber-400" /> Top 3 Blue Earners
+                  <Award className="w-4 h-4 text-amber-400" />
+                  <span className="w-3 h-3 rounded bg-blue-500 border border-blue-200 inline-block"></span>
+                  Top 3 Earners
                 </h3>
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                   {sortedLeaderboard.slice(0, 3).map((u, i) => (
@@ -1551,6 +1561,7 @@ export default function App() {
         )}
       </div>
 
+      <OfflineIndicator />
     </div>
   );
 }

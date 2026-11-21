@@ -12,35 +12,83 @@ export default defineConfig(() => {
       tailwindcss(),
       VitePWA({
         registerType: 'autoUpdate',
-        includeAssets: ['favicon.ico', 'apple-touch-icon.png', 'icon.svg'],
+        includeAssets: [
+          'favicon.ico',
+          'apple-touch-icon.png',
+          'pwa-192x192.png',
+          'pwa-512x512.png',
+          'pwa-maskable-512x512.png',
+        ],
         manifest: {
           id: '/',
-          name: 'Choy Chat - Secret Chatting & GitHub Intelligence',
+          name: 'Choy Chat',
           short_name: 'ChoyChat',
-          description: 'Secret chatting, GitHub integration, and AI repository assistant.',
-          theme_color: '#0f172a',
-          background_color: '#0f172a',
+          description: 'Social media, messaging, video calls, and milestone dashboard.',
+          theme_color: '#022c22',
+          background_color: '#022c22',
           display: 'standalone',
+          orientation: 'portrait',
           start_url: '/',
           scope: '/',
           icons: [
             {
-              src: '/assets/aistudio/image_20261121_145253_f477cbfa.webp',
+              src: '/pwa-192x192.png',
               sizes: '192x192',
-              type: 'image/webp',
+              type: 'image/png',
               purpose: 'any',
             },
             {
-              src: '/assets/aistudio/image_20261121_145253_f477cbfa.webp',
+              src: '/pwa-512x512.png',
               sizes: '512x512',
-              type: 'image/webp',
+              type: 'image/png',
               purpose: 'any',
+            },
+            {
+              src: '/pwa-maskable-512x512.png',
+              sizes: '512x512',
+              type: 'image/png',
+              purpose: 'maskable',
+            },
+          ],
+        },
+        workbox: {
+          globPatterns: ['**/*.{js,css,html,ico,png,svg,webp,woff,woff2}'],
+          navigateFallback: '/index.html',
+          runtimeCaching: [
+            {
+              urlPattern: /^https:\/\/fonts\.googleapis\.com\/.*/i,
+              handler: 'CacheFirst',
+              options: {
+                cacheName: 'google-fonts-cache',
+                expiration: {
+                  maxEntries: 10,
+                  maxAgeSeconds: 60 * 60 * 24 * 365,
+                },
+                cacheableResponse: {
+                  statuses: [0, 200],
+                },
+              },
+            },
+            {
+              urlPattern: /^https:\/\/fonts\.gstatic\.com\/.*/i,
+              handler: 'CacheFirst',
+              options: {
+                cacheName: 'gstatic-fonts-cache',
+                expiration: {
+                  maxEntries: 10,
+                  maxAgeSeconds: 60 * 60 * 24 * 365,
+                },
+                cacheableResponse: {
+                  statuses: [0, 200],
+                },
+              },
             },
           ],
         },
         devOptions: {
           enabled: true,
-          type: 'module',
+          type: 'classic',
+          navigateFallback: 'index.html',
         },
       }),
       // Copies src/assets into dist/ so root-relative URLs like

@@ -1,6 +1,6 @@
 import express from 'express';
-import { createServer as createViteServer } from 'vite';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import { GoogleGenAI } from '@google/genai';
@@ -10,7 +10,13 @@ dotenv.config();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const app = express();
+app.set('trust proxy', 1);
 app.use(express.json());
+
+// Health check endpoint for Render hosting
+app.get('/api/health', (_req, res) => {
+  res.json({ status: 'ok', host: 'render', timestamp: new Date().toISOString() });
+});
 
 // Initialize GoogleGenAI client server-side
 const ai = new GoogleGenAI({
@@ -306,12 +312,38 @@ app.post('/api/github/generate-docs', async (req, res) => {
 });
 
 async function startServer() {
-  const vite = await createViteServer({
-    server: { middlewareMode: true },
-    appType: 'spa',
-  });
+  const distPath = path.resolve(__dirname, 'dist');
+  const isProd = process.env.NODE_ENV === 'production' && fs.existsSync(distPath);
 
-  app.use(vite.middlewares);
+  if (isProd) {
+    app.use(
+      express.static(distPath, {
+        setHeaders: (res, filePath) => {
+          if (filePath.endsWith('.webmanifest')) {
+            res.setHeader('Content-Type', 'application/manifest+json');
+            res.setHeader('Cache-Control', 'no-cache');
+          } else if (filePath.endsWith('sw.js') || filePath.endsWith('registerSW.js')) {
+            res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+          }
+        },
+      })
+    );
+
+    app.get('*', (req, res, next) => {
+      if (req.path.startsWith('/api/')) {
+        return next();
+      }
+      res.sendFile(path.join(distPath, 'index.html'));
+    });
+  } else {
+    const { createServer: createViteServer } = await import('vite');
+    const vite = await createViteServer({
+      server: { middlewareMode: true },
+      appType: 'spa',
+    });
+
+    app.use(vite.middlewares);
+  }
 
   const PORT = Number(process.env.PORT || 3000);
   app.listen(PORT, '0.0.0.0', () => {

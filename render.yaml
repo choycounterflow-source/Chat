@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: choy-chat
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    plan: free
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: "10000"
+      - key: GEMINI_API_KEY
+        sync: false
