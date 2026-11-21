@@ -1,0 +1,3879 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CHOY CHAT</title>
+<style>
+html, body { margin: 0; padding: 0; background: #fff; }
+body { padding: 48px 24px; }
+
+@layer doc-export-base {
+	.doc-export *,
+	.doc-export *::before,
+	.doc-export *::after {
+		box-sizing: border-box;
+		margin: 0;
+		padding: 0;
+		/* Not cosmetic: the video card is a <button>, and the editor's rules for it
+		   assume it starts with no border of its own. */
+		border: 0 solid;
+	}
+	.doc-export img,
+	.doc-export svg,
+	.doc-export video,
+	.doc-export canvas {
+		display: block;
+		vertical-align: middle;
+	}
+	.doc-export img,
+	.doc-export video {
+		max-width: 100%;
+		height: auto;
+	}
+	.doc-export ul,
+	.doc-export ol {
+		list-style: none;
+	}
+	.doc-export h1,
+	.doc-export h2,
+	.doc-export h3,
+	.doc-export h4,
+	.doc-export h5,
+	.doc-export h6 {
+		font-size: inherit;
+		font-weight: inherit;
+	}
+	.doc-export button {
+		background: transparent;
+		color: inherit;
+		font: inherit;
+	}
+	.doc-export table {
+		border-collapse: collapse;
+	}
+}
+
+
+.doc-export {
+	--background: #ffffff;
+	--foreground: #262626;
+	--card: #ffffff;
+	--card-foreground: #262626;
+	--popover: #ffffff;
+	--popover-foreground: #262626;
+	--secondary: hsl(0 0% 96.1%);
+	--secondary-foreground: hsl(0 0% 9%);
+	--muted: hsl(0 0% 96.1%);
+	--muted-foreground: hsl(0 0% 45.1%);
+	--accent: hsl(0 0% 96.1%);
+	--accent-foreground: hsl(0 0% 9%);
+	--destructive: hsl(355 100% 66%);
+	--border: hsl(0 0% 89.8%);
+	--input: hsl(0 0% 93%);
+	--bd: hsl(0 0% 91%);
+	--radius: 0.5rem;
+	--bg-main: #ffffff;
+	--brand-100: #d2f7e4;
+	--brand-500: #00b549;
+	--ring: #d2f7e4;
+	--primary-foreground: #ffffff;
+	--color-brand-100: #d2f7e4;
+	--color-brand-500: #00b549;
+	--color-primary-100: #d2f7e4;
+	--color-primary-500: #00b549;
+	/* sRGB spelling of oklch(92.2% 0 0) — see the file header. */
+	--color-neutral-200: #e5e5e5;
+	--success: #00b327;
+	--danger: #fb0406;
+	--warning: #fb9100;
+	--info: #66bb6a;
+	--shadow-xs: 0 4px 12px 0 rgba(0, 0, 0, 0.04);
+	--tbl-select: #3b82f6;
+}
+
+
+.doc-export__body {
+	white-space: pre-wrap;
+	word-wrap: break-word;
+	-webkit-font-variant-ligatures: none;
+	font-variant-ligatures: none;
+	font-feature-settings: "liga" 0;
+}
+.doc-export__body img.ProseMirror-separator { display: none !important; }
+
+/* Notion-like /docs editor styling. Theme-aware via app CSS variables. KaTeX +
+ * highlight.js themes are side-effect imported from ./tiptap-vendor-styles.ts
+ * (Turbopack + Tailwind 4's PostCSS pipeline can't resolve bare-specifier
+ * @import with media-query conditions, so those vendor sheets moved to JS).
+ *
+ * EVERY content rule here is scoped to `.tiptap.tiptap-doc-content` — an OPT-IN
+ * class the document editors put on their own ProseMirror root (see
+ * TiptapCollabEditor and the swarm docs-agent editor). `.tiptap` alone is not a
+ * scope: TipTap stamps it on every editor in the app, and this sheet is loaded
+ * app-wide the moment any chunk that imports it does. Bare `.tiptap pre` /
+ * `code` / `ul` / `img` rules therefore reached the IM composer and the flow
+ * prompt dialog too, where they beat those editors' `prose` styling (a plain
+ * class rule vs. Tailwind's utilities layer + typography's zero-specificity
+ * `:where()`): the composer's code block rendered as a near-invisible light box
+ * — Word's grey `--muted` background under prose's light-on-dark text colour.
+ * Add the class to a new editor that WANTS document styling; never widen a rule
+ * back to bare `.tiptap`.
+ *
+ * Fills and rules use UI 2.0's roles, --bg-subtle and --border-main, not
+ * shadcn's --muted / --border: nothing themes those two for dark, where --muted
+ * stayed `hsl(0 0% 3.9%)` (near-black code chips, code blocks and table
+ * headers) and --border a faint #262626. The inputs inside the floating menus
+ * keep --background, which matches the menus' own --popover. */
+
+/* Table SELECTION blue (Lark-style), deliberately not the brand colour: a
+   selected column/row has to read as "selected range", the same signal as the
+   blue insert affordances, not as a brand action. Used by the grip strip and the
+   insert dots (table/table.css), the selected-cell tint and the column resize
+   handle below.
+   Declared on :root, NOT on .tiptap-editor-shell: the rules that consume it are
+   scoped to the content class above, which every document editor carries —
+   including the swarm docs-agent editor, which has resizable tables and no shell
+   around it. Scoped to the shell, that editor would resolve an undefined var —
+   the whole declaration then drops, leaving the selected-cell tint and the
+   resize handle transparent. */
+:root {
+	--tbl-select: #3b82f6;
+
+	/* Gutter pill geometry — one slot (an affordance button), the pill's padding
+	   and its border width. Single source of truth: the pill's own rules read them
+	   back, and `.drag-handle` derives its FIXED width from them (see there), so
+	   the box floating-ui measures and the box actually painted cannot drift apart.
+	   Declared on :root for the same reason as --tbl-select above: the pill classes
+	   are reused OUTSIDE the gutter — the table's in-cell "+"
+	   (`.tiptap-cell-add-pill`, see table/table.css) is a
+	   `.tiptap-drag-handle-group` in an overlay of its own, with no `.drag-handle`
+	   ancestor. Scoped to the handle, that pill would resolve undefined vars and
+	   drop its padding, border and button width entirely. */
+	--gutter-slot: 20px;
+	--gutter-pill-pad: 2px;
+	--gutter-pill-border: 1px;
+	/* Breathing room between the pill's right edge and the block's left edge.
+	   Carried as PADDING on `.drag-handle` (not a transform), so the gap is part
+	   of the handle's own hit area: the pointer crossing it from the text is
+	   still "inside the handle" and the plugin's mouseleave never hides the pill
+	   mid-travel. The hover corridor below extends across it for the same
+	   reason. */
+	--gutter-text-gap: 6px;
+}
+
+.tiptap-editor-shell {
+	position: relative;
+}
+
+/* Body editor only — scoped to the shell so the single-line title editor (also
+ * .tiptap.ProseMirror, rendered in the header) never inherits the body padding
+ * or the body placeholder rule. */
+.tiptap-editor-shell .tiptap.ProseMirror {
+	outline: none;
+	padding: 1rem 0 30vh;
+	font-size: 1rem;
+	line-height: 1.6;
+	color: var(--foreground);
+}
+.tiptap.tiptap-doc-content.ProseMirror > * + * {
+	margin-top: 0.75em;
+}
+/* TOC jump clearance (TiptapTocPanel) — in CSS, never as an inline style: the
+   panel must not write into ProseMirror-owned DOM (see its header note). */
+.tiptap.tiptap-doc-content h1,
+.tiptap.tiptap-doc-content h2,
+.tiptap.tiptap-doc-content h3 {
+	scroll-margin-top: 5rem;
+}
+.tiptap.tiptap-doc-content h1 {
+	font-size: 1.875em;
+	font-weight: 700;
+	line-height: 1.2;
+	margin-top: 1.4em;
+}
+.tiptap.tiptap-doc-content h2 {
+	font-size: 1.5em;
+	font-weight: 700;
+	margin-top: 1.2em;
+}
+.tiptap.tiptap-doc-content h3 {
+	font-size: 1.25em;
+	font-weight: 600;
+	margin-top: 1em;
+}
+.tiptap.tiptap-doc-content ul,
+.tiptap.tiptap-doc-content ol {
+	padding-left: 1.25em;
+}
+.tiptap.tiptap-doc-content ul {
+	list-style: disc;
+}
+.tiptap.tiptap-doc-content ol {
+	list-style: decimal;
+}
+/* One marker per LEVEL (Lark).
+ *
+ * The two rules above are DESCENDANT selectors, so they painted every level
+ * with the top level's marker: a row sunk under the one above it kept the same
+ * solid bullet and read as a sibling that had merely drifted right — the nesting
+ * was there in the document and nowhere on screen. The marker is what says
+ * "second level" where the indent alone cannot: against a wrapped line, a narrow
+ * page, or a list that starts already indented.
+ *
+ * The deepest rule is written with no `:not()` cap on purpose — `ul ul ul`
+ * matches the fourth level and beyond too, which is the browser's own default
+ * behaviour (square all the way down) rather than a level that suddenly loses
+ * its marker.
+ *
+ * NOT the app-wide `.md-nested-markers` set (styles.css), which spells the same
+ * Lark cycle across nine levels for chat markdown. That set out-specifies only
+ * `prose`, whose selectors are `:where()`-wrapped and therefore weigh nothing —
+ * against the two rules above, `.md-nested-markers ul ul` (0,1,2) LOSES to
+ * `.tiptap.tiptap-doc-content ul` (0,2,1), so merely adding the class here would
+ * leave every level solid. Matching it would mean re-weighing the document
+ * sheet's own list rules; three levels stated at this scope is the smaller
+ * change.
+ */
+.tiptap.tiptap-doc-content ul ul {
+	list-style: circle;
+}
+.tiptap.tiptap-doc-content ul ul ul {
+	list-style: square;
+}
+.tiptap.tiptap-doc-content ol ol {
+	list-style: lower-alpha;
+}
+.tiptap.tiptap-doc-content ol ol ol {
+	list-style: lower-roman;
+}
+/* A list stepped right as a BLOCK is one level deeper too.
+ *
+ * `data-indent` (withBlockIndent) is the OTHER way a list becomes second-level:
+ * Tab on the first row has no row above it to nest under, so the whole list
+ * steps right instead. Without this, that list moved 24px and kept its
+ * first-level marker — the text had shifted but nothing said it was a level
+ * down, which is exactly how "Tab just pushes everything right" was reported.
+ *
+ * Out-specifies the bare `ul` / `ol` rules by one attribute (0,3,1 vs 0,2,1);
+ * `ul[data-indent] ul` keeps the nested step ON TOP of it.
+ *
+ * A task list keeps its marker-less look by two different mechanisms, and both
+ * are load-bearing. At the TOP level its `list-style: none` ties with
+ * `ul[data-indent]` at (0,3,1) and wins on source order (it is written later in
+ * this file). One level down it would LOSE — `ul[data-indent] ul` is (0,3,2) —
+ * so that rule excludes task lists explicitly; without the `:not()` a checklist
+ * under an indented list drew a ▪ beside every checkbox.
+ */
+.tiptap.tiptap-doc-content ul[data-indent] {
+	list-style: circle;
+}
+.tiptap.tiptap-doc-content ul[data-indent] ul:not([data-type="taskList"]) {
+	list-style: square;
+}
+.tiptap.tiptap-doc-content ol[data-indent] {
+	list-style: lower-alpha;
+}
+.tiptap.tiptap-doc-content ol[data-indent] ol {
+	list-style: lower-roman;
+}
+/* Breathing between list ROWS (Lark).
+ *
+ * The sheet spaces TOP-LEVEL blocks (`> * + *` above, 0.75em) and a list is ONE
+ * block, so its rows used to sit at pure line-height: a row break and a line
+ * WRAP inside a row were the same distance, and a long list — an outline with
+ * nested rows most of all — read as one slab with no grouping in it.
+ *
+ * Half the block step, deliberately: rows of one list belong together more than
+ * two blocks do, and it is the DIFFERENCE between the two distances that makes
+ * the grouping visible. Everything a row CONTAINS past its first block gets
+ * the same step — a nested list, and a picture or a table put on a line of its
+ * own — because the top-level rhythm is a DIRECT-CHILD rule and reaches none of
+ * them: inside a row they had no spacing at all, and a picture ended up flush
+ * against the line above it. Table cells are the same shape of container, so
+ * they take the same step.
+ */
+.tiptap.tiptap-doc-content li + li,
+.tiptap.tiptap-doc-content li > * + *,
+.tiptap.tiptap-doc-content td > * + *,
+.tiptap.tiptap-doc-content th > * + * {
+	margin-top: 0.5em;
+}
+/* A task row is a FLEX of checkbox + text container, so the step above would
+   push the words down away from the box they belong to. */
+.tiptap.tiptap-doc-content ul[data-type="taskList"] li > * + * {
+	margin-top: 0;
+}
+.tiptap.tiptap-doc-content ul[data-type="taskList"] {
+	list-style: none;
+	padding-left: 0.25em;
+}
+.tiptap.tiptap-doc-content ul[data-type="taskList"] li {
+	display: flex;
+	gap: 0.5em;
+	align-items: flex-start;
+}
+/* Center the checkbox against the first text line: the label gets a box as tall
+ * as one line (line-height 1.6) and centers the checkbox inside it, so single-
+ * line items read as vertically centered while multi-line items keep the
+ * checkbox pinned to the first line rather than the block's middle. */
+.tiptap.tiptap-doc-content ul[data-type="taskList"] li > label {
+	display: inline-flex;
+	align-items: center;
+	height: 1.6em;
+	margin: 0;
+	user-select: none;
+}
+.tiptap.tiptap-doc-content ul[data-type="taskList"] li > div {
+	flex: 1 1 auto;
+	min-width: 0;
+}
+/* Centered / right-aligned task rows: the row is a FLEX of checkbox + text
+   container, so text-align alone moves the words and strands the checkbox at
+   the left edge. Let the whole row follow the paragraph's alignment: shrink
+   the text container to its content and justify the flex row. */
+.tiptap.tiptap-doc-content
+	ul[data-type="taskList"]
+	li:has(> div > p[style*="text-align: center"]) {
+	justify-content: center;
+}
+.tiptap.tiptap-doc-content
+	ul[data-type="taskList"]
+	li:has(> div > p[style*="text-align: right"]) {
+	justify-content: flex-end;
+}
+.tiptap.tiptap-doc-content
+	ul[data-type="taskList"]
+	li:has(> div > p[style*="text-align: center"])
+	> div,
+.tiptap.tiptap-doc-content
+	ul[data-type="taskList"]
+	li:has(> div > p[style*="text-align: right"])
+	> div {
+	flex: 0 1 auto;
+}
+.tiptap.tiptap-doc-content blockquote {
+	border-left: 3px solid var(--border-main);
+	padding-left: 1em;
+	color: var(--muted-foreground);
+}
+.tiptap.tiptap-doc-content a {
+	color: var(--color-primary-500);
+	text-decoration: underline;
+	cursor: pointer;
+}
+/*
+ * Inline code, and the ONE place scoping changed what a document renders.
+ *
+ * components/editor/tiptap.css (loaded app-wide) styles inline code for every
+ * TipTap surface as `.tiptap :not(pre) > code` — which used to out-specify the
+ * bare `.tiptap code` here (0,1,2 vs 0,1,1), so a document editor silently wore
+ * the shared slate-100 chip. With the scope class this rule is (0,2,1) and wins,
+ * and that is the DECISION: a document uses the document sheet's own chip
+ * (--muted, 0.9em) — the shared sheet is for the composer and the read-only
+ * markdown renders. It still supplies `color` and drops prose's backticks here,
+ * since this rule declares neither.
+ */
+.tiptap.tiptap-doc-content code {
+	background: var(--bg-subtle);
+	border-radius: 4px;
+	padding: 0.15em 0.35em;
+	font-size: 0.9em;
+}
+.tiptap.tiptap-doc-content pre {
+	background: var(--bg-subtle);
+	border-radius: 8px;
+	padding: 0.9em 1em;
+	overflow-x: auto;
+}
+.tiptap.tiptap-doc-content pre code {
+	background: none;
+	padding: 0;
+	font-size: 0.875em;
+}
+
+/* The code block's chrome: the header strip (ui/CodeBlockView) and the gutter
+   (code-block-fold.ts). The strip and the <pre> read as ONE card — the wrapper
+   carries the background and the rounding, and the <pre> gives up both so the
+   two cannot separate at the seam. */
+.tiptap.tiptap-doc-content .tiptap-code-block {
+	/* The gutter's width in REM, because it is used on two elements with
+	   different font sizes (the <pre>'s padding and the number cells) and in em
+	   the two would not be the same length. The line height in EM on purpose,
+	   the opposite reason: each cell's strip has to be exactly one line box of
+	   the CODE tall, and em resolves against whoever uses it. */
+	--code-gutter: 3.2rem;
+	--code-line: 1.55em;
+	--code-font: 0.875em;
+	background: var(--bg-subtle);
+	border-radius: 8px;
+	margin: 0.5em 0;
+	overflow: hidden;
+}
+.tiptap.tiptap-doc-content .tiptap-code-block pre {
+	background: none;
+	border-radius: 0;
+	margin: 0;
+	overflow-x: auto;
+	/* The left padding IS the gutter: the number cells are painted into it from
+	   out of flow, so nothing in a line can push the text or cover the caret. */
+	padding: 0.4em 1em 0.9em var(--code-gutter, 3.2rem);
+}
+/* Stated, not inherited. A code block scrolls sideways unless the reader asks
+   for wrapping, and the ancestors have opinions: the shared prose preset gives
+   every span inside it `overflow-wrap: anywhere`, which broke long lines in a
+   narrow window even though nothing here asked for it. */
+.tiptap.tiptap-doc-content .tiptap-code-block pre,
+.tiptap.tiptap-doc-content .tiptap-code-block pre code,
+.tiptap.tiptap-doc-content .tiptap-code-block pre code span {
+	overflow-wrap: normal;
+	white-space: pre;
+	word-break: normal;
+}
+/* Percentages inside resolve against the <pre>'s content box, which is what the
+   wrapped-line width below needs. The line height is STATED so the gutter's
+   one-line strips tile seamlessly instead of leaving gaps the scrolled code
+   shows through. */
+.tiptap.tiptap-doc-content .tiptap-code-block pre code {
+	display: block;
+	font-size: var(--code-font, 0.875em);
+	line-height: 1.55;
+}
+.tiptap-code-head {
+	align-items: center;
+	display: flex;
+	gap: 6px;
+	padding: 6px 8px 4px 6px;
+	user-select: none;
+}
+.tiptap-code-spacer {
+	flex: 1 1 auto;
+}
+.tiptap-code-sep {
+	background: var(--border-main);
+	flex: none;
+	height: 14px;
+	width: 1px;
+}
+.tiptap-code-fold {
+	align-items: center;
+	appearance: none;
+	background: none;
+	border: 0;
+	border-radius: 4px;
+	color: var(--muted-foreground);
+	cursor: pointer;
+	display: inline-flex;
+	height: 20px;
+	justify-content: center;
+	padding: 0;
+	transition: transform 120ms ease;
+	width: 20px;
+}
+.tiptap-code-fold:hover {
+	background: var(--accent);
+	color: var(--foreground);
+}
+/* The chevron points DOWN when open and RIGHT when folded. */
+.tiptap-code-block[data-collapsed="true"] .tiptap-code-fold {
+	transform: rotate(-90deg);
+}
+.tiptap-code-title,
+.tiptap-code-lines {
+	color: var(--muted-foreground);
+	font-size: 12px;
+}
+/* The three controls on the right — language, wrap, copy — and the rules
+   between them appear with the pointer, the way the fold triangles do. The
+   fold control and the block's name stay: they say what this is, the others
+   are things to do to it. */
+.tiptap-code-lang,
+.tiptap-code-action,
+.tiptap-code-more,
+.tiptap-code-sep {
+	opacity: 0;
+	transition: opacity 120ms ease;
+}
+.tiptap-code-block:hover .tiptap-code-lang,
+.tiptap-code-block:hover .tiptap-code-action,
+.tiptap-code-block:hover .tiptap-code-more,
+.tiptap-code-block:hover .tiptap-code-sep,
+.tiptap-code-block[data-controls="shown"] .tiptap-code-lang,
+.tiptap-code-block[data-controls="shown"] .tiptap-code-action,
+.tiptap-code-block[data-controls="shown"] .tiptap-code-more,
+.tiptap-code-block[data-controls="shown"] .tiptap-code-sep,
+.tiptap-code-lang:focus-visible,
+.tiptap-code-action:focus-visible,
+.tiptap-code-more:focus-visible {
+	opacity: 1;
+}
+/* A touch screen never hovers, so the strip would stay invisible and the "…"
+   it folds into would be unreachable. Nothing fades there: the controls are
+   simply present. */
+@media (pointer: coarse) {
+	.tiptap-code-lang,
+	.tiptap-code-action,
+	.tiptap-code-more,
+	.tiptap-code-sep {
+		opacity: 1;
+	}
+}
+.tiptap-code-lang,
+.tiptap-code-action,
+.tiptap-code-more {
+	align-items: center;
+	appearance: none;
+	background: none;
+	border: 0;
+	border-radius: 4px;
+	color: var(--muted-foreground);
+	cursor: pointer;
+	display: inline-flex;
+	font-size: 12px;
+	gap: 4px;
+	padding: 2px 6px;
+}
+.tiptap-code-lang:hover,
+.tiptap-code-action:hover {
+	background: var(--accent);
+	color: var(--foreground);
+}
+.tiptap-code-action[data-active="true"] {
+	color: var(--color-primary-500);
+}
+.tiptap-code-lang:disabled {
+	cursor: default;
+	opacity: 0.7;
+}
+.tiptap-code-lang:disabled:hover {
+	background: none;
+	color: var(--muted-foreground);
+}
+.tiptap-code-menu-item {
+	align-items: center;
+	appearance: none;
+	background: none;
+	border: 0;
+	border-radius: 4px;
+	color: var(--foreground);
+	cursor: pointer;
+	display: flex;
+	font-size: 13px;
+	gap: 8px;
+	padding: 7px 8px;
+	text-align: left;
+	width: 100%;
+}
+.tiptap-code-menu-item:hover {
+	background: var(--accent);
+}
+.tiptap-code-menu-item[data-active="true"] {
+	color: var(--color-primary-500);
+}
+.tiptap-code-lang-search {
+	background: var(--background);
+	border: 1px solid var(--border-main);
+	border-radius: 6px;
+	color: var(--foreground);
+	font-size: 13px;
+	height: 28px;
+	margin-bottom: 4px;
+	padding: 0 8px;
+	width: 100%;
+}
+.tiptap-code-lang-search:focus {
+	border-color: var(--color-primary-500);
+	outline: none;
+}
+.tiptap-code-lang-list {
+	list-style: none;
+	margin: 0;
+	max-height: 240px;
+	overflow-y: auto;
+	padding: 0;
+}
+.tiptap-code-lang-item {
+	appearance: none;
+	background: none;
+	border: 0;
+	border-radius: 4px;
+	color: var(--foreground);
+	cursor: pointer;
+	display: block;
+	font-size: 13px;
+	padding: 4px 8px;
+	text-align: left;
+	width: 100%;
+}
+.tiptap-code-lang-item:hover {
+	background: var(--accent);
+}
+.tiptap-code-lang-item[data-active="true"] {
+	color: var(--color-primary-500);
+	font-weight: 600;
+}
+/* Hidden, never unmounted: the content DOM is ProseMirror's and has to stay in
+   the tree — removing it would tear the node view's contract. */
+.tiptap-code-block[data-collapsed="true"] pre {
+	display: none;
+}
+.tiptap-code-block[data-collapsed="true"] .tiptap-code-head {
+	padding-bottom: 6px;
+}
+/* Wrapping is the reader's choice (the strip's switch). Off, the block scrolls
+   sideways; on, long lines break and the gutter still lines up because each
+   number is laid out in front of its own line rather than measured. */
+.tiptap.tiptap-doc-content .tiptap-code-block[data-wrap="true"] pre {
+	overflow-x: visible;
+}
+.tiptap.tiptap-doc-content .tiptap-code-block[data-wrap="true"] pre code,
+.tiptap.tiptap-doc-content .tiptap-code-block[data-wrap="true"] pre code span {
+	overflow-wrap: anywhere;
+	white-space: pre-wrap;
+}
+/* Nothing is needed for the wrapped rows: the gutter is the <pre>'s left
+   padding, so the code's content box starts where the code does and a wrapped
+   row already lines up with the row above it. */
+
+/* The height handle under the block: a grab strip the full width, with the
+   grip drawn in the middle of it. Full width because a 40px pill is a small
+   target for a drag, and centred because that is where the eye looks for it.
+   Only the grip is painted, and only on hover — the strip itself is invisible
+   chrome. */
+.tiptap-code-resize {
+	align-items: center;
+	appearance: none;
+	background: none;
+	border: 0;
+	cursor: ns-resize;
+	display: flex;
+	height: 12px;
+	justify-content: center;
+	padding: 0;
+	touch-action: none;
+	width: 100%;
+}
+.tiptap-code-resize-grip {
+	background: var(--muted-foreground);
+	border-radius: 999px;
+	height: 3px;
+	opacity: 0;
+	transition: opacity 120ms ease;
+	width: 44px;
+}
+.tiptap-code-block:hover .tiptap-code-resize-grip,
+.tiptap-code-resize:focus-visible .tiptap-code-resize-grip {
+	opacity: 0.45;
+}
+.tiptap-code-resize:hover .tiptap-code-resize-grip,
+.tiptap-code-resize:active .tiptap-code-resize-grip {
+	opacity: 0.8;
+}
+
+/* The gutter column: line numbers and fold triangles, drawn BESIDE the code.
+   Nothing here is part of the document — the whole column is rendered by the
+   node view outside the content DOM (ui/CodeBlockView), because a number that
+   sits in the text competes with the caret for the same position.
+
+   Zero-sized and sticky at the top-left of the code, with each row absolutely
+   positioned under the last: sticky holds the column in place while a long line
+   scrolls sideways underneath it, and zero size keeps it out of the line boxes
+   entirely. Rows are placed by arithmetic, not measurement — the code's line
+   height is stated (see the <code> rule above), so row N sits at N line
+   heights. */
+.tiptap-code-gutter {
+	display: block;
+	/* The code's size, not the <pre>'s. The column lives beside <code> rather
+	   than inside it, and `--code-line` is in em — measured against the wrong
+	   font it made every row 14% too tall, so the numbers drifted a line further
+	   from their code with every line. */
+	font-size: var(--code-font, 0.875em);
+	height: 0;
+	left: 0;
+	position: sticky;
+	user-select: none;
+	width: 0;
+}
+.tiptap-code-gutter-row {
+	/* Opaque: this is what the code passes behind when a long line scrolls. The
+	   rows are exactly one line tall each, so they tile into a continuous strip
+	   without leaving seams. */
+	background: var(--bg-subtle);
+	display: block;
+	height: var(--code-line, 1.55em);
+	position: absolute;
+	/* Anchored to the column's RIGHT edge, which stands at the line start: the
+	   row then covers the padding strip to its left, which is the gutter. */
+	right: 0;
+	width: var(--code-gutter, 3.2rem);
+}
+.tiptap-code-lineno {
+	align-items: center;
+	color: var(--muted-foreground);
+	display: flex;
+	font-variant-numeric: tabular-nums;
+	height: var(--code-line, 1.55em);
+	justify-content: flex-end;
+	position: absolute;
+	right: 1.15rem;
+	top: 0;
+	width: 2rem;
+}
+/* Between the number and the code, the way an editor's fold column sits.
+   Shown while the pointer is on the block — a column of triangles beside code
+   nobody is reaching for is decoration. Two exceptions stay lit: a triangle
+   holding a fold CLOSED says where the missing lines went, and a focused one
+   has to be visible to whoever tabbed to it. Opacity, not display, so the
+   numbers never shift as they come and go. */
+.tiptap-code-arrow {
+	align-items: center;
+	appearance: none;
+	background: none;
+	border: 0;
+	color: var(--muted-foreground);
+	cursor: pointer;
+	display: flex;
+	height: var(--code-line, 1.55em);
+	justify-content: center;
+	opacity: 0;
+	padding: 0;
+	position: absolute;
+	right: 0.15rem;
+	top: 0;
+	transition: opacity 120ms ease;
+	width: 0.85rem;
+}
+.tiptap-code-block:hover .tiptap-code-arrow,
+.tiptap-code-arrow[data-folded="true"],
+.tiptap-code-arrow:focus-visible {
+	opacity: 1;
+}
+/* A CSS triangle rather than a glyph: the same shape in every font. */
+.tiptap-code-arrow::before {
+	border: 3.5px solid transparent;
+	border-top-color: currentColor;
+	content: "";
+	display: block;
+	margin-top: 3.5px;
+	transition: transform 120ms ease;
+}
+.tiptap-code-arrow:hover {
+	color: var(--foreground);
+}
+.tiptap-code-arrow[data-folded="true"]::before {
+	transform: rotate(-90deg) translate(2px, 2px);
+}
+
+/* The folded characters themselves. */
+.tiptap-code-folded {
+	display: none;
+}
+.tiptap-code-fold-mark {
+	background: var(--accent);
+	border-radius: 4px;
+	color: var(--muted-foreground);
+	cursor: pointer;
+	margin-left: 0.4em;
+	padding: 0 0.35em;
+	user-select: none;
+}
+/* Grey, not the brand colour: this mark sits INSIDE the code, and a bright
+   hover there reads as syntax rather than as a control. */
+.tiptap-code-fold-mark:hover {
+	background: color-mix(in oklab, var(--foreground) 16%, transparent);
+	color: var(--foreground);
+}
+.tiptap.tiptap-doc-content hr {
+	/* One pixel of ink, but a box the pointer can actually land on: the gutter
+	   handle appears for whatever block is under the cursor, and a 1px-tall
+	   element is almost unhittable between its two neighbours. The padding
+	   widens the target to a comfortable band and `content-box` clipping keeps
+	   the line itself a hairline in the middle of it; the margin comes down by
+	   as much as the padding adds, so the spacing on the page is unchanged. */
+	background: var(--border-main);
+	background-clip: content-box;
+	border: none;
+	box-sizing: content-box;
+	height: 1px;
+	margin: 1em 0;
+	padding: 8px 0;
+}
+/* Content images — exclude PM separator. With Image.resize enabled the node
+   is wrapped in [data-resize-container][data-node=image], so layout rules
+   target that wrapper (not bare p > img). */
+.tiptap.tiptap-doc-content
+	img:not(.ProseMirror-separator):not(.tiptap-mention__avatar) {
+	border-radius: 8px;
+	height: auto;
+	max-width: 100%;
+	vertical-align: bottom;
+}
+/* No `display` here, and none in the mixed-content rule further down: the
+   container's display is an INLINE style, written by @tiptap/core's
+   ResizableNodeView (`createContainer` sets `element.style.display = "flex"`),
+   and an author rule cannot outrank it. Both rules used to claim
+   `display: inline-flex`, which never applied — so two pictures sharing a
+   paragraph with text stack vertically rather than sitting side by side, and a
+   rule saying otherwise sent more than one reader down the wrong path. The
+   rules that DO decide the layout are the width ones below plus
+   `.tiptap-image-row`, which work on a block-level box either way. */
+.tiptap.tiptap-doc-content [data-resize-container][data-node="image"] {
+	line-height: 0;
+	max-width: 100%;
+	vertical-align: bottom;
+}
+/* The container PLACES the picture; it does not take the presses.
+   A picture that has never been resized is laid out in a box as wide as the
+   line (see the width rules below), while the picture itself keeps its own
+   size — the wrapper inside is a flex item and does not grow. Everything to
+   the right of a picture narrower than its column was therefore still this
+   element, and a press on that empty strip selected the picture instead of
+   putting the caret on the line. It stops being a target; the wrapper, which
+   is exactly the picture and its handles, keeps being one.
+   Narrowing the box instead is not open: the same rules widen it on purpose,
+   and the selection outline below is already drawn on the <img> rather than
+   here for that very reason. Both DOM walks that look for this container
+   (the hover toolbar, the edge affordance) use `closest`, which climbs the
+   DOM and is unaffected. */
+.tiptap.tiptap-doc-content [data-resize-container][data-node="image"] {
+	pointer-events: none;
+}
+.tiptap.tiptap-doc-content
+	[data-resize-container][data-node="image"]
+	[data-resize-wrapper] {
+	pointer-events: auto;
+}
+/* The wrapper ResizableNodeView puts between the container and the picture is
+   a FLEX ITEM, and a flex item's default `min-width: auto` refuses to shrink
+   below its content's minimum — which for a picture carrying an inline width
+   is that width. So a picture wider than its column kept the wrapper (and the
+   resize handles hanging off it) at full size, spilling over the cell next to
+   it: a press there landed on the picture's own DOM, which re-selected the
+   picture instead of putting the caret in the cell that was clicked. */
+.tiptap.tiptap-doc-content
+	[data-resize-container][data-node="image"]
+	[data-resize-wrapper] {
+	max-width: 100%;
+	min-width: 0;
+}
+.tiptap.tiptap-doc-content [data-resize-container][data-node="image"] img {
+	display: block;
+	max-width: 100%;
+}
+/* The height must always FOLLOW the rendered width, so a picture keeps its
+   proportions when `max-width: 100%` caps it — the cap is the column inside a
+   table cell, which the user can drag narrower than the picture, and dragging
+   the picture wider than its column used to grow the height alone.
+   `!important` because @tiptap/core's ResizableNodeView writes an inline px
+   height into this element on mount (applyInitialSize) and on every frame of a
+   resize drag: an author-level rule cannot outrank that. The proportions
+   themselves come from the `aspect-ratio` docs-image.ts sets from the node's
+   width/height attrs (or from the bitmap when it has none). */
+.tiptap.tiptap-doc-content [data-resize-container][data-node="image"] img {
+	height: auto !important;
+}
+/* A paragraph ENDING in a media node gets PM's caret artifacts rendered after
+   it (img.ProseMirror-separator + br.ProseMirror-trailingBreak) — an empty
+   line box under the image. At the TOP LEVEL that line is dead: the caret is
+   never allowed to rest there (MediaDeleteGuard's normalizer slides it into
+   the neighbouring block), so it reads as a clickable gap that does nothing,
+   and it is hidden.
+
+   DIRECT CHILDREN OF THE EDITOR (`> p`, exactly the `$from.depth === 1` the
+   normalizer tests) AND TABLE CELLS. Inside a LIST ROW the caret is
+   deliberately left alone there, and that empty line is the ONLY place it can
+   land: a picture that has a line to itself (the `display: flex` rules below)
+   leaves no sliver of text beside it to click. Hidden, every press on the
+   picture's row missed the paragraph entirely — the browser gave the nearest
+   line it could still see, which is the NEXT list row, so "1. 文字[图片]" +
+   a click to the right of the picture + typing put the words in step 2.
+   Restored, the press lands under the picture, in the row it was aimed at, and
+   text can be added after the picture (or, one ArrowLeft past it, before).
+
+   A TABLE CELL is not a list row. A press on the blank around a picture in a
+   cell never reaches ProseMirror's own caret placement: `caretForPress`
+   (TiptapCollabEditor.tsx) answers it unconditionally by opening a REAL line on
+   the side pressed, and there is no row below the cell for the browser to hand
+   a missed press to — the cell is the whole target. So in a cell the artifact
+   line bought nothing and cost a line's height: the picture's paragraph was a
+   line taller than the picture, the cell's bottom border sat a line below it,
+   and the "empty line" it showed could not be deleted, because it is not a
+   node. Hidden here too. The line above still comes from the edge affordance
+   or a press beside the picture, the line below from Enter on the selected
+   picture.
+
+   In a cell, EXCEPT WHILE THE CARET IS ON IT. Nothing keeps a caret out of
+   that position in a cell — ArrowRight off a selected picture, End, a step into
+   the cell all land there — and with the line hidden it had no box to be drawn
+   in: the caret was there, typing went there, and nobody could see it. While
+   it sits there the paragraph carries `tiptap-caret-after-media` (the
+   caretAfterMediaLine decoration, tiptap-editor-extensions.tsx, which sets it
+   in table cells only) and the line shows; it folds away again as soon as the
+   caret leaves.
+
+   The `+` adjacency keeps this to that exact pattern — a hardBreak after the
+   media breaks the chain, so a legacy [image, hardBreak] paragraph keeps its
+   visible (and typable) empty line. */
+/* !important: prosemirror-view ships `.ProseMirror-separator { display:
+   inline !important }`, so a plain rule loses. */
+:is(
+		.tiptap.tiptap-doc-content,
+		.tiptap.tiptap-doc-content td,
+		.tiptap.tiptap-doc-content th
+	)
+	> p:not(.tiptap-caret-after-media)
+	> [data-resize-container]
+	+ img.ProseMirror-separator,
+:is(
+		.tiptap.tiptap-doc-content,
+		.tiptap.tiptap-doc-content td,
+		.tiptap.tiptap-doc-content th
+	)
+	> p:not(.tiptap-caret-after-media)
+	> [data-resize-container]
+	+ img.ProseMirror-separator
+	+ br.ProseMirror-trailingBreak {
+	display: none !important;
+}
+/* The selection outline belongs to the PICTURE, not to the box that places it.
+   The container is the line-filling layout box (see the width rules further
+   down: a picture that has never been resized fills its line), so an outline
+   on it reads as a selection far wider than what it selected. The <img> is the
+   picture itself, at whatever size it is currently rendered. */
+.tiptap.tiptap-doc-content
+	[data-resize-container][data-node="image"].ProseMirror-selectednode
+	img,
+.tiptap.tiptap-doc-content
+	[data-resize-container][data-node="image"]:has(img.ProseMirror-selectednode)
+	img {
+	outline: 2px solid var(--color-primary-500);
+	outline-offset: 2px;
+}
+/* A selected image is the one that zooms: the magnifier cursor says the next
+   click opens the full-screen viewer (docs-image-preview.ts). Scoped on
+   `tiptap-image-zoom`, NOT on the content class alone — that one is shared with
+   the swarm docs-agent editor, which has no viewer to open. A read-only
+   document has no selection step, so its images show it right away — but only
+   the image NODES: a card cover (ui/WorkspaceEmbedCard) is an <img> too and
+   clicking it opens the embedded workspace, not a bigger picture. */
+.tiptap.tiptap-doc-content.tiptap-image-zoom
+	[data-resize-container][data-node="image"].ProseMirror-selectednode
+	img,
+.tiptap.tiptap-doc-content.tiptap-image-zoom
+	[data-resize-container][data-node="image"]:has(img.ProseMirror-selectednode)
+	img,
+.tiptap.tiptap-doc-content.tiptap-image-zoom[contenteditable="false"]
+	[data-resize-container][data-node="image"]
+	img,
+.tiptap.tiptap-doc-content.tiptap-image-zoom[contenteditable="false"]
+	p
+	> img:not(.ProseMirror-separator) {
+	cursor: zoom-in;
+}
+
+/* Exactly one image node in the paragraph → fill the line until the user
+   resizes (inline style width then wins; container shrinks to the image). */
+.tiptap.tiptap-doc-content
+	p:has(> [data-node="image"]):not(
+		:has(> [data-node="image"] ~ [data-node="image"])
+	)
+	> [data-node="image"] {
+	display: flex;
+	max-width: 100%;
+	width: fit-content;
+}
+/* …unless the paragraph carries an alignment. An image that is being aligned is
+   by definition not filling the line, so the fill-the-line default stands down
+   and the image keeps its natural size (still capped at 100%) for the margin
+   rules below to push around. */
+.tiptap.tiptap-doc-content
+	p:has(> [data-node="image"]):not([style*="text-align"]):not(
+		:has(> [data-node="image"] ~ [data-node="image"])
+	)
+	> [data-node="image"]:has(
+		> [data-resize-wrapper] > img:not([style*="width"])
+	) {
+	width: 100%;
+}
+.tiptap.tiptap-doc-content
+	p:has(> [data-node="image"]):not([style*="text-align"]):not(
+		:has(> [data-node="image"] ~ [data-node="image"])
+	)
+	> [data-node="image"]:has(> [data-resize-wrapper] > img:not([style*="width"]))
+	img {
+	width: 100%;
+}
+/* Aligning an image = aligning the paragraph that carries it (the image node is
+   INLINE — see media-selection.ts). `text-align` alone is enough for an image
+   sharing its line with text or with another image, because the resize container
+   is inline-flex there. The single-image case above promotes it to a BLOCK-level
+   flex box, which text-align cannot move — margin can. TextAlign renders
+   `style="text-align: <value>"`, hence the attribute match. */
+.tiptap.tiptap-doc-content
+	p[style*="text-align: center"]:not(.tiptap-image-row)
+	> [data-node="image"] {
+	margin-inline: auto;
+}
+.tiptap.tiptap-doc-content
+	p[style*="text-align: right"]:not(.tiptap-image-row)
+	> [data-node="image"] {
+	margin-inline-start: auto;
+}
+/* Fallback when NodeView is absent (e.g. paste preview): bare img. */
+.tiptap.tiptap-doc-content
+	p:has(> img:not(.ProseMirror-separator)):not(
+		:has(> img:not(.ProseMirror-separator) ~ img:not(.ProseMirror-separator))
+	):not(:has(> [data-node="image"]))
+	> img:not(.ProseMirror-separator) {
+	display: block;
+	width: 100%;
+}
+
+/* Two+ image nodes in one paragraph — the MIXED-content case (images alongside
+   text), which uploads no longer produce (`ownLinePos` in media-upload.ts) but
+   old documents still carry. An images-only row opts out: `.tiptap-image-row`
+   below lays it out as a flex line whose split the user can drag.
+   No `display` — see the container rule above for why one would do nothing. */
+.tiptap.tiptap-doc-content
+	p:has(> [data-node="image"] ~ [data-node="image"]):not(.tiptap-image-row)
+	> [data-node="image"] {
+	margin-inline-end: 0.25rem;
+	width: auto;
+}
+/* An equal share is the DEFAULT, not a ceiling: it stops pictures nobody has
+   sized from each claiming the whole line. A picture the user HAS dragged is
+   honoured at the size they dragged it to — the cap used to outrank the drag,
+   so the handle could only ever make such a picture smaller: the width never
+   grew on screen, and every mouseup committed that capped width back into the
+   node. Same `img:not([style*="width"])` test the single-image and row rules
+   use for "has never been sized". */
+.tiptap.tiptap-doc-content
+	p:has(> [data-node="image"] ~ [data-node="image"]):not(.tiptap-image-row)
+	> [data-node="image"]:has(
+		> [data-resize-wrapper] > img:not([style*="width"])
+	) {
+	max-width: calc(50% - 0.25rem);
+}
+.tiptap.tiptap-doc-content
+	p:has(> [data-node="image"] ~ [data-node="image"] ~ [data-node="image"]):not(
+		.tiptap-image-row
+	)
+	> [data-node="image"]:has(
+		> [data-resize-wrapper] > img:not([style*="width"])
+	) {
+	max-width: calc(33.333% - 0.25rem);
+}
+.tiptap.tiptap-doc-content
+	p:has(
+		> [data-node="image"]
+			~ [data-node="image"]
+			~ [data-node="image"]
+			~ [data-node="image"]
+	):not(.tiptap-image-row)
+	> [data-node="image"]:has(
+		> [data-resize-wrapper] > img:not([style*="width"])
+	) {
+	max-width: calc(25% - 0.25rem);
+}
+
+/* An images-ONLY row — ProseMirror marks it, because CSS cannot tell whether a
+   paragraph also carries text (see image-row-layout.ts). Laying it out as a
+   flex line is what makes the split adjustable: an image that has never been
+   resized takes an equal share, while one that HAS been resized keeps its
+   committed width and the others absorb what is left. So dragging one image
+   out to 70% leaves the other at 30% instead of pushing it onto a line of its
+   own. flex-shrink with min-width:0 keeps the row on ONE line even when the
+   stored widths add up to more than fits — overflowing would wrap an image
+   back onto its own line, which is the very thing being fixed. */
+.tiptap.tiptap-doc-content p.tiptap-image-row {
+	align-items: flex-start;
+	display: flex;
+	gap: 0.25rem;
+}
+.tiptap.tiptap-doc-content p.tiptap-image-row > [data-node="image"] {
+	flex: 0 1 auto;
+	max-width: 100%;
+	min-width: 0;
+	width: auto;
+}
+/* Never resized (the NodeView writes an inline width on commit) → equal share
+   of the row, filling it the way a single image fills its line. */
+.tiptap.tiptap-doc-content
+	p.tiptap-image-row
+	> [data-node="image"]:has(
+		> [data-resize-wrapper] > img:not([style*="width"])
+	) {
+	flex: 1 1 0;
+}
+.tiptap.tiptap-doc-content
+	p.tiptap-image-row
+	> [data-node="image"]:has(> [data-resize-wrapper] > img:not([style*="width"]))
+	img {
+	width: 100%;
+}
+/* Row alignment is justify-content once the paragraph is a flex box. */
+.tiptap.tiptap-doc-content p.tiptap-image-row[style*="text-align: center"] {
+	justify-content: center;
+}
+.tiptap.tiptap-doc-content p.tiptap-image-row[style*="text-align: right"] {
+	justify-content: flex-end;
+}
+
+/* Find & replace (find-replace.ts).
+   Every match is tinted, and the one the panel is standing on is tinted
+   harder — two steps of the brand scale rather than a colour of their own, so
+   a brand change reaches the highlight with everything else. Flat tokens, not
+   a translucent wash: a match can fall on a table cell, a code block or a
+   selected range, and a wash would come out a different colour on each.
+   `box-decoration-break` keeps a match that wraps across two lines looking
+   like one highlight rather than two boxes. */
+.tiptap.tiptap-doc-content .tiptap-find-match {
+	background-color: var(--brand-100);
+	border-radius: 2px;
+	-webkit-box-decoration-break: clone;
+	box-decoration-break: clone;
+}
+.tiptap.tiptap-doc-content .tiptap-find-match.tiptap-find-match--active {
+	background-color: var(--brand-300);
+}
+
+/* Side-drop indicator: the vertical counterpart of the dropcursor's horizontal
+   line. It says the dragged image will JOIN this one's row instead of stacking
+   above or below it (see image-side-drop.ts).
+
+   A bar down one EDGE of the target, and drawn with `box-shadow` on purpose:
+   a shadow is painted outside the box and takes no room, so arming changes no
+   layout at all. What stood here before was a ghost the size of the picture
+   about to arrive, which had to open a gap for itself — and that gap moved the
+   very picture the side had been read off, under a pointer that had not moved.
+   The target kept shifting and the preview read as a judder; the paragraph
+   promotion that went with it (block-level picture → inline row) moved it a
+   second time. Neither is needed to say "this side of this picture".
+
+   The offset and the negative spread make a 3px bar sitting 3px clear of the
+   picture, in the gap the dropped one will fill. On the <img> rather than on
+   its container, which for a picture that was never resized is as wide as the
+   whole column — a bar out at the column's edge points at nothing. */
+.tiptap.tiptap-doc-content [data-node="image"].is-side-drop-before img {
+	box-shadow: -6px 0 0 -3px var(--color-primary-500);
+}
+.tiptap.tiptap-doc-content [data-node="image"].is-side-drop-after img {
+	box-shadow: 6px 0 0 -3px var(--color-primary-500);
+}
+
+/* The stand-in the browser photographs to carry under the cursor during a drag
+   (media-drag-image.ts). Off SCREEN rather than hidden, because a browser
+   photographs a rendered element and `display: none` / `visibility: hidden` /
+   `opacity: 0` all come back as nothing — the fade has to be partial to survive
+   being photographed at all.
+
+   It lives on <body>, outside the editor, and is anchored on a class of ours
+   rather than on `.tiptap` (see lib/styles/css-scope-guard.test.ts) — the
+   editor scope classes it also carries are there so the picture inside it keeps
+   the looks the document gave it. */
+.tiptap-drag-image {
+	position: fixed;
+	top: 0;
+	left: -10000px;
+	pointer-events: none;
+}
+/* The fade goes on what is INSIDE the stand-in, not on the stand-in itself:
+   the snapshot is painted starting AT that element, and a compositing property
+   on the thing being painted from is the one thing that may not make it into
+   the picture. One level in it is ordinary content, painted like any other. */
+.tiptap-drag-image > * {
+	opacity: 0.5;
+}
+
+/* In-document upload placeholder (a decoration, not a node — see
+   media-upload-placeholder.ts). Sits exactly where the media will appear, so the
+   wait happens on the page instead of in a toast. */
+.tiptap.tiptap-doc-content .tiptap-media-placeholder {
+	align-items: center;
+	background: var(--bg-subtle);
+	border: 1px dashed var(--border-main);
+	border-radius: 8px;
+	color: var(--muted-foreground);
+	display: inline-flex;
+	font-size: 0.875em;
+	gap: 0.5em;
+	margin: 0.25em 0;
+	padding: 0.75em 1em;
+	user-select: none;
+	vertical-align: middle;
+}
+.tiptap.tiptap-doc-content .tiptap-media-placeholder__spinner {
+	animation: tiptap-media-placeholder-spin 0.8s linear infinite;
+	block-size: 1em;
+	border: 2px solid color-mix(in oklab, currentcolor 25%, transparent);
+	border-radius: 50%;
+	border-top-color: currentcolor;
+	box-sizing: border-box;
+	display: inline-block;
+	inline-size: 1em;
+}
+.tiptap.tiptap-doc-content .tiptap-media-placeholder__percent {
+	font-variant-numeric: tabular-nums;
+	opacity: 0.75;
+}
+@keyframes tiptap-media-placeholder-spin {
+	to {
+		transform: rotate(360deg);
+	}
+}
+@media (prefers-reduced-motion: reduce) {
+	.tiptap.tiptap-doc-content .tiptap-media-placeholder__spinner {
+		animation-duration: 2.4s;
+	}
+}
+
+/* Uploaded video files (the `video` node — NOT the youtube embed). A block
+   player that never overflows the page and reads as one selectable unit.
+   Height is capped as well as width: a PORTRAIT clip stretched to the column
+   width becomes taller than the viewport and pushes the whole document off
+   screen. Both axes are `auto` under the two caps, so the player shrinks to fit
+   with its aspect ratio intact (no letterbox bars) and is centred in the
+   column — a landscape clip still fills the width as before. */
+.tiptap.tiptap-doc-content video.tiptap-video {
+	background: #000;
+	border-radius: 8px;
+	display: block;
+	height: auto;
+	margin: 0.75em auto;
+	max-height: 60vh;
+	max-width: 100%;
+	width: auto;
+}
+.tiptap.tiptap-doc-content video.tiptap-video.ProseMirror-selectednode {
+	outline: 2px solid var(--color-primary-500);
+	outline-offset: 2px;
+}
+
+/* The other two display modes of the SAME `video` node (bubble toolbar → 内联 /
+   卡片; see docs-video.ts). Both are a button that swaps itself for the player
+   on click — `data-playing` is view state written by the node view, never a
+   document change, so it is safe to style on. */
+.tiptap.tiptap-doc-content .tiptap-video-file {
+	display: block;
+	margin: 0.5em 0;
+	max-width: 100%;
+}
+.tiptap.tiptap-doc-content
+	.tiptap-video-file[data-playing="true"]
+	> .tiptap-video-file__open {
+	display: none;
+}
+.tiptap.tiptap-doc-content .tiptap-video-file__open {
+	align-items: center;
+	background: var(--background);
+	color: inherit;
+	cursor: pointer;
+	display: inline-flex;
+	font: inherit;
+	max-width: 100%;
+	text-align: left;
+}
+.tiptap.tiptap-doc-content .tiptap-video-file__icon {
+	align-items: center;
+	color: var(--color-primary-500);
+	display: inline-flex;
+	flex: none;
+	justify-content: center;
+}
+.tiptap.tiptap-doc-content .tiptap-video-file__name {
+	overflow: hidden;
+	overflow-wrap: anywhere;
+}
+.tiptap.tiptap-doc-content
+	.tiptap-video-file.ProseMirror-selectednode
+	.tiptap-video-file__open {
+	outline: 2px solid var(--color-primary-500);
+	outline-offset: 2px;
+}
+
+/* Card: icon, name, size, play button. Bounded width — a file card that grows to
+   the column reads as a broken player rather than as a card. */
+.tiptap.tiptap-doc-content
+	.tiptap-video-file[data-video-display="card"]
+	> .tiptap-video-file__open {
+	border: 1px solid var(--border-main);
+	border-radius: 10px;
+	gap: 12px;
+	padding: 10px 14px;
+	width: min(100%, 380px);
+}
+.tiptap.tiptap-doc-content
+	.tiptap-video-file[data-video-display="card"]
+	.tiptap-video-file__icon {
+	background: var(--accent);
+	border-radius: 8px;
+	height: 40px;
+	width: 40px;
+}
+.tiptap.tiptap-doc-content .tiptap-video-file__meta {
+	display: flex;
+	flex: 1 1 auto;
+	flex-direction: column;
+	gap: 2px;
+	min-width: 0;
+}
+.tiptap.tiptap-doc-content
+	.tiptap-video-file[data-video-display="card"]
+	.tiptap-video-file__name {
+	/* Two lines, then ellipsis: CDN file names are long hashes. */
+	-webkit-box-orient: vertical;
+	-webkit-line-clamp: 2;
+	display: -webkit-box;
+	font-size: 14px;
+	line-height: 1.35;
+}
+.tiptap.tiptap-doc-content .tiptap-video-file__size {
+	color: var(--muted-foreground);
+	font-size: 12px;
+	line-height: 1.2;
+}
+.tiptap.tiptap-doc-content .tiptap-video-file__play {
+	align-items: center;
+	color: var(--muted-foreground);
+	display: inline-flex;
+	flex: none;
+	justify-content: center;
+}
+
+/* Chip: icon + name only, sized like the surrounding text. The node is a BLOCK
+   in the schema, so the chip sits on its own line rather than flowing inside a
+   paragraph — it is a compact attachment, not an inline run. */
+.tiptap.tiptap-doc-content
+	.tiptap-video-file[data-video-display="inline"]
+	> .tiptap-video-file__open {
+	background: var(--accent);
+	border: none;
+	border-radius: 6px;
+	gap: 6px;
+	padding: 2px 8px;
+}
+.tiptap.tiptap-doc-content
+	.tiptap-video-file[data-video-display="inline"]
+	.tiptap-video-file__name {
+	font-size: 0.95em;
+	white-space: nowrap;
+	text-overflow: ellipsis;
+}
+
+/* Resize handles (TipTap ResizableNodeView does not ship styles).
+
+   INVARIANT — a handle's `pointer-events` must NEVER be decided by a `:hover`
+   that the handle's own hit-testing produces. Each handle is pushed ~40% OUTSIDE
+   the box it drags (the transforms further down), and over that outer sliver the
+   handle is the only thing there. Gating `pointer-events` on the container's
+   `:hover` made the sliver bistable: with the handle inert the pointer fell
+   through to the paragraph, so nothing got `:hover`, so the handle stayed inert.
+   Approaching a corner from outside the picture therefore found a dead zone, and
+   a jiggle across the boundary flipped the cursor between the resize arrow and
+   the caret several times a second. A collab NodeView remount resets the same
+   hover under a resting pointer, which is why it read as "resize stops working
+   after the document has been sitting a while". Handles are hit-testable at all
+   times now and only their `opacity` follows the hover: an invisible handle
+   still owns its corner, and that is what makes the gesture reproducible.
+   Ref Teamily-Inc/teamily-ai-all#1526 */
+.tiptap.tiptap-doc-content [data-resize-handle] {
+	background: var(--color-primary-500);
+	border: 1.5px solid #fff;
+	border-radius: 2px;
+	box-shadow: 0 0 0 1px
+		color-mix(in oklab, var(--color-primary-500) 40%, transparent);
+	box-sizing: border-box;
+	opacity: 0;
+	pointer-events: auto;
+	z-index: 3;
+}
+/* The grab area is bigger than the dot that is drawn: a 10px target is a coin
+   toss at speed, and this ring takes it to 18px without changing the look. */
+.tiptap.tiptap-doc-content [data-resize-handle]::before {
+	content: "";
+	inset: -4px;
+	position: absolute;
+}
+.tiptap.tiptap-doc-content
+	[data-resize-container][data-node="image"]:hover
+	[data-resize-handle],
+.tiptap.tiptap-doc-content
+	[data-resize-container][data-node="image"]
+	[data-resize-wrapper]:hover
+	[data-resize-handle],
+.tiptap.tiptap-doc-content
+	[data-resize-container][data-node="image"].ProseMirror-selectednode
+	[data-resize-handle],
+.tiptap.tiptap-doc-content
+	[data-resize-container][data-resize-state="true"]
+	[data-resize-handle] {
+	opacity: 1;
+}
+/* …and a handle the pointer is on shows itself, without asking an ancestor
+   whether it is hovered: a remount drops the container's `:hover` until the
+   mouse moves again, and the handle under a resting pointer must not go
+   invisible underneath it. */
+.tiptap.tiptap-doc-content [data-resize-handle]:hover {
+	opacity: 1;
+}
+/* A read-only document has no resize gesture at all. ResizableNodeView attaches
+   its handles unconditionally in the constructor and only drops them on the next
+   `update` event, so a NodeView remounted by a remote edit carries live handles
+   until then — invisible, but hit-testable now, i.e. eating the corners of a
+   picture nobody is allowed to resize. */
+.tiptap.tiptap-doc-content[contenteditable="false"] [data-resize-handle] {
+	display: none;
+}
+.tiptap.tiptap-doc-content [data-resize-handle="top-left"],
+.tiptap.tiptap-doc-content [data-resize-handle="top-right"],
+.tiptap.tiptap-doc-content [data-resize-handle="bottom-left"],
+.tiptap.tiptap-doc-content [data-resize-handle="bottom-right"] {
+	height: 10px;
+	width: 10px;
+}
+/* Each handle straddles the edge it drags: the same fraction outside on all
+   four corners and both sides, or the picture looks like it has one loose
+   corner. */
+.tiptap.tiptap-doc-content [data-resize-handle="top-left"] {
+	cursor: nwse-resize;
+	transform: translate(-40%, -40%);
+}
+.tiptap.tiptap-doc-content [data-resize-handle="top-right"] {
+	cursor: nesw-resize;
+	transform: translate(40%, -40%);
+}
+.tiptap.tiptap-doc-content [data-resize-handle="bottom-left"] {
+	cursor: nesw-resize;
+	transform: translate(-40%, 40%);
+}
+.tiptap.tiptap-doc-content [data-resize-handle="bottom-right"] {
+	cursor: nwse-resize;
+	transform: translate(40%, 40%);
+}
+.tiptap.tiptap-doc-content [data-resize-handle="left"],
+.tiptap.tiptap-doc-content [data-resize-handle="right"] {
+	cursor: ew-resize;
+	height: 28px;
+	margin-top: auto;
+	margin-bottom: auto;
+	top: 0;
+	bottom: 0;
+	width: 6px;
+}
+.tiptap.tiptap-doc-content [data-resize-handle="left"] {
+	transform: translateX(-40%);
+}
+.tiptap.tiptap-doc-content [data-resize-handle="right"] {
+	transform: translateX(40%);
+}
+
+/* Vertical breathing room around tables so adjacent tables don't touch. The
+   block-level child is the `.tableWrapper` (extension-table wraps tables for
+   horizontal scroll); higher specificity than `.tiptap.ProseMirror > * + *` so
+   this margin wins for table↔table gaps. */
+/* Room above a table for a peer's name label. The label hangs ABOVE its caret
+   (see the collaboration-carets rules), so for a caret in the first row it
+   rises past the table's top edge — and the wrapper is a scroll container,
+   which clips at its padding box, so the label was cut in half there. The room
+   is therefore padding INSIDE the wrapper, taken back out of the margin above
+   it so the table stays exactly where it was. A label rises at most ~10px past
+   a first-row cell's top (16.8px above a caret that sits behind the cell's
+   border and padding), so 16px always fits it.
+   On the shell rather than the content root: the drag handle, which top-aligns
+   to the wrapper and has to undo the room (.drag-handle.is-table), is the
+   content root's sibling. Read with a 0 fallback, so the export page — which
+   has no shell and draws no carets — lays tables out as before. */
+.tiptap-editor-shell {
+	--table-caret-room: 16px;
+}
+.tiptap.tiptap-doc-content.ProseMirror .tableWrapper {
+	/* 2em in all, as before. No other block's bottom margin is more than 1em
+	   (hr), so collapsing with it still leaves 2em - room above the padding. */
+	margin-top: calc(2em - var(--table-caret-room, 0px));
+	margin-bottom: 2em;
+	padding-top: var(--table-caret-room, 0px);
+	/* Scroll horizontally instead of squeezing columns when the table (whose
+	   min-width prosemirror-tables sets to the summed column widths) exceeds the
+	   container. */
+	max-width: 100%;
+	overflow-x: auto;
+	/* Stated rather than left to compute as `auto`: the table no longer clips
+	   its own bottom edge (see `overflow-x: clip` below), and a column-resize
+	   handle reaching past the last row would make the wrapper scroll a couple
+	   of pixels vertically. */
+	overflow-y: hidden;
+}
+/* Table after table: the one neighbour whose bottom margin (2em) outweighs the
+   reduced top margin, so collapsing would put the room on top of a full 2em.
+   A negative margin collapses with that 2em and takes the room back off. */
+.tiptap.tiptap-doc-content.ProseMirror .tableWrapper + .tableWrapper {
+	margin-top: calc(-1 * var(--table-caret-room, 0px));
+}
+/* Tables — TipTap columnResizing needs table-layout:fixed + absolute cells +
+   .column-resize-handle styles or the drag handles are invisible / inert. */
+.tiptap.tiptap-doc-content table {
+	border-collapse: collapse;
+	margin: 0;
+	/* Clipped sideways only: a column-resize handle on the right edge must not
+	   widen the wrapper's scroll range, while a name label above a first-row
+	   caret has to rise out of the table into the room the wrapper keeps for
+	   it. `clip`, not `hidden`: only `clip` leaves the other axis `visible`. */
+	overflow-x: clip;
+	table-layout: fixed;
+	width: 100%;
+}
+.tiptap.tiptap-doc-content th,
+.tiptap.tiptap-doc-content td {
+	border: 1px solid var(--border-main);
+	box-sizing: border-box;
+	min-width: 1em;
+	padding: 0.4em 0.6em;
+	position: relative;
+	vertical-align: top;
+}
+/* UI 2.0's --bg-subtle, not shadcn's --muted: nothing themes --muted for dark,
+   where it stayed `hsl(0 0% 3.9%)`, a near-black header band. */
+.tiptap.tiptap-doc-content th {
+	background: var(--bg-subtle);
+	font-weight: 600;
+	text-align: left;
+}
+/* Cell fills (table/table-cell-background) are always PALE tints painted as an
+   inline background-color, so pin the text dark for them — in dark mode the
+   inherited near-white foreground would be unreadable. An explicit text colour
+   still wins: the Color mark renders its own inline-styled span inside. */
+.tiptap.tiptap-doc-content th[data-background-color],
+.tiptap.tiptap-doc-content td[data-background-color] {
+	color: #1f2937;
+}
+/* Selected cells (a CellSelection — grip click/drag, or shift+arrows). 20% of the
+   selection blue reads clearly over both white cells and coloured ones, without
+   hiding the cell's own background. */
+.tiptap.tiptap-doc-content .selectedCell::after {
+	background: color-mix(in oklab, var(--tbl-select) 20%, transparent);
+	bottom: 0;
+	content: "";
+	left: 0;
+	pointer-events: none;
+	position: absolute;
+	right: 0;
+	top: 0;
+	z-index: 2;
+}
+.tiptap.tiptap-doc-content .column-resize-handle {
+	background-color: var(--tbl-select);
+	bottom: -2px;
+	pointer-events: none;
+	position: absolute;
+	/* A hairline, centred on the border it drags: half either side of it. */
+	right: -1px;
+	top: 0;
+	width: 2px;
+}
+.tiptap.tiptap-doc-content .tableWrapper {
+	margin: 1em 0;
+	overflow-x: auto;
+}
+.tiptap.tiptap-doc-content.resize-cursor {
+	cursor: col-resize;
+	cursor: ew-resize;
+}
+
+/* placeholder (empty node hint) — body editor only (title has its own rule) */
+.tiptap-editor-shell .tiptap p.is-editor-empty:first-child::before,
+.tiptap-editor-shell .tiptap .is-empty::before {
+	content: attr(data-placeholder);
+	color: var(--muted-foreground);
+	float: left;
+	height: 0;
+	pointer-events: none;
+}
+
+/* details / toggle */
+.tiptap.tiptap-doc-content .tiptap-details {
+	border: 1px solid var(--border-main);
+	border-radius: 8px;
+	padding: 0.5em 0.75em;
+	margin: 0.5em 0;
+}
+.tiptap.tiptap-doc-content .tiptap-details summary {
+	cursor: pointer;
+	font-weight: 600;
+	list-style: revert;
+}
+
+/* math */
+.tiptap.tiptap-doc-content [data-type="blockMath"] {
+	display: block;
+	text-align: center;
+	margin: 0.5em 0;
+}
+
+/* mention chip: avatar + name pill */
+.tiptap.tiptap-doc-content .tiptap-mention {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	/* Never wider than the block it sits in. The chip is `nowrap` AND an atomic
+	   inline box, so it cannot break across lines: without this cap a long name
+	   inside a narrow TABLE CELL paints straight over the cell border into the
+	   next column. Capped here, the name ellipsises instead (see __name) — the
+	   full name stays readable via the chip's `title` tooltip. */
+	max-width: 100%;
+	padding: 1px 8px 1px 2px;
+	border-radius: 999px;
+	background: var(--accent);
+	color: var(--foreground);
+	font-weight: 500;
+	line-height: 1.35;
+	vertical-align: middle;
+	white-space: nowrap;
+	/* NO `user-select: none` here, however much the chip looks like chrome.
+	   It is document CONTENT, and a reader dragging across a sentence expects
+	   the whole sentence to light up. Chrome paints no selection over a
+	   user-select:none subtree, so the chip came out as a HOLE in the
+	   highlight — "hello ▮▮▮ world" with the name sitting unhighlighted in the
+	   middle — and people read that as "the mention did not get copied".
+	   (It always did: the DOM range spans the chip either way, and ProseMirror
+	   serializes from its OWN selection, so the paste round-trip was never
+	   affected. The bug was entirely what the eye was told.)
+	   Nothing is lost by allowing selection: the node is an atom, so
+	   ProseMirror renders it contenteditable=false and normalises any caret
+	   landing inside it to the node's edges — see mention-clipboard.test.ts,
+	   which locks both that and this rule's absence. `cursor: default` is what
+	   keeps the chip from reading as editable text. */
+	cursor: default;
+}
+.tiptap.tiptap-doc-content .tiptap-mention__avatar {
+	flex: none;
+	/* max-* guards against the `.tiptap-doc-content img { max-width:100% }` rule
+	 * so a
+	 * large avatar photo can never blow the chip up. */
+	width: 18px;
+	height: 18px;
+	max-width: 18px;
+	max-height: 18px;
+	border-radius: 999px;
+	object-fit: cover;
+	background-size: cover;
+	background-position: center;
+}
+.tiptap.tiptap-doc-content .tiptap-mention__avatar--fallback {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	font-size: 10px;
+	font-weight: 600;
+	line-height: 1;
+	color: #fff;
+}
+.tiptap.tiptap-doc-content .tiptap-mention__name {
+	font-size: 0.95em;
+	/* `min-width: 0` is what lets this flex item shrink below its text width, so
+	   the ellipsis can actually engage under the chip's max-width (the avatar is
+	   `flex: none` and keeps its full size). `white-space: nowrap` is inherited
+	   from the chip. */
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+/* remote carets + selection (CollaborationCaret uses the `collaboration-carets__*`
+ * class names — note the plural "carets"). The caret is a thin vertical line at
+ * the peer's cursor; the label floats above it (absolute, so it does NOT stretch
+ * to full width); a remote text selection gets a translucent highlight.
+ * `.tiptap-table-sticky` is the pinned table header (table-sticky-header.ts): a
+ * clone of the header row in an overlay OUTSIDE the content root, which carries
+ * a peer's caret over with the row but none of these rules — without them the
+ * label dropped below the cell text as a bare block. */
+.tiptap.tiptap-doc-content .collaboration-carets__caret,
+.tiptap-table-sticky .collaboration-carets__caret {
+	position: relative;
+	margin-left: -1px;
+	margin-right: -1px;
+	border-left: 1px solid;
+	border-right: 1px solid;
+	/* border-color is set inline to the peer's color */
+	word-break: normal;
+	pointer-events: none;
+}
+.tiptap.tiptap-doc-content .collaboration-carets__label,
+.tiptap-table-sticky .collaboration-carets__label {
+	position: absolute;
+	top: -1.4em;
+	left: -1px;
+	font-size: 12px;
+	font-weight: 600;
+	line-height: normal;
+	white-space: nowrap;
+	color: #fff;
+	padding: 0.1rem 0.3rem;
+	border-radius: 3px 3px 3px 0;
+	user-select: none;
+	pointer-events: none;
+	/* Over a table's hover grip strip (1), which paints the room above the table
+	   that a first-row caret's label rises into; under the pinned header's
+	   backdrop (3), so a label scrolled beneath the pinned head stays beneath
+	   it. See the LAYERING note in table/table.css. */
+	z-index: 2;
+	/* background-color is set inline to the peer's color */
+}
+/* remote text selection uses y-prosemirror's `.ProseMirror-yjs-selection`,
+ * which already applies a translucent version of the peer's color — no extra
+ * styling needed. */
+
+/* suggestion popovers (slash / mention / emoji) */
+.tiptap-suggestion-popover {
+	z-index: 50;
+}
+.tiptap-suggestion-menu {
+	min-width: 240px;
+	max-height: 360px;
+	overflow-y: auto;
+	background: var(--popover);
+	color: var(--popover-foreground);
+	border: 1px solid var(--border-main);
+	border-radius: 10px;
+	box-shadow: 0 8px 24px rgb(0 0 0 / 0.12);
+	padding: 6px;
+}
+.tiptap-slash-group + .tiptap-slash-group {
+	margin-top: 4px;
+}
+.tiptap-slash-group-label {
+	padding: 6px 10px 2px;
+	font-size: 12px;
+	line-height: 1.2;
+	color: var(--muted-foreground);
+	user-select: none;
+}
+.tiptap-suggestion-item {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	width: 100%;
+	text-align: left;
+	padding: 7px 10px;
+	border-radius: 6px;
+	font-size: 14px;
+	background: none;
+	border: none;
+	cursor: pointer;
+	color: inherit;
+}
+.tiptap-slash-icon {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	flex: none;
+	width: 20px;
+	height: 20px;
+}
+.tiptap-slash-title {
+	flex: 1;
+	min-width: 0;
+}
+.tiptap-mention-avatar {
+	flex: none;
+	width: 24px;
+	height: 24px;
+	border-radius: 999px;
+	background-size: cover;
+	background-position: center;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	font-size: 11px;
+	font-weight: 600;
+	line-height: 1;
+	color: #fff;
+	overflow: hidden;
+	user-select: none;
+}
+.tiptap-mention-name {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.tiptap-suggestion-item:hover {
+	background: color-mix(in srgb, var(--accent) 55%, transparent);
+}
+/* committed selection (keyboard target / notify-mode click) — stronger than a
+   transient hover, with a left accent bar so the "armed" row is unmistakable */
+.tiptap-suggestion-item.is-selected {
+	background: var(--accent);
+	box-shadow: inset 2px 0 0 var(--color-primary-500);
+}
+.tiptap-suggestion-empty {
+	padding: 8px 10px;
+	color: var(--muted-foreground);
+	font-size: 14px;
+}
+
+/* mention popup: tabbed shell (人 / 交付物) */
+.tiptap-mention-menu {
+	display: flex;
+	flex-direction: column;
+	min-width: 260px;
+	padding: 0;
+	overflow: hidden;
+}
+.tiptap-mention-tabs {
+	display: flex;
+	gap: 4px;
+	padding: 6px 6px 0;
+	border-bottom: 1px solid var(--border-main);
+}
+.tiptap-mention-tab {
+	appearance: none;
+	background: none;
+	border: none;
+	border-bottom: 2px solid transparent;
+	padding: 6px 10px;
+	font-size: 14px;
+	line-height: 1.2;
+	color: var(--muted-foreground);
+	cursor: pointer;
+}
+.tiptap-mention-tab.is-active {
+	color: var(--foreground);
+	border-bottom-color: var(--color-primary-500);
+	font-weight: 600;
+}
+.tiptap-mention-list {
+	max-height: 280px;
+	overflow-y: auto;
+	padding: 6px;
+}
+.tiptap-mention-search {
+	position: relative;
+	padding: 8px 8px 4px;
+}
+.tiptap-mention-search input {
+	width: 100%;
+	padding: 6px 28px 6px 10px;
+	font-size: 14px;
+	color: var(--foreground);
+	background: var(--background);
+	border: 1px solid var(--border-main);
+	border-radius: 6px;
+	outline: none;
+}
+.tiptap-mention-search input:focus {
+	border-color: var(--color-primary-500);
+}
+/* In-box "still searching" indicator. Reuses the media-placeholder keyframes.
+   `top`/`bottom` are the container's own paddings, i.e. the input's edges, so
+   `margin: auto 0` centres on the INPUT rather than on the padded box — no
+   magic offset to re-derive if either padding changes. */
+.tiptap-mention-search__spinner {
+	position: absolute;
+	top: 8px;
+	right: 17px;
+	bottom: 4px;
+	width: 12px;
+	height: 12px;
+	margin: auto 0;
+	color: var(--muted-foreground);
+	border: 2px solid color-mix(in oklab, currentcolor 25%, transparent);
+	border-top-color: currentcolor;
+	border-radius: 50%;
+	box-sizing: border-box;
+	animation: tiptap-media-placeholder-spin 0.8s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+	.tiptap-mention-search__spinner {
+		animation-duration: 2.4s;
+	}
+}
+.tiptap-mention-footer {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+	padding: 8px 10px;
+	border-top: 1px solid var(--border-main);
+}
+.tiptap-mention-notify {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	font-size: 13px;
+	color: var(--muted-foreground);
+	cursor: pointer;
+	user-select: none;
+}
+.tiptap-mention-notify input {
+	width: 14px;
+	height: 14px;
+	accent-color: var(--color-primary-500);
+	cursor: pointer;
+}
+.tiptap-mention-submit {
+	appearance: none;
+	border: none;
+	padding: 6px 16px;
+	font-size: 13px;
+	font-weight: 500;
+	color: var(--primary-foreground);
+	background: var(--color-primary-500);
+	border-radius: 6px;
+	cursor: pointer;
+}
+.tiptap-mention-submit:disabled {
+	opacity: 0.5;
+	cursor: not-allowed;
+}
+
+/* Card NodeViews draw their own selected ring on the CARD ([data-selected], the
+   two rules below), so prosemirror-view's built-in one must go.
+   `.ProseMirror-selectednode` lands on the element ProseMirror owns — the
+   `react-renderer node-<name>` div that wraps a React NodeView — and that div is
+   a full-width block, while the card inside is capped (360px / 520px). Its
+   default `outline: 2px solid #8cf` therefore paints a light-blue box that
+   overshoots the card to the right, all the way to the text column's edge.
+   Deliberately per-node, not a blanket `.react-renderer` rule: every OTHER node
+   view has no ring of its own and the default is the only selection feedback it
+   gets. */
+.tiptap.tiptap-doc-content
+	.react-renderer.node-deliverable.ProseMirror-selectednode,
+.tiptap.tiptap-doc-content
+	.react-renderer.node-workspaceEmbed.ProseMirror-selectednode {
+	outline: none;
+}
+
+/* deliverable (交付物) block embed — the memory-module artifact card. Scoped to
+ * the document content class (like the mention chip) since it renders inside
+ * the editor. */
+.tiptap.tiptap-doc-content .tiptap-deliverable-wrap {
+	margin: 8px 0;
+}
+.tiptap.tiptap-doc-content .tiptap-deliverable-card {
+	max-width: 360px;
+	border-radius: 12px;
+}
+/* selected node (click / keyboard) gets a focus ring like other block embeds */
+.tiptap.tiptap-doc-content .tiptap-deliverable-card[data-selected="true"] {
+	outline: 2px solid var(--color-primary-500);
+	outline-offset: 2px;
+}
+/* NodeView-less rendering (HTML/PDF export, seed route DOM fallback). Same
+   shape as the React card above — 360px, 12px radius — so a document that is
+   downloaded does not suddenly show a different artifact card from the one on
+   screen. The cover window borrows the embed's 16:9 letterbox for the same
+   reason it exists there: an artifact thumbnail is a crop of something whose
+   proportions we do not control, and sizing the card by it turns one tall
+   screenshot into a full page. Shape via `aspect-ratio`, never `height` — the
+   `.tiptap-doc-content img:not(…)` rule pins that to `auto` at a specificity no
+   class here can beat. */
+.tiptap.tiptap-doc-content .tiptap-deliverable {
+	max-width: 360px;
+	margin: 8px 0;
+	border: 1px solid var(--border-main);
+	border-radius: 12px;
+	overflow: hidden;
+}
+.tiptap.tiptap-doc-content .tiptap-deliverable__cover {
+	display: block;
+	width: 100%;
+	height: auto;
+	aspect-ratio: 16 / 9;
+	object-fit: contain;
+	background: #fff;
+	border-radius: 0;
+}
+.tiptap.tiptap-doc-content
+	.tiptap-deliverable__cover
+	+ .tiptap-deliverable__row {
+	border-top: 1px solid var(--border-main);
+}
+.tiptap.tiptap-doc-content .tiptap-deliverable__row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 8px 12px;
+}
+.tiptap.tiptap-doc-content .tiptap-deliverable__name {
+	min-width: 0;
+	flex: 1 1 auto;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-size: 14px;
+	font-weight: 500;
+}
+.tiptap.tiptap-doc-content .tiptap-deliverable__meta {
+	flex: none;
+	color: var(--muted-foreground);
+	font-size: 12px;
+}
+
+/* embedded workspace (whiteboard / …): a cover thumbnail card, wider than the
+   deliverable card since the cover carries the information */
+.tiptap.tiptap-doc-content .tiptap-workspace-embed-wrap {
+	margin: 12px 0;
+}
+.tiptap.tiptap-doc-content .tiptap-workspace-embed-card {
+	max-width: 520px;
+	border-radius: 12px;
+}
+.tiptap.tiptap-doc-content .tiptap-workspace-embed-card[data-selected="true"] {
+	outline: 2px solid var(--color-primary-500);
+	outline-offset: 2px;
+}
+/* NodeView-less rendering (HTML export / seed route DOM fallback).
+   `.tiptap-export-embed` joins every selector in this block: an exported
+   document turns a YouTube <iframe> — which no rasterizer can draw — into its
+   poster frame plus the address (lib/docs/export-dom.ts), and that is the same
+   object as an embedded workspace: a 16:9 window with a caption under it. One
+   selector list rather than a parallel set of rules, so the two cannot drift. */
+.tiptap.tiptap-doc-content .tiptap-workspace-embed,
+.tiptap.tiptap-doc-content .tiptap-export-embed {
+	max-width: 520px;
+	border: 1px solid var(--color-neutral-200);
+	border-radius: 12px;
+	overflow: hidden;
+}
+/* THE embed window. One shape, defined once, for every embeddable type and both
+   renderings — the React card and the NodeView-less DOM the seed route and HTML
+   export emit — so an embed can never look like two different things depending
+   on who drew it. (The card used to carry its own inline `aspect-ratio` from a
+   per-type registry value while this rule hardcoded another; that is the split
+   this block closes.)
+   • 16:9 + the 520px cap above pin BOTH dimensions. The cover is a crop of the
+     drawing's bounding box, so a card sized by its cover turns one tall sketch
+     into a full-page column mid-document.
+   • White, not a theme token, and in both themes: covers are exported on a
+     forced white background (see captureExcalidrawCover's viewBackgroundColor),
+     so the letterbox has to read as part of the picture. Change that export and
+     change this together.
+   • Shape comes from `aspect-ratio`, never `height` — the
+     `.tiptap-doc-content img:not(…)` rule above pins that to `auto` at a
+     specificity no class can beat. Nothing competes for `aspect-ratio`.
+   Both selectors are embed-only: no other element in the editor is touched. */
+.tiptap.tiptap-doc-content .tiptap-workspace-embed__cover,
+.tiptap.tiptap-doc-content .tiptap-export-embed .tiptap-workspace-embed__cover,
+.tiptap.tiptap-doc-content .tiptap-workspace-embed-card__window {
+	width: 100%;
+	height: auto;
+	aspect-ratio: 16 / 9;
+	background: #fff;
+}
+/* The cover IS the window (both renderings): contain centres the whole drawing
+   inside it and never crops. */
+.tiptap.tiptap-doc-content .tiptap-workspace-embed__cover {
+	display: block;
+	object-fit: contain;
+}
+/* No cover yet — same window, holding a centred type icon. */
+.tiptap.tiptap-doc-content .tiptap-workspace-embed-card__window {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+}
+.tiptap.tiptap-doc-content .tiptap-workspace-embed__title {
+	display: block;
+	padding: 8px 12px;
+	font-size: 14px;
+	font-weight: 500;
+}
+
+/* bubble menu */
+/* Float the selection bubble above the table insert overlay (z 20/21) and the
+   drag handle (z 50) so it is never clipped by them. */
+.tiptap-bubble-menu {
+	z-index: 60;
+	/* Entrance: the plugin re-appends the element on every show, which restarts
+	   this animation. It slides toward its final spot — up when the toolbar
+	   appears above the mouse, down (see data-placement below) when under it. */
+	animation: tiptap-bubble-in-up 160ms ease-out;
+}
+.tiptap-bubble-menu[data-placement="bottom"] {
+	animation-name: tiptap-bubble-in-down;
+}
+/* Touch screens: docked above the keyboard, centred, instead of beside the
+   selection (see EditorBubbleMenu) — the system's own selection menu opens
+   beside the selection on whichever side the OS picks, and would cover it.
+   The plugin keeps writing floating-ui's inline left/top/width, hence
+   !important. `--keyboard-inset` is the on-screen keyboard's height
+   (useKeyboardInset); without a keyboard the toolbar sits above the home
+   indicator instead. */
+.tiptap-bubble-menu.is-docked {
+	position: fixed !important;
+	top: auto !important;
+	right: 8px !important;
+	bottom: calc(
+		max(env(safe-area-inset-bottom), var(--keyboard-inset, 0px)) + 8px
+	) !important;
+	left: 8px !important;
+	width: max-content !important;
+	max-width: calc(100vw - 16px);
+	margin-inline: auto;
+}
+/* Android (Chromium) also pans the page to keep the caret above the keyboard;
+   lifted by the keyboard's height alone the toolbar would float up by that pan
+   (`--visual-viewport-offset-top`, useKeyboardInset). iOS needs no correction. */
+.tiptap-bubble-menu.is-docked.is-docked-pan {
+	bottom: calc(
+		max(
+				env(safe-area-inset-bottom),
+				var(--keyboard-inset, 0px) - var(--visual-viewport-offset-top, 0px)
+			) +
+			8px
+	) !important;
+}
+/* A toolbar wider than a small phone wraps rather than running off it. */
+.tiptap-bubble-menu.is-docked .tiptap-bubble {
+	flex-wrap: wrap;
+	justify-content: center;
+}
+/* Its menus open upward: below it is the keyboard. */
+.tiptap-bubble-menu.is-docked .tiptap-bubble-pop {
+	top: auto;
+	bottom: 100%;
+	margin-top: 0;
+	margin-bottom: 6px;
+}
+@keyframes tiptap-bubble-in-up {
+	from {
+		opacity: 0;
+		transform: translateY(6px);
+	}
+	to {
+		opacity: 1;
+		transform: none;
+	}
+}
+@keyframes tiptap-bubble-in-down {
+	from {
+		opacity: 0;
+		transform: translateY(-6px);
+	}
+	to {
+		opacity: 1;
+		transform: none;
+	}
+}
+/* Mid-drag guard (EditorBubbleMenu): the plugin shows the toolbar as soon as
+   the selection is non-empty, i.e. while the mouse is still sweeping. The
+   class is set on editor mousedown and cleared on mouseup — the bubble only
+   becomes visible once the selection is finished. */
+.tiptap-bubble-menu.is-selecting {
+	pointer-events: none;
+	visibility: hidden !important;
+}
+.tiptap-bubble {
+	display: flex;
+	gap: 2px;
+	padding: 4px;
+	background: var(--popover);
+	border: 1px solid var(--border-main);
+	border-radius: 8px;
+	box-shadow: 0 6px 18px rgb(0 0 0 / 0.12);
+}
+.tiptap-bubble-btn {
+	align-items: center;
+	background: none;
+	border: none;
+	border-radius: 6px;
+	color: inherit;
+	cursor: pointer;
+	display: inline-flex;
+	font-size: 13px;
+	height: 28px;
+	justify-content: center;
+	min-width: 28px;
+}
+/* Divider between the inline marks and the block (list) conversions. */
+.tiptap-bubble-sep {
+	align-self: stretch;
+	background: var(--border-main);
+	flex: none;
+	margin: 4px 2px;
+	width: 1px;
+}
+.tiptap-bubble-btn[data-active="true"],
+.tiptap-bubble-btn:hover {
+	background: var(--accent);
+}
+/* The "A" on the colour control, wearing the remembered font/background pair.
+   A rounded SQUARE, not a text-sized pill — shared by the text bubble and the
+   table toolbar so the two read as one control. */
+.tiptap-bubble-a {
+	align-items: center;
+	border-radius: 4px;
+	display: inline-flex;
+	font-size: 13px;
+	font-weight: 600;
+	height: 20px;
+	justify-content: center;
+	width: 20px;
+}
+
+/* Link editor popover (the bubble's chain button). Replaces window.prompt —
+   see LinkButton in EditorBubbleMenu for why the browser dialog had to go. */
+.tiptap-link-panel {
+	width: 296px;
+	padding: 8px;
+	background: var(--popover);
+	border: 1px solid var(--border-main);
+	border-radius: 8px;
+	box-shadow: 0 12px 32px rgb(0 0 0 / 0.14);
+}
+.tiptap-link-row {
+	align-items: center;
+	display: flex;
+	gap: 8px;
+}
+.tiptap-link-input {
+	background: var(--background);
+	border: 1px solid var(--border-main);
+	border-radius: 6px;
+	color: var(--foreground);
+	flex: 1 1 auto;
+	font-size: 13px;
+	height: 30px;
+	/* Without it the flex item refuses to shrink below its content width. */
+	min-width: 0;
+	padding: 0 8px;
+}
+.tiptap-link-input:focus {
+	border-color: var(--color-primary-500);
+	outline: none;
+}
+.tiptap-link-confirm {
+	background: var(--color-primary-500);
+	border: none;
+	border-radius: 6px;
+	color: #fff;
+	cursor: pointer;
+	flex: none;
+	font-size: 13px;
+	height: 30px;
+	padding: 0 12px;
+}
+.tiptap-link-confirm:disabled {
+	cursor: not-allowed;
+	opacity: 0.5;
+}
+.tiptap-link-remove {
+	background: none;
+	border: none;
+	border-radius: 6px;
+	color: var(--muted-foreground);
+	cursor: pointer;
+	font-size: 13px;
+	margin-top: 6px;
+	padding: 5px 0;
+	width: 100%;
+}
+.tiptap-link-remove:hover {
+	background: var(--accent);
+	color: var(--foreground);
+}
+
+/* Table insert size grid (slash / gutter "+") */
+.tiptap-table-size-picker {
+	padding: 8px 10px 10px;
+}
+.tiptap-table-size-picker-header {
+	align-items: center;
+	color: var(--muted-foreground);
+	display: flex;
+	font-size: 12px;
+	gap: 6px;
+	margin-bottom: 8px;
+}
+.tiptap-table-size-picker-back {
+	background: none;
+	border: none;
+	border-radius: 4px;
+	color: inherit;
+	cursor: pointer;
+	font-size: 14px;
+	line-height: 1;
+	padding: 2px 4px;
+}
+.tiptap-table-size-picker-back:hover {
+	background: var(--accent);
+	color: var(--foreground);
+}
+.tiptap-table-size-grid {
+	display: flex;
+	flex-direction: column;
+	gap: 3px;
+}
+.tiptap-table-size-row {
+	display: flex;
+	gap: 3px;
+}
+.tiptap-table-size-cell {
+	background: var(--background);
+	border: 1px solid var(--border-main);
+	border-radius: 2px;
+	cursor: pointer;
+	height: 14px;
+	padding: 0;
+	width: 18px;
+}
+.tiptap-table-size-cell.is-active {
+	background: color-mix(in oklab, var(--color-primary-500) 22%, transparent);
+	border-color: var(--color-primary-500);
+}
+
+/* drag handle + block-actions menu */
+.tiptap-drag-handle-wrap {
+	position: relative;
+}
+/* The handle is the box floating-ui measures to place the gutter (x = block.left -
+   handleWidth), and it measures it asynchronously, before React has committed the
+   pill's content for this hover. So the handle's width is FIXED here — two
+   affordance slots, whatever the pill inside it happens to render — and the pill is
+   right-aligned in it, which keeps the pill's right edge on the block's left edge
+   even when it shrinks to one slot (an empty block shows no drag grip). Without
+   this, every hover that changed the pill's shape was placed with the previous
+   block's width and the "+" landed a slot away from the text, behind a dead gap
+   that hides the whole gutter when the pointer crosses it.
+   The width is DERIVED from the pill's own geometry tokens (:root, above), which
+   the pill's padding, border and slot buttons read back too — so the box measured
+   here and the box actually painted cannot drift apart. */
+.drag-handle {
+	/* border-box so the trailing gap below is INSIDE the declared width: the box
+	   floating-ui measures stays exactly two slots + one gap wide. */
+	box-sizing: border-box;
+	/* Containing block for the hover corridor below. */
+	position: relative;
+	display: flex;
+	justify-content: flex-end;
+	/* The gap to the text. The plugin lands the handle's RIGHT edge on the block's
+	   left edge, so padding here — not a transform — is what moves the pill off
+	   the text while keeping the gap inside the handle (i.e. hoverable). */
+	padding-right: var(--gutter-text-gap);
+	width: calc(
+		2 * var(--gutter-slot) + 2 * var(--gutter-pill-pad) + 2 *
+			var(--gutter-pill-border) + var(--gutter-text-gap)
+	);
+}
+/* A phone: one slot, not two. The page gutter there is 44px (NARROW_CONTENT_GUTTER
+   in lib/docs/page-width.ts, under a 540px page) and the two-slot handle is 52px,
+   which would put half of the type icon — the part a finger uses to open the
+   block menu — past the screen's left edge. The grip is the slot dropped: its drag
+   is HTML5 drag-and-drop, which a touch does not start. The handle stays a fixed
+   width, per the note above (32px here), and its one slot is the same for every
+   block (type icon, or "+" when empty).
+   Phone-sized AND touch: a touch tablet has the 66px gutter and can drag. */
+@media (pointer: coarse) and (max-width: 539px) {
+	.drag-handle {
+		width: calc(
+			var(--gutter-slot) + 2 * var(--gutter-pill-pad) + 2 *
+				var(--gutter-pill-border) + var(--gutter-text-gap)
+		);
+	}
+	/* Two classes: `.tiptap-drag-handle` (below) sets the slot's display. */
+	.tiptap-drag-handle.tiptap-drag-handle--grip {
+		display: none;
+	}
+}
+/* Keep the gutter visible while its menu is open — otherwise the drag-handle
+   plugin hides it once the pointer moves into the (body-portalled) menu. */
+.drag-handle.is-menu-open {
+	visibility: visible !important;
+}
+/* While text (or a node) is selected the bubble menu owns the interaction —
+   hide the gutter pill entirely so the two popups never compete. Declared
+   after .is-menu-open so this !important wins when both classes apply. */
+.drag-handle.is-selection {
+	pointer-events: none;
+	visibility: hidden !important;
+}
+/* CARD blocks (table shell, workspace embed): the plugin puts the pill's right
+   edge flush against the block's left edge, which for a card means ON its visible
+   border. Inset it by one gap so it sits clear of the edge instead.
+   Declared here, not in JS: it is static geometry, and a transform rides on top of
+   the plugin's inline top/left instead of fighting it for the same property. */
+.drag-handle.is-card {
+	--card-pill-gap: 4px;
+	transform: translateX(calc(-1 * var(--card-pill-gap)));
+}
+/* Table gutter. The plugin `left-start`-aligns the pill to the table's top-left,
+   dropping it onto the first row where it overlaps the corner "+" handle. Lift
+   it into the clear space just ABOVE the table's top-left corner. The corner
+   insert "+" (before-first row/column) is removed (see TableInsertControls) so
+   it no longer collides.
+   Both axes read the SAME gap, so the pill's bottom-right corner is diagonally
+   symmetric to the table's top-left corner by construction — Lark-style, with no
+   pair of constants to keep in sync.
+   NOTE: the lifted pill lands in the same strip as the column-insert hover band,
+   and the plugin hard-codes the handle wrapper's inline `z-index: 10` — the table
+   overlays therefore stay BELOW 10 so the band can't paint over the pill (see
+   table/table.css).
+   The plugin aligns to the WRAPPER, whose top sits --table-caret-room above the
+   table's own (the room a peer's name label rises into, see .tableWrapper), so
+   that much is added back: the pill keys off the table's corner, not the room. */
+.drag-handle.is-table {
+	transform: translate(
+		calc(-1 * var(--card-pill-gap, 4px)),
+		calc(-100% - var(--card-pill-gap, 4px) + var(--table-caret-room, 0px))
+	);
+}
+/* Hover corridor — the handle's hit area extended down the hovered block's whole
+   left edge. The gutter sits entirely OUTSIDE the editor DOM and the drag-handle
+   plugin hides the handle on the editor's mouseleave unless the pointer lands
+   inside the handle's own wrapper, so every pixel of the trip from the text out to
+   the pill has to be handle. The pill alone only covers that trip from the block's
+   first line; a two-line paragraph, an image, a card are all taller, and exiting
+   through any lower row would drop the pointer into nothing and take the pill with
+   it. This invisible strip covers the rest.
+   On the HANDLE, not on the pill inside it. A pseudo-element counts as part of
+   its own element for hit testing, so while the corridor hung off the pill,
+   entering the corridor WAS entering the pill: on a tall block, sliding left out
+   of the lower rows — nowhere near the pill, merely below it — raised the
+   quick-action panel. The two jobs are separate. The corridor keeps the pointer
+   inside the handle so the plugin holds the pill on screen; the pill, and only
+   the pill, opens the panel.
+   Applies to EVERY block, not just cards: the exposure is the block's height, which
+   nothing about the block's TYPE bounds. `--gutter-block-h` is the hovered block's
+   live height, published by DocDragHandle (onNodeChange + a ResizeObserver, so it
+   tracks a card that grows while hovered); `100%` is the pill, the floor for a
+   block shorter than it and the fallback if the variable is ever missing.
+   It MUST reach all the way back to the block's left edge, or any uncovered sliver
+   is a dead zone: crossing it makes the plugin hide the pill mid-travel. The
+   handle's own `padding-right` already spans the `--gutter-text-gap`, so only the
+   extra `--card-pill-gap` a card is inset by is left to reach across.
+   It stays clear of the editor DOM on the other side: the doc's ProseMirror element
+   has no horizontal padding, so the block's left edge IS the editor's, and the
+   corridor never swallows a click meant for the text.
+   `z-index: -1` keeps the strip behind the pill's own buttons so it can't swallow
+   their clicks, while still taking the pointer in the empty sliver. */
+.drag-handle::after {
+	content: "";
+	position: absolute;
+	z-index: -1;
+	left: 0;
+	right: calc(-1 * var(--card-pill-gap, 0px));
+	top: 0;
+	height: max(100%, var(--gutter-block-h, 0px));
+}
+/* A table's pill is lifted a full pill-height + gap ABOVE the table's top-left
+   corner (see .is-table), so its corridor has that much further to reach down.
+   The block height is the wrapper's, which counts the label room above the
+   table the pill has already been moved past — so that much comes off. */
+.drag-handle.is-table::after {
+	height: calc(
+		100% + var(--card-pill-gap, 0px) + var(--gutter-block-h, 0px) -
+			var(--table-caret-room, 0px)
+	);
+}
+/* Lark-style gutter pill: a bordered, rounded card holding the "+" insert and
+   the ⠿ drag grip. */
+.tiptap-drag-handle-group {
+	position: relative;
+	display: flex;
+	align-items: center;
+	gap: 0;
+	padding: var(--gutter-pill-pad);
+	border: var(--gutter-pill-border) solid var(--border-main);
+	border-radius: 8px;
+	background: var(--popover);
+	box-shadow: 0 1px 2px rgb(0 0 0 / 0.06);
+}
+.tiptap-drag-handle {
+	width: var(--gutter-slot);
+	height: 22px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	color: var(--muted-foreground);
+	cursor: grab;
+	border-radius: 4px;
+	border: none;
+	background: none;
+	padding: 0;
+}
+.tiptap-drag-handle:hover {
+	background: var(--accent);
+}
+/* "+" insert affordance — clicks (not drags) to open the block picker. */
+.tiptap-drag-handle--add {
+	cursor: pointer;
+}
+.tiptap-insert-menu {
+	z-index: 50;
+}
+/* Table-size grid flyout beside the insert menu: sized to the grid, not the
+   list's min-width, and never scrolls. */
+.tiptap-insert-flyout {
+	min-width: 0;
+	max-height: none;
+	overflow: visible;
+}
+
+/* doc header: title (blank) or compact toolbar (imported). No background of its
+   own: it is not sticky, and the body below it paints none either, so both sit
+   on whatever the page draws. A `--bg-main` fill here was invisible on 1.0's
+   white page but drew a band across the top of every document opened in the
+   library, whose page is UI 2.0's atmosphere. */
+.tiptap-doc-header {
+	display: flex;
+	flex-shrink: 0;
+	flex-direction: column;
+	gap: 0.75rem;
+	overflow: visible;
+	padding-top: 3.5rem;
+	padding-bottom: 0.75rem;
+}
+.tiptap-doc-header--untitled {
+	gap: 0;
+	padding-top: 0.75rem;
+	padding-bottom: 0.5rem;
+	margin-bottom: 0.75rem;
+}
+.tiptap-doc-toolbar {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 0.75rem;
+	min-height: 2rem;
+}
+.tiptap-title .ProseMirror {
+	outline: none;
+	font-size: 2rem;
+	font-weight: 700;
+	line-height: 1.25;
+	color: var(--foreground);
+}
+.tiptap-title-placeholder {
+	margin: 0;
+	font-size: 2rem;
+	font-weight: 700;
+	line-height: 1.25;
+	color: var(--foreground);
+}
+.tiptap-title .ProseMirror p {
+	margin: 0;
+}
+.tiptap-title .ProseMirror p.is-editor-empty:first-child::before {
+	content: attr(data-placeholder);
+	color: var(--muted-foreground);
+	float: left;
+	height: 0;
+	pointer-events: none;
+}
+
+/* Compact title: the /docs chrome row, for the workspace types with no in-body
+   DocHeader (docx / whiteboard). Sized to the read-only <h1> it replaces so
+   upgrading it to a real editor is invisible until the user clicks in. Single
+   line — the schema already allows only one paragraph; this keeps a long name
+   from wrapping the 44px chrome row, scrolling instead of clipping the caret. */
+.tiptap-title--compact .ProseMirror {
+	font-size: 15px;
+	font-weight: 500;
+	line-height: 1.4;
+	white-space: nowrap;
+	overflow-x: auto;
+	scrollbar-width: none;
+}
+.tiptap-title--compact .ProseMirror::-webkit-scrollbar {
+	display: none;
+}
+.tiptap-title-placeholder--compact {
+	font-size: 15px;
+	font-weight: 500;
+	line-height: 1.4;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.tiptap-doc-meta {
+	display: flex;
+	align-items: center;
+	gap: 0.4rem;
+	min-width: 0;
+	margin: 0;
+	overflow: visible;
+	font-size: 13px;
+	line-height: 1.4;
+	color: var(--muted-foreground);
+}
+.tiptap-doc-meta-avatar {
+	width: 20px;
+	height: 20px;
+	border-radius: 999px;
+	background-color: var(--accent);
+	background-size: cover;
+	background-position: center;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	font-size: 11px;
+	font-weight: 600;
+	color: var(--foreground);
+	overflow: hidden;
+}
+.tiptap-doc-meta-name {
+	color: var(--foreground);
+}
+/* The author line arrives whole once the name is known (see AuthorMeta). */
+.tiptap-doc-meta--ready {
+	animation: tiptap-doc-meta-in 160ms ease-out;
+}
+@keyframes tiptap-doc-meta-in {
+	from {
+		opacity: 0;
+	}
+	to {
+		opacity: 1;
+	}
+}
+@media (prefers-reduced-motion: reduce) {
+	.tiptap-doc-meta--ready {
+		animation: none;
+	}
+}
+.tiptap-doc-meta-sep {
+	opacity: 0.5;
+}
+
+/* presence roster (who's in the room) */
+.tiptap-roster {
+	display: flex;
+	align-items: center;
+}
+.tiptap-roster-avatar {
+	width: 28px;
+	height: 28px;
+	margin-left: -8px;
+	border-radius: 999px;
+	border: 2px solid var(--background);
+	background-size: cover;
+	background-position: center;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	font-size: 12px;
+	font-weight: 600;
+	color: #fff;
+	overflow: hidden;
+}
+.tiptap-roster-avatar:first-child {
+	margin-left: 0;
+}
+.tiptap-roster-more {
+	margin-left: 6px;
+	font-size: 12px;
+	color: var(--muted-foreground);
+}
+/* The stack is the button that opens the list, so it needs the reset a bare
+   <button> does not get here, and a focus ring the mouse never sees. */
+.tiptap-roster-trigger {
+	appearance: none;
+	padding: 0;
+	border: 0;
+	background: none;
+	cursor: pointer;
+	border-radius: 999px;
+}
+.tiptap-roster-trigger:focus-visible {
+	outline: 2px solid var(--ring);
+	outline-offset: 2px;
+}
+.tiptap-roster-row {
+	display: flex;
+	width: 100%;
+	align-items: center;
+	gap: 8px;
+	padding: 6px 8px;
+	border-radius: 6px;
+	font-size: 13px;
+	color: var(--foreground);
+	background: none;
+	border: 0;
+	text-align: left;
+}
+.tiptap-roster-row-action {
+	cursor: pointer;
+}
+.tiptap-roster-row-action:hover {
+	background: var(--accent);
+}
+.tiptap-roster-row-action:focus-visible {
+	outline: 2px solid var(--ring);
+	outline-offset: -2px;
+}
+
+/* Drag-handle table menu: on/off switch + section divider (menu is portaled to
+   <body>, so these classes are global like the other suggestion-menu styles).
+   The table insert/cell-add overlay styles live in table/table.css. */
+.tiptap-menu-switch {
+	flex: none;
+	margin-left: auto;
+	position: relative;
+	width: 30px;
+	height: 18px;
+	border-radius: 999px;
+	background: var(--bg-subtle);
+	transition: background 0.15s ease;
+}
+.tiptap-menu-switch[data-on="true"] {
+	background: var(--color-primary-500);
+}
+.tiptap-menu-switch::after {
+	content: "";
+	position: absolute;
+	top: 2px;
+	left: 2px;
+	width: 14px;
+	height: 14px;
+	border-radius: 999px;
+	background: #fff;
+	transition: transform 0.15s ease;
+}
+.tiptap-menu-switch[data-on="true"]::after {
+	transform: translateX(12px);
+}
+/* Trailing "›" on a menu row that opens a nested picker (e.g. 在下方添加). */
+.tiptap-menu-chevron {
+	flex: none;
+	display: flex;
+	align-items: center;
+	margin-left: auto;
+	color: var(--muted-foreground);
+}
+.tiptap-menu-divider {
+	height: 1px;
+	margin: 4px 6px;
+	background: var(--border-main);
+}
+
+/* ── Block quick-action panel (hover the gutter pill; DocDragHandle) ── */
+.tiptap-block-menu {
+	min-width: 232px;
+	max-height: none;
+	overflow: visible;
+	/* Slides in from the side it opened on, which the placement effect
+	   publishes as `data-placement`. The element remounts on every open, which
+	   restarts the animation. */
+	animation: tiptap-panel-in-left 150ms ease-out;
+}
+.tiptap-block-menu[data-placement="bottom"] {
+	animation-name: tiptap-panel-in-down;
+}
+.tiptap-block-menu[data-placement="top"] {
+	animation-name: tiptap-panel-in-up;
+}
+/* Its submenus fly out to the RIGHT: slide in from the left + fade. Keyed by
+   submenu kind in JSX so switching rows replays the animation. */
+.tiptap-panel-flyout {
+	animation: tiptap-panel-in-right 150ms ease-out;
+}
+@keyframes tiptap-panel-in-left {
+	from {
+		opacity: 0;
+		transform: translateX(8px);
+	}
+	to {
+		opacity: 1;
+		transform: none;
+	}
+}
+@keyframes tiptap-panel-in-right {
+	from {
+		opacity: 0;
+		transform: translateX(-8px);
+	}
+	to {
+		opacity: 1;
+		transform: none;
+	}
+}
+@keyframes tiptap-panel-in-down {
+	from {
+		opacity: 0;
+		transform: translateY(-8px);
+	}
+	to {
+		opacity: 1;
+		transform: none;
+	}
+}
+@keyframes tiptap-panel-in-up {
+	from {
+		opacity: 0;
+		transform: translateY(8px);
+	}
+	to {
+		opacity: 1;
+		transform: none;
+	}
+}
+.tiptap-block-menu-grid {
+	display: grid;
+	grid-template-columns: repeat(6, 1fr);
+	gap: 2px;
+	padding: 6px 8px 2px;
+}
+.tiptap-block-menu-cell {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	height: 28px;
+	padding: 0;
+	border: none;
+	border-radius: 6px;
+	background: none;
+	color: var(--foreground);
+	cursor: pointer;
+}
+.tiptap-block-menu-cell:hover {
+	background: var(--accent);
+}
+.tiptap-block-menu-cell[data-active="true"] {
+	background: rgb(59 130 246 / 0.12);
+	color: var(--tbl-select);
+}
+.tiptap-suggestion-item:disabled {
+	opacity: 0.4;
+	cursor: default;
+}
+.tiptap-suggestion-item:disabled:hover {
+	background: none;
+}
+/* A row that is offered but cannot be used HERE, saying why underneath
+   (EmbedSubpageMenuItem). `aria-disabled` rather than `disabled`: the reason
+   has to stay readable and reachable, so only the action is dimmed. */
+.tiptap-suggestion-item[aria-disabled="true"] {
+	cursor: default;
+}
+.tiptap-suggestion-item[aria-disabled="true"]:hover {
+	background: none;
+}
+.tiptap-suggestion-item[aria-disabled="true"] > .tiptap-slash-icon,
+.tiptap-suggestion-item[aria-disabled="true"] .tiptap-slash-label {
+	opacity: 0.45;
+}
+.tiptap-slash-label {
+	display: block;
+}
+.tiptap-slash-note {
+	display: block;
+	max-width: 13.5rem;
+	margin-top: 2px;
+	font-size: 12px;
+	line-height: 1.35;
+	color: var(--muted-foreground);
+	white-space: normal;
+}
+.tiptap-menu-check {
+	flex: none;
+	margin-left: auto;
+	color: var(--tbl-select);
+	font-size: 13px;
+}
+/* Color submenu */
+.tiptap-color-panel {
+	width: 224px;
+	padding: 8px 10px 10px;
+	/* Inherits the popover's corner so a sheet flush with its edges (the table
+	   toolbar's, which drops its own padding for one) never squares it off. */
+	border-radius: inherit;
+}
+.tiptap-color-label {
+	margin: 2px 0 6px;
+	font-size: 12px;
+	color: var(--muted-foreground);
+}
+.tiptap-color-row {
+	display: flex;
+	gap: 4px;
+	margin-bottom: 6px;
+}
+.tiptap-color-swatch {
+	width: 24px;
+	height: 24px;
+	padding: 0;
+	border: 1px solid var(--border-main);
+	border-radius: 6px;
+	background: var(--popover);
+	cursor: pointer;
+}
+.tiptap-color-swatch:hover {
+	box-shadow: 0 0 0 2px rgb(59 130 246 / 0.35);
+}
+.tiptap-color-swatch--font {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	background: none;
+	font-size: 13px;
+	font-weight: 600;
+	color: var(--foreground);
+}
+/* "No background" swatch: a diagonal strike. */
+.tiptap-color-swatch[data-none="true"]:not(.tiptap-color-swatch--font) {
+	background-image: linear-gradient(
+		135deg,
+		transparent 46%,
+		#ef4444 46%,
+		#ef4444 54%,
+		transparent 54%
+	);
+}
+.tiptap-color-reset {
+	width: 100%;
+	margin-top: 2px;
+	padding: 6px 0;
+	border: 1px solid var(--border-main);
+	border-radius: 6px;
+	background: none;
+	color: var(--foreground);
+	font-size: 13px;
+	cursor: pointer;
+}
+.tiptap-color-reset:hover {
+	background: var(--accent);
+}
+
+/* The edge band that opens a line beside a picture (media-line-insert.ts)
+   draws nothing over the document — the cursor is the whole hint. */
+.tiptap.tiptap-doc-content.tiptap-media-line-ready {
+	cursor: pointer;
+}
+
+/* The picture toolbar (ui/MediaHoverToolbar): the same chrome as the text
+   bubble, positioned from the picture's own rect rather than by a selection. */
+.tiptap-media-hover-toolbar {
+	position: fixed;
+	z-index: 60;
+	animation: tiptap-bubble-in-up 160ms ease-out;
+}
+.tiptap-media-hover-toolbar[data-placement="bottom"] {
+	animation-name: tiptap-bubble-in-down;
+}
+
+/* ── Document links in three forms (#2387) ──────────────────────────────────
+   The inline title chip (`docMention`): the document's icon and title, read as
+   a link — underlined title, no pill, so a sentence with one in it still reads
+   as a sentence. One rule for the NodeView's <button> and the NodeView-less
+   <a> (seed, export), so the two cannot drift. */
+.tiptap .tiptap-doc-mention {
+	display: inline-flex;
+	align-items: baseline;
+	gap: 3px;
+	max-width: 100%;
+	padding: 0 3px;
+	border: none;
+	border-radius: 4px;
+	background: none;
+	color: inherit;
+	font: inherit;
+	line-height: inherit;
+	text-decoration: none;
+	vertical-align: baseline;
+	cursor: pointer;
+}
+.tiptap .tiptap-doc-mention:hover,
+.tiptap .tiptap-doc-mention[data-selected="true"] {
+	background: var(--accent);
+}
+.tiptap .tiptap-doc-mention[data-selected="true"] {
+	outline: 2px solid var(--ring);
+	outline-offset: 0;
+}
+.tiptap .tiptap-doc-mention__icon {
+	flex: none;
+	width: 1em;
+	height: 1em;
+	align-self: center;
+	color: var(--muted-foreground);
+}
+.tiptap .tiptap-doc-mention__title,
+.tiptap a.tiptap-doc-mention {
+	overflow: hidden;
+	font-weight: 500;
+	text-decoration: underline;
+	text-decoration-color: var(--border-main);
+	text-underline-offset: 3px;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.tiptap .tiptap-doc-mention[data-refused="true"],
+.tiptap .tiptap-doc-mention[data-gone="true"] {
+	opacity: 0.6;
+	filter: grayscale(1);
+}
+.tiptap .tiptap-doc-mention[data-gone="true"] {
+	cursor: default;
+}
+
+/* The "paste as" menu and the hover toolbar: the shared bubble chrome, fixed
+   to the viewport like the media toolbar, each form a labelled button. */
+.tiptap-doc-link-menu {
+	position: fixed;
+	z-index: 60;
+	align-items: center;
+	animation: tiptap-bubble-in-down 160ms ease-out;
+}
+.tiptap-doc-link-menu[data-placement="top"] {
+	animation-name: tiptap-bubble-in-up;
+}
+.tiptap-doc-link-menu__label {
+	padding: 0 6px;
+	color: var(--muted-foreground);
+	font-size: 12px;
+	white-space: nowrap;
+}
+.tiptap-bubble-btn.tiptap-doc-link-form {
+	gap: 4px;
+	padding: 0 8px;
+	white-space: nowrap;
+}
+.tiptap-bubble-btn.tiptap-doc-link-form:disabled {
+	cursor: default;
+	opacity: 0.4;
+}
+.tiptap-bubble-btn.tiptap-doc-link-form:disabled:hover {
+	background: none;
+}
+
+/* Styles for the table module overlay UI (TableInsertControls + TableCellAddButton).
+   Imported by table/TableControls.tsx after the base editor stylesheet. Table NODE
+   rendering styles (table/th/td/.tableWrapper/column-resize) stay in tiptap-editor.css. */
+
+/* LAYERING — everything here is placed relative to z-index 10, which the
+   drag-handle plugin hard-codes on the wrapper holding the gutter pill (and that
+   wrapper is its own stacking context, so the pill can never straddle it):
+     • the hover BAND must stay BELOW 10. It spans the strip the lifted table pill
+       sits in, so above 10 it paints over the pill — reads as "the pill is half
+       hidden behind a gray box".
+     • the insert HANDLES and the in-cell "+" must stay ABOVE 10. The pill's
+       invisible hover bridge (.tiptap-drag-handle-group::after) covers the
+       table's whole left edge, so below 10 it swallows their clicks.
+   The two overlays therefore must NOT set a z-index of their own: that would
+   create a stacking context and trap their children on one side of 10.
+   Around the band, in the same stacking context: a peer's name label (2), the
+   pinned header's backdrop (3) and the pinned header itself (7). A label has to
+   clear the band, which paints over the very room above a table that a
+   first-row caret's label rises into, yet stay under the pinned header — so the
+   band's scrolling segments go under all of them (1), and its pinned segments
+   (6) go between the pinned header's backdrop and its copy, which is
+   transparent where they lie except for a label rising out of a header cell. */
+
+/* In-cell "+" that opens the block-insert picker (adds content INTO the cell).
+   Overlay lives inside the editor shell, beside the ProseMirror content. */
+.tiptap-editor-shell .tiptap-cell-add-overlay {
+	position: absolute;
+	inset: 0;
+	pointer-events: none;
+}
+/* The pill itself reuses `.tiptap-drag-handle-group` (border/bg/icon) from the
+   gutter handle; this only positions it just outside the cell's left edge. */
+.tiptap-editor-shell .tiptap-cell-add-pill {
+	position: absolute;
+	z-index: 21;
+	transform: translate(-50%, -50%);
+	pointer-events: auto;
+}
+
+/* Lark-style table insert handles — an overlay inside the editor shell (beside
+ * the ProseMirror content, not inside `.tiptap`), so scope it to the shell. */
+.tiptap-editor-shell .tiptap-table-insert {
+	position: absolute;
+	inset: 0;
+	pointer-events: none;
+}
+/* Lark's grip strip: one segment per column along the table's top edge and one
+   per row along its left edge, flush against each other so they read as a single
+   gray band, with a 1px seam between segments. `data-hover` darkens the segment
+   under the pointer and `data-selected` paints the selected column/row blue —
+   both driven from JS, because the segments MUST stay pointer-events: none (see
+   the TableInsertControls header: real elements here hide the gutter pill). */
+.tiptap-editor-shell .tiptap-table-insert__grip {
+	position: absolute;
+	/* Under a peer's name label (2) — see the LAYERING note above. The band is
+	   the only thing it would cover: it lies in the room the wrapper keeps
+	   above the table, and the row strip lies outside the table's left edge. */
+	z-index: 1;
+	background: var(--bg-subtle);
+	transition: background-color 0.12s ease;
+	pointer-events: none;
+}
+.tiptap-editor-shell .tiptap-table-insert__grip--col {
+	box-shadow: inset -1px 0 0 var(--bg-main);
+}
+.tiptap-editor-shell .tiptap-table-insert__grip--row {
+	box-shadow: inset 0 -1px 0 var(--bg-main);
+}
+/* A pinned segment covers the scrolling ones: those are laid out in the
+   content and lag a frame behind a wheel tick, which would otherwise flash
+   through the pinned head. Over the pinned header's backdrop (3), under the
+   pinned copy (7) — see the LAYERING note above. */
+.tiptap-editor-shell .tiptap-table-insert__grip[data-pinned="true"] {
+	z-index: 6;
+}
+.tiptap-editor-shell .tiptap-table-insert__grip[data-hover="true"] {
+	background: color-mix(
+		in oklab,
+		var(--muted-foreground) 28%,
+		var(--bg-subtle)
+	);
+}
+/* Selected line: the solid blue bar Lark shows over the selected column/row —
+   same --tbl-select as the cell tint and the insert dots (see tiptap-editor.css). */
+.tiptap-editor-shell .tiptap-table-insert__grip[data-selected="true"] {
+	background: var(--tbl-select);
+}
+/* The handle IS the hit/click target (a transparent button); the visual "+"
+   dot inside is purely decorative. A generous 24px box makes it easy to hit. */
+.tiptap-editor-shell .tiptap-table-insert__handle {
+	position: absolute;
+	z-index: 21;
+	width: 24px;
+	height: 24px;
+	transform: translate(-50%, -50%);
+	padding: 0;
+	border: 0;
+	background: transparent;
+	cursor: pointer;
+	pointer-events: auto;
+}
+/* Default: a subtle gray dot sitting in the band. On handle hover it grows into
+   the blue "+" (the "+" glyph is hidden until then). */
+.tiptap-editor-shell .tiptap-table-insert__dot {
+	position: absolute;
+	left: 50%;
+	top: 50%;
+	display: flex;
+	width: 4px;
+	height: 4px;
+	align-items: center;
+	justify-content: center;
+	border: 0 solid #fff;
+	border-radius: 999px;
+	background: var(--muted-foreground);
+	color: transparent;
+	font-size: 0;
+	line-height: 1;
+	opacity: 0.45;
+	transform: translate(-50%, -50%);
+	transition: all 0.12s ease;
+	pointer-events: none;
+}
+.tiptap-editor-shell
+	.tiptap-table-insert__handle:hover
+	.tiptap-table-insert__dot {
+	width: 16px;
+	height: 16px;
+	border-width: 2px;
+	background: var(--tbl-select);
+	color: #fff;
+	font-size: 13px;
+	opacity: 1;
+}
+.tiptap-editor-shell .tiptap-table-insert__tip {
+	position: absolute;
+	bottom: calc(100% + 6px);
+	left: 50%;
+	transform: translateX(-50%);
+	padding: 3px 8px;
+	border-radius: 6px;
+	background: #1f2937;
+	color: #fff;
+	font-size: 12px;
+	white-space: nowrap;
+	opacity: 0;
+	transition: opacity 0.12s ease;
+	pointer-events: none;
+}
+.tiptap-editor-shell
+	.tiptap-table-insert__handle:hover
+	.tiptap-table-insert__tip {
+	opacity: 1;
+}
+.tiptap-editor-shell .tiptap-table-insert__line {
+	position: absolute;
+	left: 50%;
+	top: 50%;
+	background: var(--tbl-select);
+	opacity: 0;
+	transition: opacity 0.12s ease;
+	pointer-events: none;
+}
+.tiptap-editor-shell
+	.tiptap-table-insert__handle--col
+	.tiptap-table-insert__line {
+	width: 2px;
+	transform: translateX(-50%);
+}
+.tiptap-editor-shell
+	.tiptap-table-insert__handle--row
+	.tiptap-table-insert__line {
+	height: 2px;
+	transform: translateY(-50%);
+}
+.tiptap-editor-shell
+	.tiptap-table-insert__handle:hover
+	.tiptap-table-insert__line {
+	opacity: 0.55;
+}
+
+/* ── Column/row toolbar (TableSelectionToolbar) ──────────────────────────────
+   Portalled to <body> and positioned in JS, so it is NOT scoped to the shell.
+   Above the bubble menu's z-index 60 — a cell selection dismisses that menu, but
+   the drag pill (10) and the insert dots (21) can both sit under this. */
+.tiptap-table-toolbar {
+	align-items: center;
+	color: var(--foreground);
+	position: fixed;
+	z-index: 70;
+	/* Entrance: the same two keyframes the text bubble slides in with
+	   (tiptap-editor.css), floating up toward a bar placed above the selection
+	   and down toward one placed below it. The bar is mounted fresh for every
+	   selection, which is what restarts this. */
+	animation: tiptap-bubble-in-up 160ms ease-out;
+}
+.tiptap-table-toolbar[data-placement="bottom"] {
+	animation-name: tiptap-bubble-in-down;
+}
+/* Popover anchored under the trigger that opened it (JS sets `left`, and nudges
+   `transform` when it would overflow the viewport). */
+.tiptap-table-toolbar__pop {
+	position: absolute;
+	top: calc(100% + 6px);
+	min-width: 160px;
+	padding: 4px;
+	border: 1px solid var(--border-main);
+	/* Same token Tailwind's rounded-lg resolves to in the bubble dropdowns. */
+	border-radius: var(--radius-lg);
+	background: var(--popover);
+	box-shadow: 0 12px 32px rgb(0 0 0 / 0.14);
+}
+/* A colour sheet fills its own width (.tiptap-color-panel) — no min-width. */
+.tiptap-table-toolbar__pop:has(.tiptap-color-panel) {
+	min-width: 0;
+	padding: 0;
+}
+.tiptap-table-toolbar__menu-item {
+	display: flex;
+	width: 100%;
+	align-items: center;
+	gap: 8px;
+	padding: 6px 8px;
+	border: none;
+	/* rounded-md, as in the bubble dropdown's rows. */
+	border-radius: var(--radius-md);
+	background: none;
+	color: inherit;
+	cursor: pointer;
+	font-size: 14px;
+	text-align: left;
+	white-space: nowrap;
+}
+.tiptap-table-toolbar__menu-item:hover {
+	background: var(--accent);
+	color: var(--accent-foreground);
+}
+.tiptap-table-toolbar__menu-item[data-danger="true"] {
+	color: #ef4444;
+}
+/* Pinned header row (table-sticky-header.ts) — a clone in a fixed overlay in
+   the editor shell, so it repeats the cell chrome that .tiptap's own rules
+   give the real table. Pointer-events off: it is a reading aid, presses
+   belong to the document underneath. Below the toolbars (60/70), above the
+   content. */
+.tiptap-table-sticky {
+	position: fixed;
+	/* Over the pinned grip strip (6): transparent in the reserve the strip
+	   paints into, except for a peer's name label rising out of a header cell,
+	   which has to read over the strip as it does on the real table. Under the
+	   pill (10) and the insert dots (21) — see the LAYERING note at the top of
+	   this file. The page colour beneath is the backdrop's. */
+	z-index: 7;
+	overflow: hidden;
+	pointer-events: none;
+}
+/* What the pinned copy is painted on, in the copy's box (table-sticky-header.ts
+   gives the two the same one). The reserve above the cloned row is what lies
+   above a table's top edge: page background, with the grip strip painting
+   into it on hover — so this sits UNDER the pinned strip (6), and over the
+   document text it covers, peers' name labels (2) included. No shadow — it
+   would outline the box down both sides. */
+.tiptap-table-sticky-backdrop {
+	position: fixed;
+	z-index: 3;
+	pointer-events: none;
+	/* The sheet under a document is the atmosphere, a gradient over a base
+	   colour with no token of its own; --bg-main is the nearest solid. */
+	background: var(--bg-main);
+}
+.tiptap-table-sticky[hidden],
+.tiptap-table-sticky-backdrop[hidden] {
+	display: none;
+}
+.tiptap-table-sticky table {
+	position: absolute;
+	top: 0;
+	left: 0;
+	border-collapse: collapse;
+	table-layout: fixed;
+	margin: 0;
+	/* Clips like the real table does — sideways only. A peer's name label
+	   above a header-cell caret rises out of the real table into the room its
+	   wrapper keeps (--table-caret-room); here it rises into the reserve above
+	   the copy, which is taller than that room. */
+	overflow-x: clip;
+}
+.tiptap-table-sticky th,
+.tiptap-table-sticky td {
+	border: 1px solid var(--border-main);
+	box-sizing: border-box;
+	min-width: 1em;
+	padding: 0.4em 0.6em;
+	vertical-align: top;
+}
+.tiptap-table-sticky th {
+	background: var(--bg-subtle);
+	font-weight: 600;
+	text-align: left;
+}
+/* Covers the strip's band so the editor underneath never sees a pointer it
+   would offer a column-resize cursor for — the press there selects a column.
+   Height is set from GRIP_HEAD_RESERVE in table-sticky-header.ts. */
+.tiptap-table-sticky__shield {
+	position: absolute;
+	top: 0;
+	left: 0;
+	right: 0;
+	cursor: default;
+	pointer-events: auto;
+}
+.tiptap-table-sticky p {
+	margin: 0;
+}
+/* The cells anchor what they contain — the selection tint and the width
+   drag's guide line are both absolutely positioned inside them. */
+.tiptap-table-sticky th,
+.tiptap-table-sticky td {
+	position: relative;
+}
+/* The column guide continued through the pinned head. Placed from the real
+   line's measured x (table-sticky-header.ts) rather than copied with the row,
+   so the two never read as two lines. */
+.tiptap-table-sticky__guide {
+	position: absolute;
+	bottom: 0;
+	background-color: var(--tbl-select);
+	pointer-events: none;
+}
+.tiptap-table-sticky__guide[hidden] {
+	display: none;
+}
+/* Selecting the header row has to show in the pinned copy too: the clone
+   carries the .selectedCell class over, but none of .tiptap's rules. */
+.tiptap-table-sticky .selectedCell::after {
+	position: absolute;
+	inset: 0;
+	background: color-mix(in oklab, var(--tbl-select) 20%, transparent);
+	content: "";
+	pointer-events: none;
+}
+
+/* Floating horizontal scrollbar for a wide table whose own bar is still
+   below the fold (table-floating-scrollbar.ts). Same overlay idea as the
+   pinned header, but interactive — hence pointer-events on the track. */
+.tiptap-table-hscroll {
+	position: fixed;
+	z-index: 40;
+	height: 12px;
+	pointer-events: none;
+}
+.tiptap-table-hscroll[hidden] {
+	display: none;
+}
+.tiptap-table-hscroll__track {
+	position: absolute;
+	inset: 0;
+	border-radius: 6px;
+	/* Painted like the table's own (native) bar it stands in for: the app's
+	   scrollbar, no track (styles.css, --app-scrollbar-thumb). */
+	background: transparent;
+	pointer-events: auto;
+}
+.tiptap-table-hscroll__thumb {
+	position: absolute;
+	top: 2px;
+	bottom: 2px;
+	left: 0;
+	border-radius: 4px;
+	background: var(--app-scrollbar-thumb);
+	cursor: grab;
+}
+.tiptap-table-hscroll__thumb[data-dragging="true"] {
+	cursor: grabbing;
+}
+
+/* The label takes the slack so the check mark parks on the right edge. */
+.tiptap-table-toolbar__menu-label {
+	flex: 1;
+}
+
+@font-face{font-display:block;font-family:KaTeX_AMS;font-style:normal;font-weight:400;src:url(https://cdn.jsdelivr.net/npm/katex@0.16.33/dist/fonts/KaTeX_AMS-Regular.woff2) format("woff2"),url(https://cdn.jsdelivr.net/npm/katex@0.16.33/dist/fonts/KaTeX_AMS-Regular.woff) format("woff"),url(https://cdn.jsdelivr.net/npm/katex@0.16.33/dist/fonts/KaTeX_AMS-Regular.ttf) format("truetype")}@font-face{font-display:block;font-family:KaTeX_Caligraphic;font-style:normal;font-weight:700;src:url(https://cdn.jsdelivr.net/npm/katex@0.16.33/dist/fonts/KaTeX_Caligraphic-Bold.woff2) format("woff2"),url(https://cdn.jsdelivr.net/npm/katex@0.16.33/dist/fonts/KaTeX_Caligraphic-Bold.woff) format("woff"),url(https://cdn.jsdelivr.net/npm/katex@0.16.33/dist/fonts/KaTeX_Caligraphic-Bold.ttf) format("truetype")}@font-face{font-display:block;font-family:KaTeX_Caligraphic;font-style:normal;font-weight:400;src:url(https://cdn.jsdelivr.net/npm/katex@0.16.33/dist/fonts/KaTeX_Caligraphic-Regular.woff2) format("woff2"),url(https://cdn.jsdelivr.net/npm/katex@0.16.33/dist/fonts/KaTeX_Caligraphic-Regular.woff) format("woff"),url(https://cdn.jsdelivr.net/npm/katex@0.16.33/dist/fonts/KaTeX_Caligraphic-Regular.ttf) format("truetype")}@font-face{font-display:block;font-family:KaTeX_Fraktur;font-style:normal;font-weight:700;src:url(https://cdn.jsdelivr.net/npm/katex@0.16.33/dist/fonts/KaTeX_Fraktur-Bold.woff2) format("woff2"),url(https://cdn.jsdelivr.net/npm/katex@0.16.33/dist/fonts/KaTeX_Fraktur-Bold.woff) format("woff"),url(https://cdn.jsdelivr.net/npm/katex@0.16.33/dist/fonts/KaTeX_Fraktur-Bold.ttf) format("truetype")}@font-face{font-display:block;font-family:KaTeX_Fraktur;font-style:normal;font-weight:400;src:url(https://cdn.jsdelivr.net/npm/katex@0.16.33/dist/fonts/KaTeX_Fraktur-Regular.woff2) format("woff2"),url(https://cdn.jsdelivr.net/npm/katex@0.16.33/dist/fonts/KaTeX_Fraktur-Regular.woff) format("woff"),url(https://cdn.jsdelivr.net/npm/katex@0.16.33/dist/fonts/KaTeX_Fraktur-Regular.ttf) format("truetype")}@font-face{font-display:block;font-family:KaTeX_Main;font-style:normal;font-weight:700;src:url(https://cdn.jsdelivr.net/npm/katex@0.16.33/dist/fonts/KaTeX_Main-Bold.woff2) format("woff2"),url(https://cdn.jsdelivr.net/npm/katex@0.16.33/dist/fonts/KaTeX_Main-Bold.woff) format("woff"),url(https://cdn.jsdelivr.net/npm/katex@0.16.33/dist/fonts/KaTeX_Main-Bold.ttf) format("truetype")}@font-face{font-display:block;font-family:KaTeX_Main;font-style:italic;font-weight:700;src:url(https://cdn.jsdelivr.net/npm/katex@0.16.33/dist/fonts/KaTeX_Main-BoldItalic.woff2) format("woff2"),url(https://cdn.jsdelivr.net/npm/katex@0.16.33/dist/fonts/KaTeX_Main-BoldItalic.woff) format("woff"),url(https://cdn.jsdelivr.net/npm/katex@0.16.33/dist/fonts/KaTeX_Main-BoldItalic.ttf) format("truetype")}@font-face{font-display:block;font-family:KaTeX_Main;font-style:italic;font-weight:400;src:url(https://cdn.jsdelivr.net/npm/katex@0.16.33/dist/fonts/KaTeX_Main-Italic.woff2) format("woff2"),url(https://cdn.jsdelivr.net/npm/katex@0.16.33/dist/fonts/KaTeX_Main-Italic.woff) format("woff"),url(https://cdn.jsdelivr.net/npm/katex@0.16.33/dist/fonts/KaTeX_Main-Italic.ttf) format("truetype")}@font-face{font-display:block;font-family:KaTeX_Main;font-style:normal;font-weight:400;src:url(https://cdn.jsdelivr.net/npm/katex@0.16.33/dist/fonts/KaTeX_Main-Regular.woff2) format("woff2"),url(https://cdn.jsdelivr.net/npm/katex@0.16.33/dist/fonts/KaTeX_Main-Regular.woff) format("woff"),url(https://cdn.jsdelivr.net/npm/katex@0.16.33/dist/fonts/KaTeX_Main-Regular.ttf) format("truetype")}@font-face{font-display:block;font-family:KaTeX_Math;font-style:italic;font-weight:700;src:url(https://cdn.jsdelivr.net/npm/katex@0.16.33/dist/fonts/KaTeX_Math-BoldItalic.woff2) format("woff2"),url(https://cdn.jsdelivr.net/npm/katex@0.16.33/dist/fonts/KaTeX_Math-BoldItalic.woff) format("woff"),url(https://cdn.jsdelivr.net/npm/katex@0.16.33/dist/fonts/KaTeX_Math-BoldItalic.ttf) format("truetype")}@font-face{font-display:block;font-family:KaTeX_Math;font-style:italic;font-weight:400;src:url(https://cdn.jsdelivr.net/npm/katex@0.16.33/dist/fonts/KaTeX_Math-Italic.woff2) format("woff2"),url(https://cdn.jsdelivr.net/npm/katex@0.16.33/dist/fonts/KaTeX_Math-Italic.woff) format("woff"),url(https://cdn.jsdelivr.net/npm/katex@0.16.33/dist/fonts/KaTeX_Math-Italic.ttf) format("truetype")}@font-face{font-display:block;font-family:"KaTeX_SansSerif";font-style:normal;font-weight:700;src:url(https://cdn.jsdelivr.net/npm/katex@0.16.33/dist/fonts/KaTeX_SansSerif-Bold.woff2) format("woff2"),url(https://cdn.jsdelivr.net/npm/katex@0.16.33/dist/fonts/KaTeX_SansSerif-Bold.woff) format("woff"),url(https://cdn.jsdelivr.net/npm/katex@0.16.33/dist/fonts/KaTeX_SansSerif-Bold.ttf) format("truetype")}@font-face{font-display:block;font-family:"KaTeX_SansSerif";font-style:italic;font-weight:400;src:url(https://cdn.jsdelivr.net/npm/katex@0.16.33/dist/fonts/KaTeX_SansSerif-Italic.woff2) format("woff2"),url(https://cdn.jsdelivr.net/npm/katex@0.16.33/dist/fonts/KaTeX_SansSerif-Italic.woff) format("woff"),url(https://cdn.jsdelivr.net/npm/katex@0.16.33/dist/fonts/KaTeX_SansSerif-Italic.ttf) format("truetype")}@font-face{font-display:block;font-family:"KaTeX_SansSerif";font-style:normal;font-weight:400;src:url(https://cdn.jsdelivr.net/npm/katex@0.16.33/dist/fonts/KaTeX_SansSerif-Regular.woff2) format("woff2"),url(https://cdn.jsdelivr.net/npm/katex@0.16.33/dist/fonts/KaTeX_SansSerif-Regular.woff) format("woff"),url(https://cdn.jsdelivr.net/npm/katex@0.16.33/dist/fonts/KaTeX_SansSerif-Regular.ttf) format("truetype")}@font-face{font-display:block;font-family:KaTeX_Script;font-style:normal;font-weight:400;src:url(https://cdn.jsdelivr.net/npm/katex@0.16.33/dist/fonts/KaTeX_Script-Regular.woff2) format("woff2"),url(https://cdn.jsdelivr.net/npm/katex@0.16.33/dist/fonts/KaTeX_Script-Regular.woff) format("woff"),url(https://cdn.jsdelivr.net/npm/katex@0.16.33/dist/fonts/KaTeX_Script-Regular.ttf) format("truetype")}@font-face{font-display:block;font-family:KaTeX_Size1;font-style:normal;font-weight:400;src:url(https://cdn.jsdelivr.net/npm/katex@0.16.33/dist/fonts/KaTeX_Size1-Regular.woff2) format("woff2"),url(https://cdn.jsdelivr.net/npm/katex@0.16.33/dist/fonts/KaTeX_Size1-Regular.woff) format("woff"),url(https://cdn.jsdelivr.net/npm/katex@0.16.33/dist/fonts/KaTeX_Size1-Regular.ttf) format("truetype")}@font-face{font-display:block;font-family:KaTeX_Size2;font-style:normal;font-weight:400;src:url(https://cdn.jsdelivr.net/npm/katex@0.16.33/dist/fonts/KaTeX_Size2-Regular.woff2) format("woff2"),url(https://cdn.jsdelivr.net/npm/katex@0.16.33/dist/fonts/KaTeX_Size2-Regular.woff) format("woff"),url(https://cdn.jsdelivr.net/npm/katex@0.16.33/dist/fonts/KaTeX_Size2-Regular.ttf) format("truetype")}@font-face{font-display:block;font-family:KaTeX_Size3;font-style:normal;font-weight:400;src:url(https://cdn.jsdelivr.net/npm/katex@0.16.33/dist/fonts/KaTeX_Size3-Regular.woff2) format("woff2"),url(https://cdn.jsdelivr.net/npm/katex@0.16.33/dist/fonts/KaTeX_Size3-Regular.woff) format("woff"),url(https://cdn.jsdelivr.net/npm/katex@0.16.33/dist/fonts/KaTeX_Size3-Regular.ttf) format("truetype")}@font-face{font-display:block;font-family:KaTeX_Size4;font-style:normal;font-weight:400;src:url(https://cdn.jsdelivr.net/npm/katex@0.16.33/dist/fonts/KaTeX_Size4-Regular.woff2) format("woff2"),url(https://cdn.jsdelivr.net/npm/katex@0.16.33/dist/fonts/KaTeX_Size4-Regular.woff) format("woff"),url(https://cdn.jsdelivr.net/npm/katex@0.16.33/dist/fonts/KaTeX_Size4-Regular.ttf) format("truetype")}@font-face{font-display:block;font-family:KaTeX_Typewriter;font-style:normal;font-weight:400;src:url(https://cdn.jsdelivr.net/npm/katex@0.16.33/dist/fonts/KaTeX_Typewriter-Regular.woff2) format("woff2"),url(https://cdn.jsdelivr.net/npm/katex@0.16.33/dist/fonts/KaTeX_Typewriter-Regular.woff) format("woff"),url(https://cdn.jsdelivr.net/npm/katex@0.16.33/dist/fonts/KaTeX_Typewriter-Regular.ttf) format("truetype")}.katex{font:normal 1.21em KaTeX_Main,Times New Roman,serif;line-height:1.2;text-indent:0;text-rendering:auto}.katex *{-ms-high-contrast-adjust:none!important;border-color:currentColor}.katex .katex-version:after{content:"0.16.33"}.katex .katex-mathml{clip:rect(1px,1px,1px,1px);border:0;height:1px;overflow:hidden;padding:0;position:absolute;width:1px}.katex .katex-html>.newline{display:block}.katex .base{position:relative;white-space:nowrap;width:-webkit-min-content;width:-moz-min-content;width:min-content}.katex .base,.katex .strut{display:inline-block}.katex .textbf{font-weight:700}.katex .textit{font-style:italic}.katex .textrm{font-family:KaTeX_Main}.katex .textsf{font-family:KaTeX_SansSerif}.katex .texttt{font-family:KaTeX_Typewriter}.katex .mathnormal{font-family:KaTeX_Math;font-style:italic}.katex .mathit{font-family:KaTeX_Main;font-style:italic}.katex .mathrm{font-style:normal}.katex .mathbf{font-family:KaTeX_Main;font-weight:700}.katex .boldsymbol{font-family:KaTeX_Math;font-style:italic;font-weight:700}.katex .amsrm,.katex .mathbb,.katex .textbb{font-family:KaTeX_AMS}.katex .mathcal{font-family:KaTeX_Caligraphic}.katex .mathfrak,.katex .textfrak{font-family:KaTeX_Fraktur}.katex .mathboldfrak,.katex .textboldfrak{font-family:KaTeX_Fraktur;font-weight:700}.katex .mathtt{font-family:KaTeX_Typewriter}.katex .mathscr,.katex .textscr{font-family:KaTeX_Script}.katex .mathsf,.katex .textsf{font-family:KaTeX_SansSerif}.katex .mathboldsf,.katex .textboldsf{font-family:KaTeX_SansSerif;font-weight:700}.katex .mathitsf,.katex .mathsfit,.katex .textitsf{font-family:KaTeX_SansSerif;font-style:italic}.katex .mainrm{font-family:KaTeX_Main;font-style:normal}.katex .vlist-t{border-collapse:collapse;display:inline-table;table-layout:fixed}.katex .vlist-r{display:table-row}.katex .vlist{display:table-cell;position:relative;vertical-align:bottom}.katex .vlist>span{display:block;height:0;position:relative}.katex .vlist>span>span{display:inline-block}.katex .vlist>span>.pstrut{overflow:hidden;width:0}.katex .vlist-t2{margin-right:-2px}.katex .vlist-s{display:table-cell;font-size:1px;min-width:2px;vertical-align:bottom;width:2px}.katex .vbox{align-items:baseline;display:inline-flex;flex-direction:column}.katex .hbox{width:100%}.katex .hbox,.katex .thinbox{display:inline-flex;flex-direction:row}.katex .thinbox{max-width:0;width:0}.katex .msupsub{text-align:left}.katex .mfrac>span>span{text-align:center}.katex .mfrac .frac-line{border-bottom-style:solid;display:inline-block;width:100%}.katex .hdashline,.katex .hline,.katex .mfrac .frac-line,.katex .overline .overline-line,.katex .rule,.katex .underline .underline-line{min-height:1px}.katex .mspace{display:inline-block}.katex .clap,.katex .llap,.katex .rlap{position:relative;width:0}.katex .clap>.inner,.katex .llap>.inner,.katex .rlap>.inner{position:absolute}.katex .clap>.fix,.katex .llap>.fix,.katex .rlap>.fix{display:inline-block}.katex .llap>.inner{right:0}.katex .clap>.inner,.katex .rlap>.inner{left:0}.katex .clap>.inner>span{margin-left:-50%;margin-right:50%}.katex .rule{border:0 solid;display:inline-block;position:relative}.katex .hline,.katex .overline .overline-line,.katex .underline .underline-line{border-bottom-style:solid;display:inline-block;width:100%}.katex .hdashline{border-bottom-style:dashed;display:inline-block;width:100%}.katex .sqrt>.root{margin-left:.2777777778em;margin-right:-.5555555556em}.katex .fontsize-ensurer.reset-size1.size1,.katex .sizing.reset-size1.size1{font-size:1em}.katex .fontsize-ensurer.reset-size1.size2,.katex .sizing.reset-size1.size2{font-size:1.2em}.katex .fontsize-ensurer.reset-size1.size3,.katex .sizing.reset-size1.size3{font-size:1.4em}.katex .fontsize-ensurer.reset-size1.size4,.katex .sizing.reset-size1.size4{font-size:1.6em}.katex .fontsize-ensurer.reset-size1.size5,.katex .sizing.reset-size1.size5{font-size:1.8em}.katex .fontsize-ensurer.reset-size1.size6,.katex .sizing.reset-size1.size6{font-size:2em}.katex .fontsize-ensurer.reset-size1.size7,.katex .sizing.reset-size1.size7{font-size:2.4em}.katex .fontsize-ensurer.reset-size1.size8,.katex .sizing.reset-size1.size8{font-size:2.88em}.katex .fontsize-ensurer.reset-size1.size9,.katex .sizing.reset-size1.size9{font-size:3.456em}.katex .fontsize-ensurer.reset-size1.size10,.katex .sizing.reset-size1.size10{font-size:4.148em}.katex .fontsize-ensurer.reset-size1.size11,.katex .sizing.reset-size1.size11{font-size:4.976em}.katex .fontsize-ensurer.reset-size2.size1,.katex .sizing.reset-size2.size1{font-size:.8333333333em}.katex .fontsize-ensurer.reset-size2.size2,.katex .sizing.reset-size2.size2{font-size:1em}.katex .fontsize-ensurer.reset-size2.size3,.katex .sizing.reset-size2.size3{font-size:1.1666666667em}.katex .fontsize-ensurer.reset-size2.size4,.katex .sizing.reset-size2.size4{font-size:1.3333333333em}.katex .fontsize-ensurer.reset-size2.size5,.katex .sizing.reset-size2.size5{font-size:1.5em}.katex .fontsize-ensurer.reset-size2.size6,.katex .sizing.reset-size2.size6{font-size:1.6666666667em}.katex .fontsize-ensurer.reset-size2.size7,.katex .sizing.reset-size2.size7{font-size:2em}.katex .fontsize-ensurer.reset-size2.size8,.katex .sizing.reset-size2.size8{font-size:2.4em}.katex .fontsize-ensurer.reset-size2.size9,.katex .sizing.reset-size2.size9{font-size:2.88em}.katex .fontsize-ensurer.reset-size2.size10,.katex .sizing.reset-size2.size10{font-size:3.4566666667em}.katex .fontsize-ensurer.reset-size2.size11,.katex .sizing.reset-size2.size11{font-size:4.1466666667em}.katex .fontsize-ensurer.reset-size3.size1,.katex .sizing.reset-size3.size1{font-size:.7142857143em}.katex .fontsize-ensurer.reset-size3.size2,.katex .sizing.reset-size3.size2{font-size:.8571428571em}.katex .fontsize-ensurer.reset-size3.size3,.katex .sizing.reset-size3.size3{font-size:1em}.katex .fontsize-ensurer.reset-size3.size4,.katex .sizing.reset-size3.size4{font-size:1.1428571429em}.katex .fontsize-ensurer.reset-size3.size5,.katex .sizing.reset-size3.size5{font-size:1.2857142857em}.katex .fontsize-ensurer.reset-size3.size6,.katex .sizing.reset-size3.size6{font-size:1.4285714286em}.katex .fontsize-ensurer.reset-size3.size7,.katex .sizing.reset-size3.size7{font-size:1.7142857143em}.katex .fontsize-ensurer.reset-size3.size8,.katex .sizing.reset-size3.size8{font-size:2.0571428571em}.katex .fontsize-ensurer.reset-size3.size9,.katex .sizing.reset-size3.size9{font-size:2.4685714286em}.katex .fontsize-ensurer.reset-size3.size10,.katex .sizing.reset-size3.size10{font-size:2.9628571429em}.katex .fontsize-ensurer.reset-size3.size11,.katex .sizing.reset-size3.size11{font-size:3.5542857143em}.katex .fontsize-ensurer.reset-size4.size1,.katex .sizing.reset-size4.size1{font-size:.625em}.katex .fontsize-ensurer.reset-size4.size2,.katex .sizing.reset-size4.size2{font-size:.75em}.katex .fontsize-ensurer.reset-size4.size3,.katex .sizing.reset-size4.size3{font-size:.875em}.katex .fontsize-ensurer.reset-size4.size4,.katex .sizing.reset-size4.size4{font-size:1em}.katex .fontsize-ensurer.reset-size4.size5,.katex .sizing.reset-size4.size5{font-size:1.125em}.katex .fontsize-ensurer.reset-size4.size6,.katex .sizing.reset-size4.size6{font-size:1.25em}.katex .fontsize-ensurer.reset-size4.size7,.katex .sizing.reset-size4.size7{font-size:1.5em}.katex .fontsize-ensurer.reset-size4.size8,.katex .sizing.reset-size4.size8{font-size:1.8em}.katex .fontsize-ensurer.reset-size4.size9,.katex .sizing.reset-size4.size9{font-size:2.16em}.katex .fontsize-ensurer.reset-size4.size10,.katex .sizing.reset-size4.size10{font-size:2.5925em}.katex .fontsize-ensurer.reset-size4.size11,.katex .sizing.reset-size4.size11{font-size:3.11em}.katex .fontsize-ensurer.reset-size5.size1,.katex .sizing.reset-size5.size1{font-size:.5555555556em}.katex .fontsize-ensurer.reset-size5.size2,.katex .sizing.reset-size5.size2{font-size:.6666666667em}.katex .fontsize-ensurer.reset-size5.size3,.katex .sizing.reset-size5.size3{font-size:.7777777778em}.katex .fontsize-ensurer.reset-size5.size4,.katex .sizing.reset-size5.size4{font-size:.8888888889em}.katex .fontsize-ensurer.reset-size5.size5,.katex .sizing.reset-size5.size5{font-size:1em}.katex .fontsize-ensurer.reset-size5.size6,.katex .sizing.reset-size5.size6{font-size:1.1111111111em}.katex .fontsize-ensurer.reset-size5.size7,.katex .sizing.reset-size5.size7{font-size:1.3333333333em}.katex .fontsize-ensurer.reset-size5.size8,.katex .sizing.reset-size5.size8{font-size:1.6em}.katex .fontsize-ensurer.reset-size5.size9,.katex .sizing.reset-size5.size9{font-size:1.92em}.katex .fontsize-ensurer.reset-size5.size10,.katex .sizing.reset-size5.size10{font-size:2.3044444444em}.katex .fontsize-ensurer.reset-size5.size11,.katex .sizing.reset-size5.size11{font-size:2.7644444444em}.katex .fontsize-ensurer.reset-size6.size1,.katex .sizing.reset-size6.size1{font-size:.5em}.katex .fontsize-ensurer.reset-size6.size2,.katex .sizing.reset-size6.size2{font-size:.6em}.katex .fontsize-ensurer.reset-size6.size3,.katex .sizing.reset-size6.size3{font-size:.7em}.katex .fontsize-ensurer.reset-size6.size4,.katex .sizing.reset-size6.size4{font-size:.8em}.katex .fontsize-ensurer.reset-size6.size5,.katex .sizing.reset-size6.size5{font-size:.9em}.katex .fontsize-ensurer.reset-size6.size6,.katex .sizing.reset-size6.size6{font-size:1em}.katex .fontsize-ensurer.reset-size6.size7,.katex .sizing.reset-size6.size7{font-size:1.2em}.katex .fontsize-ensurer.reset-size6.size8,.katex .sizing.reset-size6.size8{font-size:1.44em}.katex .fontsize-ensurer.reset-size6.size9,.katex .sizing.reset-size6.size9{font-size:1.728em}.katex .fontsize-ensurer.reset-size6.size10,.katex .sizing.reset-size6.size10{font-size:2.074em}.katex .fontsize-ensurer.reset-size6.size11,.katex .sizing.reset-size6.size11{font-size:2.488em}.katex .fontsize-ensurer.reset-size7.size1,.katex .sizing.reset-size7.size1{font-size:.4166666667em}.katex .fontsize-ensurer.reset-size7.size2,.katex .sizing.reset-size7.size2{font-size:.5em}.katex .fontsize-ensurer.reset-size7.size3,.katex .sizing.reset-size7.size3{font-size:.5833333333em}.katex .fontsize-ensurer.reset-size7.size4,.katex .sizing.reset-size7.size4{font-size:.6666666667em}.katex .fontsize-ensurer.reset-size7.size5,.katex .sizing.reset-size7.size5{font-size:.75em}.katex .fontsize-ensurer.reset-size7.size6,.katex .sizing.reset-size7.size6{font-size:.8333333333em}.katex .fontsize-ensurer.reset-size7.size7,.katex .sizing.reset-size7.size7{font-size:1em}.katex .fontsize-ensurer.reset-size7.size8,.katex .sizing.reset-size7.size8{font-size:1.2em}.katex .fontsize-ensurer.reset-size7.size9,.katex .sizing.reset-size7.size9{font-size:1.44em}.katex .fontsize-ensurer.reset-size7.size10,.katex .sizing.reset-size7.size10{font-size:1.7283333333em}.katex .fontsize-ensurer.reset-size7.size11,.katex .sizing.reset-size7.size11{font-size:2.0733333333em}.katex .fontsize-ensurer.reset-size8.size1,.katex .sizing.reset-size8.size1{font-size:.3472222222em}.katex .fontsize-ensurer.reset-size8.size2,.katex .sizing.reset-size8.size2{font-size:.4166666667em}.katex .fontsize-ensurer.reset-size8.size3,.katex .sizing.reset-size8.size3{font-size:.4861111111em}.katex .fontsize-ensurer.reset-size8.size4,.katex .sizing.reset-size8.size4{font-size:.5555555556em}.katex .fontsize-ensurer.reset-size8.size5,.katex .sizing.reset-size8.size5{font-size:.625em}.katex .fontsize-ensurer.reset-size8.size6,.katex .sizing.reset-size8.size6{font-size:.6944444444em}.katex .fontsize-ensurer.reset-size8.size7,.katex .sizing.reset-size8.size7{font-size:.8333333333em}.katex .fontsize-ensurer.reset-size8.size8,.katex .sizing.reset-size8.size8{font-size:1em}.katex .fontsize-ensurer.reset-size8.size9,.katex .sizing.reset-size8.size9{font-size:1.2em}.katex .fontsize-ensurer.reset-size8.size10,.katex .sizing.reset-size8.size10{font-size:1.4402777778em}.katex .fontsize-ensurer.reset-size8.size11,.katex .sizing.reset-size8.size11{font-size:1.7277777778em}.katex .fontsize-ensurer.reset-size9.size1,.katex .sizing.reset-size9.size1{font-size:.2893518519em}.katex .fontsize-ensurer.reset-size9.size2,.katex .sizing.reset-size9.size2{font-size:.3472222222em}.katex .fontsize-ensurer.reset-size9.size3,.katex .sizing.reset-size9.size3{font-size:.4050925926em}.katex .fontsize-ensurer.reset-size9.size4,.katex .sizing.reset-size9.size4{font-size:.462962963em}.katex .fontsize-ensurer.reset-size9.size5,.katex .sizing.reset-size9.size5{font-size:.5208333333em}.katex .fontsize-ensurer.reset-size9.size6,.katex .sizing.reset-size9.size6{font-size:.5787037037em}.katex .fontsize-ensurer.reset-size9.size7,.katex .sizing.reset-size9.size7{font-size:.6944444444em}.katex .fontsize-ensurer.reset-size9.size8,.katex .sizing.reset-size9.size8{font-size:.8333333333em}.katex .fontsize-ensurer.reset-size9.size9,.katex .sizing.reset-size9.size9{font-size:1em}.katex .fontsize-ensurer.reset-size9.size10,.katex .sizing.reset-size9.size10{font-size:1.2002314815em}.katex .fontsize-ensurer.reset-size9.size11,.katex .sizing.reset-size9.size11{font-size:1.4398148148em}.katex .fontsize-ensurer.reset-size10.size1,.katex .sizing.reset-size10.size1{font-size:.2410800386em}.katex .fontsize-ensurer.reset-size10.size2,.katex .sizing.reset-size10.size2{font-size:.2892960463em}.katex .fontsize-ensurer.reset-size10.size3,.katex .sizing.reset-size10.size3{font-size:.337512054em}.katex .fontsize-ensurer.reset-size10.size4,.katex .sizing.reset-size10.size4{font-size:.3857280617em}.katex .fontsize-ensurer.reset-size10.size5,.katex .sizing.reset-size10.size5{font-size:.4339440694em}.katex .fontsize-ensurer.reset-size10.size6,.katex .sizing.reset-size10.size6{font-size:.4821600771em}.katex .fontsize-ensurer.reset-size10.size7,.katex .sizing.reset-size10.size7{font-size:.5785920926em}.katex .fontsize-ensurer.reset-size10.size8,.katex .sizing.reset-size10.size8{font-size:.6943105111em}.katex .fontsize-ensurer.reset-size10.size9,.katex .sizing.reset-size10.size9{font-size:.8331726133em}.katex .fontsize-ensurer.reset-size10.size10,.katex .sizing.reset-size10.size10{font-size:1em}.katex .fontsize-ensurer.reset-size10.size11,.katex .sizing.reset-size10.size11{font-size:1.1996142719em}.katex .fontsize-ensurer.reset-size11.size1,.katex .sizing.reset-size11.size1{font-size:.2009646302em}.katex .fontsize-ensurer.reset-size11.size2,.katex .sizing.reset-size11.size2{font-size:.2411575563em}.katex .fontsize-ensurer.reset-size11.size3,.katex .sizing.reset-size11.size3{font-size:.2813504823em}.katex .fontsize-ensurer.reset-size11.size4,.katex .sizing.reset-size11.size4{font-size:.3215434084em}.katex .fontsize-ensurer.reset-size11.size5,.katex .sizing.reset-size11.size5{font-size:.3617363344em}.katex .fontsize-ensurer.reset-size11.size6,.katex .sizing.reset-size11.size6{font-size:.4019292605em}.katex .fontsize-ensurer.reset-size11.size7,.katex .sizing.reset-size11.size7{font-size:.4823151125em}.katex .fontsize-ensurer.reset-size11.size8,.katex .sizing.reset-size11.size8{font-size:.578778135em}.katex .fontsize-ensurer.reset-size11.size9,.katex .sizing.reset-size11.size9{font-size:.6945337621em}.katex .fontsize-ensurer.reset-size11.size10,.katex .sizing.reset-size11.size10{font-size:.8336012862em}.katex .fontsize-ensurer.reset-size11.size11,.katex .sizing.reset-size11.size11{font-size:1em}.katex .delimsizing.size1{font-family:KaTeX_Size1}.katex .delimsizing.size2{font-family:KaTeX_Size2}.katex .delimsizing.size3{font-family:KaTeX_Size3}.katex .delimsizing.size4{font-family:KaTeX_Size4}.katex .delimsizing.mult .delim-size1>span{font-family:KaTeX_Size1}.katex .delimsizing.mult .delim-size4>span{font-family:KaTeX_Size4}.katex .nulldelimiter{display:inline-block;width:.12em}.katex .delimcenter,.katex .op-symbol{position:relative}.katex .op-symbol.small-op{font-family:KaTeX_Size1}.katex .op-symbol.large-op{font-family:KaTeX_Size2}.katex .accent>.vlist-t,.katex .op-limits>.vlist-t{text-align:center}.katex .accent .accent-body{position:relative}.katex .accent .accent-body:not(.accent-full){width:0}.katex .overlay{display:block}.katex .mtable .vertical-separator{display:inline-block;min-width:1px}.katex .mtable .arraycolsep{display:inline-block}.katex .mtable .col-align-c>.vlist-t{text-align:center}.katex .mtable .col-align-l>.vlist-t{text-align:left}.katex .mtable .col-align-r>.vlist-t{text-align:right}.katex .svg-align{text-align:left}.katex svg{fill:currentColor;stroke:currentColor;display:block;height:inherit;position:absolute;width:100%}.katex svg path{stroke:none}.katex svg{fill-rule:nonzero;fill-opacity:1;stroke-width:1;stroke-linecap:butt;stroke-linejoin:miter;stroke-miterlimit:4;stroke-dasharray:none;stroke-dashoffset:0;stroke-opacity:1}.katex img{border-style:none;max-height:none;max-width:none;min-height:0;min-width:0}.katex .stretchy{display:block;overflow:hidden;position:relative;width:100%}.katex .stretchy:after,.katex .stretchy:before{content:""}.katex .hide-tail{overflow:hidden;position:relative;width:100%}.katex .halfarrow-left{left:0;overflow:hidden;position:absolute;width:50.2%}.katex .halfarrow-right{overflow:hidden;position:absolute;right:0;width:50.2%}.katex .brace-left{left:0;overflow:hidden;position:absolute;width:25.1%}.katex .brace-center{left:25%;overflow:hidden;position:absolute;width:50%}.katex .brace-right{overflow:hidden;position:absolute;right:0;width:25.1%}.katex .x-arrow-pad{padding:0 .5em}.katex .cd-arrow-pad{padding:0 .55556em 0 .27778em}.katex .mover,.katex .munder,.katex .x-arrow{text-align:center}.katex .boxpad{padding:0 .3em}.katex .fbox,.katex .fcolorbox{border:.04em solid;box-sizing:border-box}.katex .cancel-pad{padding:0 .2em}.katex .cancel-lap{margin-left:-.2em;margin-right:-.2em}.katex .sout{border-bottom-style:solid;border-bottom-width:.08em}.katex .angl{border-right:.049em solid;border-top:.049em solid;box-sizing:border-box;margin-right:.03889em}.katex .anglpad{padding:0 .03889em}.katex .eqn-num:before{content:"(" counter(katexEqnNo) ")";counter-increment:katexEqnNo}.katex .mml-eqn-num:before{content:"(" counter(mmlEqnNo) ")";counter-increment:mmlEqnNo}.katex .mtr-glue{width:50%}.katex .cd-vert-arrow{display:inline-block;position:relative}.katex .cd-label-left{display:inline-block;position:absolute;right:calc(50% + .3em);text-align:left}.katex .cd-label-right{display:inline-block;left:calc(50% + .3em);position:absolute;text-align:right}.katex-display{display:block;margin:1em 0;text-align:center}.katex-display>.katex{display:block;text-align:center;white-space:nowrap}.katex-display>.katex>.katex-html{display:block;position:relative}.katex-display>.katex>.katex-html>.tag{position:absolute;right:0}.katex-display.leqno>.katex>.katex-html>.tag{left:0;right:auto}.katex-display.fleqn>.katex{padding-left:2em;text-align:left}body{counter-reset:katexEqnNo mmlEqnNo}
+
+pre code.hljs {
+  display: block;
+  overflow-x: auto;
+  padding: 1em
+}
+code.hljs {
+  padding: 3px 5px
+}
+/*!
+  Theme: GitHub
+  Description: Light theme as seen on github.com
+  Author: github.com
+  Maintainer: @Hirse
+  Updated: 2021-05-15
+
+  Outdated base version: https://github.com/primer/github-syntax-light
+  Current colors taken from GitHub's CSS
+*/
+.hljs {
+  color: #24292e;
+  background: #ffffff
+}
+.hljs-doctag,
+.hljs-keyword,
+.hljs-meta .hljs-keyword,
+.hljs-template-tag,
+.hljs-template-variable,
+.hljs-type,
+.hljs-variable.language_ {
+  /* prettylights-syntax-keyword */
+  color: #d73a49
+}
+.hljs-title,
+.hljs-title.class_,
+.hljs-title.class_.inherited__,
+.hljs-title.function_ {
+  /* prettylights-syntax-entity */
+  color: #6f42c1
+}
+.hljs-attr,
+.hljs-attribute,
+.hljs-literal,
+.hljs-meta,
+.hljs-number,
+.hljs-operator,
+.hljs-variable,
+.hljs-selector-attr,
+.hljs-selector-class,
+.hljs-selector-id {
+  /* prettylights-syntax-constant */
+  color: #005cc5
+}
+.hljs-regexp,
+.hljs-string,
+.hljs-meta .hljs-string {
+  /* prettylights-syntax-string */
+  color: #032f62
+}
+.hljs-built_in,
+.hljs-symbol {
+  /* prettylights-syntax-variable */
+  color: #e36209
+}
+.hljs-comment,
+.hljs-code,
+.hljs-formula {
+  /* prettylights-syntax-comment */
+  color: #6a737d
+}
+.hljs-name,
+.hljs-quote,
+.hljs-selector-tag,
+.hljs-selector-pseudo {
+  /* prettylights-syntax-entity-tag */
+  color: #22863a
+}
+.hljs-subst {
+  /* prettylights-syntax-storage-modifier-import */
+  color: #24292e
+}
+.hljs-section {
+  /* prettylights-syntax-markup-heading */
+  color: #005cc5;
+  font-weight: bold
+}
+.hljs-bullet {
+  /* prettylights-syntax-markup-list */
+  color: #735c0f
+}
+.hljs-emphasis {
+  /* prettylights-syntax-markup-italic */
+  color: #24292e;
+  font-style: italic
+}
+.hljs-strong {
+  /* prettylights-syntax-markup-bold */
+  color: #24292e;
+  font-weight: bold
+}
+.hljs-addition {
+  /* prettylights-syntax-markup-inserted */
+  color: #22863a;
+  background-color: #f0fff4
+}
+.hljs-deletion {
+  /* prettylights-syntax-markup-deleted */
+  color: #b31d28;
+  background-color: #ffeef0
+}
+.hljs-char.escape_,
+.hljs-link,
+.hljs-params,
+.hljs-property,
+.hljs-punctuation,
+.hljs-tag {
+  /* purposely ignored */
+  
+}
+
+.doc-export {
+	box-sizing: border-box;
+	width: 100%;
+	max-width: 820px;
+	margin: 0 auto;
+	background: #ffffff;
+	color: var(--foreground);
+	font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+		"Helvetica Neue", Arial, "PingFang SC", "Microsoft YaHei", sans-serif;
+	font-size: 16px;
+	-webkit-font-smoothing: antialiased;
+}
+.doc-export *,
+.doc-export *::before,
+.doc-export *::after {
+	box-sizing: border-box;
+}
+.doc-export__title {
+	margin: 0 0 4px;
+}
+/* The body's own top padding, which the editor gets from the shell
+   (".tiptap-editor-shell .tiptap.ProseMirror") — the shell, and its 30vh of
+   click-below-the-text tail, are not exported. */
+.doc-export__body {
+	padding: 1rem 0 0;
+	font-size: 1rem;
+	line-height: 1.6;
+	color: var(--foreground);
+}
+
+/* ── Editor furniture: present in the app, meaningless in a file ── */
+.doc-export .ProseMirror-gapcursor,
+.doc-export .ProseMirror-separator,
+.doc-export .drag-handle,
+.doc-export .tiptap-drag-handle-group,
+.doc-export .tiptap-bubble-menu,
+.doc-export .tiptap-table-insert,
+.doc-export .tiptap-table-hscroll,
+.doc-export .tiptap-media-placeholder,
+.doc-export [data-resize-handle],
+.doc-export [class^="collaboration-carets__"],
+.doc-export [class*=" collaboration-carets__"] {
+	display: none !important;
+}
+/* A placeholder is a prompt to type, and an empty paragraph in a file is an
+   empty paragraph. */
+.doc-export .is-empty::before,
+.doc-export .is-editor-empty::before {
+	content: none !important;
+}
+
+/* ── Pagination. A picture cut in half across two pages is the single most
+      reported thing about an exported document. ── */
+.doc-export h1,
+.doc-export h2,
+.doc-export h3,
+.doc-export h4 {
+	break-after: avoid;
+	page-break-after: avoid;
+}
+/* ONLY BLOCKS THAT OWN THEIR OWN LINE.
+ *
+ * html2pdf does not honour 'break-inside' by re-laying anything out. It walks
+ * every element, and where one straddles a page boundary it INSERTS A BLOCK
+ * '<div>' before it, tall enough to push it onto the next page. Before a
+ * paragraph or a list row that is harmless. Before a picture — which lives
+ * INSIDE a paragraph, the image node being inline — it drops a block box into
+ * the middle of that paragraph, splitting the line and moving the picture out
+ * from under the text it belongs to.
+ *
+ * So the picture is not asked to avoid a break; the PARAGRAPH it sits in is,
+ * and a picture inside a paragraph that fits on one page cannot be split
+ * anyway. Same for 'img' and the resize wrapper — both named explicitly as
+ * 'auto', because html2pdf reads the COMPUTED value and would otherwise
+ * inherit an 'avoid' from somewhere else and start inserting boxes again. */
+.doc-export p,
+.doc-export pre,
+.doc-export blockquote,
+.doc-export tr,
+.doc-export li,
+.doc-export .tiptap-video-file,
+.doc-export .tiptap-workspace-embed,
+.doc-export .tiptap-deliverable {
+	break-inside: avoid;
+	page-break-inside: avoid;
+}
+.doc-export img,
+.doc-export [data-resize-container],
+.doc-export [data-resize-wrapper] {
+	break-inside: auto;
+	page-break-inside: auto;
+}
+.doc-export thead {
+	display: table-header-group;
+}
+
+/* ── What the rasterizer cannot lay out ──
+ *
+ * html2canvas has NO FLEX LAYOUT. It walks the DOM and draws each box, and for
+ * a flex container it drops the text inside entirely — the box is painted, the
+ * words are not. That is the "@name shows as an empty pill" report: the mention
+ * chip is 'inline-flex', so the PDF got the grey pill with nothing in it. The
+ * video card and the artifact card are the same shape of bug.
+ *
+ * Verified by rendering these exact rules through html2canvas in headless
+ * Chromium and diffing against the browser's own paint of the same DOM: with
+ * them the two are indistinguishable, without them the chip, the file name and
+ * the file size are all missing.
+ *
+ * EVERY SELECTOR HERE CARRIES '.tiptap.tiptap-doc-content', and that is not
+ * decoration: the rules being corrected are written at that scope, so
+ * '.doc-export .tiptap-mention' (0,2,0) loses to
+ * '.tiptap.tiptap-doc-content .tiptap-mention' (0,3,0) and the override silently
+ * does nothing — which is exactly how the first attempt at this failed while
+ * looking right on screen, where flex works.
+ */
+/* A mention is written out as text (see flattenMentions), so all it needs is
+   not to break across a line. */
+.doc-export .doc-export__mention {
+	white-space: nowrap;
+}
+
+/* The two cards keep their horizontal shape as a table row — the one
+   side-by-side layout the rasterizer does understand. */
+.doc-export .tiptap.tiptap-doc-content .tiptap-video-file__open {
+	display: table;
+}
+.doc-export .tiptap.tiptap-doc-content .tiptap-video-file__icon,
+.doc-export .tiptap.tiptap-doc-content .tiptap-video-file__meta,
+.doc-export .tiptap.tiptap-doc-content .tiptap-video-file__play {
+	display: table-cell;
+	vertical-align: middle;
+}
+.doc-export .tiptap.tiptap-doc-content .tiptap-video-file__meta {
+	width: 100%;
+	padding: 0 12px;
+}
+/* '-webkit-line-clamp' needs 'display: -webkit-box', which the rasterizer draws
+   as nothing. A file name wraps in a file instead of being clipped to two
+   lines — there is no hover here to reveal the rest. */
+.doc-export .tiptap.tiptap-doc-content .tiptap-video-file__name {
+	display: block;
+	overflow: visible;
+}
+.doc-export .tiptap.tiptap-doc-content .tiptap-deliverable__row {
+	display: table;
+	width: 100%;
+}
+.doc-export .tiptap.tiptap-doc-content .tiptap-deliverable__name,
+.doc-export .tiptap.tiptap-doc-content .tiptap-deliverable__meta {
+	display: table-cell;
+	vertical-align: middle;
+	overflow: visible;
+	text-overflow: clip;
+}
+.doc-export .tiptap.tiptap-doc-content .tiptap-deliverable__meta {
+	text-align: right;
+	white-space: nowrap;
+}
+/* A cover keeps its OWN proportions rather than the 16:9 letterbox it has on
+   screen: the rasterizer ignores 'object-fit', so a picture that should have
+   been contained came out stretched to fill the window. A correctly shaped
+   picture is worth more in a file than a letterbox that distorts it. */
+.doc-export
+	.tiptap.tiptap-doc-content
+	.tiptap-workspace-embed__cover,
+.doc-export .tiptap.tiptap-doc-content .tiptap-deliverable__cover {
+	aspect-ratio: auto;
+	height: auto;
+	object-fit: fill;
+}
+
+/* ── List markers, drawn as content ──
+ *
+ * A browser's own 'list-style' marker sits OUTSIDE the content box and is
+ * right-aligned to it, so a two-digit number hangs further left than a
+ * one-digit one. On screen that hangs harmlessly into the editor's page
+ * padding. An exported page has no padding to hang into, so '10.' overflowed
+ * the captured element and was CLIPPED — the PDF showed '0.', and the numbers
+ * did not line up with each other. The rasterizer also places markers at its
+ * own offsets, which is a second, smaller disagreement with the screen.
+ *
+ * So the export writes the markers itself (export-dom.ts) into a fixed-width,
+ * right-aligned box inside the list's padding: every number in a list starts
+ * and ends at the same x, nothing hangs outside the page, and there is nothing
+ * left for the rasterizer to guess at. 'position: absolute' keeps the marker
+ * out of the text flow, so the first line is not shifted.
+ *
+ * 'user-select: none' so copying a list out of the exported .html gives the
+ * text without the numbers, the way copying a real list does.
+ */
+.doc-export .tiptap.tiptap-doc-content .doc-export__list {
+	list-style: none;
+	padding-left: 1.9em;
+}
+.doc-export .tiptap.tiptap-doc-content .doc-export__marker {
+	display: inline-block;
+	/* A hanging indent in NORMAL FLOW, not an absolutely positioned box.
+	   -1.75 + 1.55 + 0.2 = 0, so the marker hangs entirely in the list's
+	   padding and the row's text still starts exactly at the content edge.
+	   Absolute positioning would need 'position: relative' on every <li>, and
+	   html2canvas paints positioned boxes in a late pass, after the in-flow
+	   content around them — which takes a whole list out of the order the rest
+	   of the page is drawn in. */
+	width: 1.55em;
+	margin-left: -1.75em;
+	margin-right: 0.2em;
+	text-align: right;
+	user-select: none;
+}
+
+/* ── A list row that carries only a picture ──
+ *
+ * The marker goes INSIDE the row's first block (export-dom.ts), and a block
+ * holding nothing but pictures is laid out by the sheet as a BLOCK-level flex
+ * box — which an inline marker cannot share a line with, so the number took a
+ * line of its own above the picture while the browser's own marker sits beside
+ * it.
+ *
+ * Marked in the DOM rather than asked for in CSS, for the same reason
+ * '.tiptap-image-row' is: what decides it is the ABSENCE of text, and a text
+ * node is not something ':has()' can see.
+ *
+ * The paragraph is forced back to 'block' for a second reason — an images-only
+ * row is 'display: flex', and the rasterizer paints a flex box and drops the
+ * text inside it, which would lose the marker altogether rather than merely
+ * misplace it.
+ *
+ * '!important' because the rule being corrected carries the specificity of the
+ * two attribute selectors inside its ':has()', which puts it at (0,6,1) —
+ * above anything this selector can reach without repeating classes for the
+ * arithmetic's sake. */
+.doc-export .tiptap.tiptap-doc-content p.doc-export__media-row {
+	display: block !important;
+}
+.doc-export
+	.tiptap.tiptap-doc-content
+	p.doc-export__media-row
+	> [data-node="image"] {
+	display: inline-flex !important;
+	width: auto !important;
+	vertical-align: top;
+}
+/* The room an images-only row gets from its 'gap', which block layout has not. */
+.doc-export
+	.tiptap.tiptap-doc-content
+	p.doc-export__media-row
+	> [data-node="image"]
+	+ [data-node="image"] {
+	margin-inline-start: 0.25rem;
+}
+
+/* ── html2canvas's own font probe ──
+ *
+ * The rasterizer works out where a line of text sits by appending a hidden 1x1
+ * GIF beside a sample span and reading 'img.offsetTop - span.offsetTop'
+ * (FontMetrics.parseMetrics). That difference is the font's ascent only while
+ * the probe is INLINE — and the base reset above, which is Preflight's, makes
+ * EVERY <img> 'display: block'. The probe then drops onto a line of its own and
+ * the number that comes back is a whole line box, so every run of text in the
+ * capture is painted 5-8px BELOW where the browser puts it while boxes and
+ * pictures keep their exact rects. Measured on a downloaded PDF: text ink began
+ * 11.8px into a 25.6px line box instead of 4px and ended 2px past the bottom of
+ * it — in a list row carrying a picture the words came down ON the picture,
+ * which reads as the picture having crept up into them.
+ *
+ * A RULE and not an 'onclone': the probe is appended to the LIVE document
+ * ('new FontMetrics(document)'), which the clone callback never sees. No
+ * '.doc-export' scope for the same reason — the probe is a child of <body>,
+ * outside the exported page. It is matched on the exact bytes html2canvas uses
+ * for that image, so nothing the document itself contains answers this
+ * selector, and the sheet is only in the page while an export is running
+ * (mountOffscreen), so no other picture in the app is reached either. */
+img[width="1"][height="1"][src^="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP"] {
+	display: inline !important;
+	vertical-align: baseline !important;
+}
+/* The SAME probe, measured a second time to place a line-through: the image is
+ * moved to 'vertical-align: super' and the distance read again. That reading
+ * comes back equal to the baseline — a 1px image is not raised enough to
+ * survive 'offsetTop' rounding — so the rasterizer drew every strikethrough ON
+ * the baseline, where it reads as an underline rather than as struck-out text.
+ *
+ * A quarter of an em above the baseline is where a strikethrough belongs, and
+ * stating it here is how it reaches a number the rasterizer computes for
+ * itself. Matched on the inline style the probe carries in that second pass,
+ * so ONLY that pass is answered — the first measurement, which places every
+ * line of text on the page, is left exactly as it was. 'middle' has one use in
+ * html2canvas 1.4.1 and this is it. */
+img[width="1"][height="1"][src^="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP"][style*="vertical-align: super"] {
+	vertical-align: 0.25em !important;
+}
+
+/* ── html2pdf's own container ──
+ *
+ * html2pdf clones the page into a container of its own and captures THAT, and
+ * it sizes the container to the PDF's printable width — about 688px for A4 at
+ * these margins. Left alone, the document is re-flowed to 688px before the
+ * picture is taken: lines break in different places from the document on
+ * screen, and a picture keeping its stored pixel width takes a visibly larger
+ * share of the narrower column.
+ *
+ * Pinning the container to the document's OWN column instead means the capture
+ * is the document, and html2pdf's last step — drawing the canvas across the
+ * page's printable width — becomes a plain proportional scale of it. Same line
+ * breaks, same proportions, just smaller type on the page.
+ *
+ * '!important' because html2pdf writes the width as an inline style, and the
+ * overlay's 'overflow: hidden' has to go with it or a viewport narrower than
+ * the column clips the capture. Both class names are html2pdf's documented
+ * ones (alongside 'html2pdf__page-break').
+ */
+.html2pdf__container {
+	width: 820px !important;
+	left: 0 !important;
+	right: auto !important;
+	margin: 0 !important;
+}
+.html2pdf__overlay {
+	overflow: visible !important;
+}
+
+@page {
+	size: A4 portrait;
+	margin: 16mm 14mm;
+}
+@media print {
+	html,
+	body {
+		background: #ffffff;
+	}
+}
+</style>
+</head>
+<body>
+<div class="doc-export"><h1 class="tiptap-title-placeholder doc-export__title">CHOY CHAT</h1><div class="tiptap tiptap-doc-content ProseMirror doc-export__body"><p>CHOY CHAT</p><p></p><pre><code class="hljs">Choy Chat</code></pre><p></p></div></div>
+</body>
+</html>

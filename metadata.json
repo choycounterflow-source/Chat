@@ -1,0 +1,6 @@
+{
+  "name": "Choy Chat - Secret Chatting & GitHub Intelligence",
+  "description": "Secret chatting, GitHub repository intelligence, and AI code review assistant.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
