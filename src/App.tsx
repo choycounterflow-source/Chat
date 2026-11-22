@@ -49,7 +49,8 @@ import {
   User,
   Ban,
   Phone,
-  Clock
+  Clock,
+  MoreVertical
 } from 'lucide-react';
 import { PWAInstallButton } from './components/PWAInstallButton';
 import { OfflineIndicator } from './components/OfflineIndicator';
@@ -198,6 +199,9 @@ export default function App() {
     | 'videos'
   >('feed');
   const [searchQuery, setSearchQuery] = useState('');
+  const [isSearchOpen, setIsSearchOpen] = useState(false);
+  const [isMenuDrawerOpen, setIsMenuDrawerOpen] = useState(false);
+  const searchContainerRef = useRef<HTMLDivElement>(null);
 
   // Video Call Modal State
   const [isInVideoCall, setIsInVideoCall] = useState(false);
@@ -352,6 +356,35 @@ export default function App() {
     setSelectedProfileUser(null);
     setActiveTab('messages');
   }, []);
+
+  useEffect(() => {
+    if (!isSearchOpen) return;
+    const handleOutsideClick = (e: MouseEvent) => {
+      if (searchContainerRef.current && !searchContainerRef.current.contains(e.target as Node)) {
+        setIsSearchOpen(false);
+      }
+    };
+    const handleEsc = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setIsSearchOpen(false);
+    };
+    document.addEventListener('mousedown', handleOutsideClick);
+    window.addEventListener('keydown', handleEsc);
+    return () => {
+      document.removeEventListener('mousedown', handleOutsideClick);
+      window.removeEventListener('keydown', handleEsc);
+    };
+  }, [isSearchOpen]);
+
+  useEffect(() => {
+    if (!isMenuDrawerOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setIsMenuDrawerOpen(false);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [isMenuDrawerOpen]);
 
   useEffect(() => {
     if (!selectedProfileUser) return;
@@ -1440,9 +1473,38 @@ export default function App() {
           .map((r) => ({ id: r.id, name: r.name, total: calculateRowTotal(r) }))
           .sort((a, b) => b.total - a.total);
 
+  const normalizedSearch = searchQuery.trim().toLowerCase();
+
+  const filteredUsers = usersList.filter((u) => {
+    if (!normalizedSearch) return true;
+    const handle = `@${u.name.toLowerCase().replace(/[^a-z0-9]+/g, '')}`;
+    const roleLabel = u.role === 'admin' ? 'admin' : 'member active';
+    const canSearchPhone =
+      (isAdmin || u.id === currentUser?.id) &&
+      Boolean(u.phone) &&
+      u.phone.toLowerCase() !== 'member';
+    return (
+      u.name.toLowerCase().includes(normalizedSearch) ||
+      handle.includes(normalizedSearch) ||
+      roleLabel.includes(normalizedSearch) ||
+      (canSearchPhone && u.phone.toLowerCase().includes(normalizedSearch))
+    );
+  });
+
   const filteredPosts = posts
     .filter((p) => !blockedUsers.includes(p.author.name))
-    .filter((p) => p.content.toLowerCase().includes(searchQuery.toLowerCase()));
+    .filter((p) => {
+      if (!normalizedSearch) return true;
+      return (
+        p.content.toLowerCase().includes(normalizedSearch) ||
+        p.author.name.toLowerCase().includes(normalizedSearch) ||
+        p.author.handle.toLowerCase().includes(normalizedSearch)
+      );
+    });
+
+  const filteredChatRooms = normalizedSearch
+    ? chatRoomsList.filter((room) => room.toLowerCase().includes(normalizedSearch))
+    : chatRoomsList;
 
   // Loading state while checking server status
   if (!authChecked) {
@@ -2144,13 +2206,12 @@ export default function App() {
               <div className="text-[9px] text-emerald-700 dark:text-emerald-300 truncate">{isAdmin ? 'Admin • Synced' : 'Member • Synced'}</div>
             </div>
           </button>
-          <PWAInstallButton fullWidth />
           <button
             type="button"
-            onClick={handleLogout}
-            className="w-full px-3 py-2 rounded-xl bg-emerald-50 dark:bg-emerald-950 text-red-700 dark:text-red-300 text-xs font-semibold hover:bg-emerald-100 dark:hover:bg-emerald-800 flex items-center justify-center gap-2"
+            onClick={() => setIsMenuDrawerOpen(true)}
+            className="w-full px-3 py-2 rounded-xl bg-emerald-50 dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-800 text-emerald-900 dark:text-emerald-100 text-xs font-semibold hover:bg-emerald-100 dark:hover:bg-emerald-800 flex items-center justify-center gap-2 transition"
           >
-            <LogOut className="w-3.5 h-3.5" /> Logout
+            <MoreVertical className="w-3.5 h-3.5" /> Menu &amp; Settings
           </button>
         </div>
       </aside>
@@ -2158,7 +2219,7 @@ export default function App() {
       {/* MAIN VIEW */}
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
         {/* TOP BAR — FULL-WIDTH DESIGNED CHOY CHAT BANNER */}
-        <header className="flex flex-col px-3 sm:px-5 pt-3 pb-3 border-b border-emerald-200 dark:border-emerald-700/70 bg-gradient-to-b from-white via-emerald-50/70 to-emerald-50 dark:from-emerald-950 dark:via-emerald-900/70 dark:to-emerald-950/90 shrink-0 gap-2.5">
+        <header className="relative z-30 flex flex-col px-3 sm:px-5 pt-3 pb-3 border-b border-emerald-200 dark:border-emerald-700/70 bg-gradient-to-b from-white via-emerald-50/70 to-emerald-50 dark:from-emerald-950 dark:via-emerald-900/70 dark:to-emerald-950/90 shrink-0 gap-2.5">
           {/* Full-width edge-to-edge CHOY CHAT Hero Banner */}
           <div className="relative w-full overflow-hidden rounded-2xl border border-amber-500/50 dark:border-amber-400/45 bg-gradient-to-r from-emerald-100 via-white to-emerald-100 dark:from-emerald-950 dark:via-emerald-900/95 dark:to-emerald-950 px-3 sm:px-6 py-2.5 sm:py-3.5 shadow-[0_4px_20px_rgba(6,95,70,0.12)] dark:shadow-[0_0_25px_rgba(16,185,129,0.22)]">
             {/* Soft ambient emerald & gold glow */}
@@ -2200,66 +2261,120 @@ export default function App() {
 
           {/* Action & Search Row */}
           <div className="flex items-center gap-2 w-full">
-            <div className="shrink-0">
-              <PWAInstallButton compact />
-            </div>
-
-            <div className="relative flex-1 min-w-0">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-emerald-700 dark:text-emerald-300" />
+            <div ref={searchContainerRef} className="relative flex-1 min-w-0 z-30">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-emerald-700 dark:text-emerald-300 pointer-events-none" />
               <input
                 type="text"
-                placeholder="Search posts, people, chats..."
+                placeholder="Search users, posts, chats..."
                 value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full pl-9 pr-4 py-2 bg-white dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700/80 rounded-xl text-xs text-emerald-950 dark:text-white placeholder-emerald-600/60 dark:placeholder-emerald-400 focus:outline-none focus:border-amber-500 dark:focus:border-amber-300/80 shadow-inner"
+                onFocus={() => setIsSearchOpen(true)}
+                onChange={(e) => {
+                  setSearchQuery(e.target.value);
+                  setIsSearchOpen(true);
+                }}
+                className="w-full pl-9 pr-8 py-2 bg-white dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700/80 rounded-xl text-xs text-emerald-950 dark:text-white placeholder-emerald-600/60 dark:placeholder-emerald-400 focus:outline-none focus:border-amber-500 dark:focus:border-amber-300/80 shadow-inner"
               />
+              {searchQuery && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSearchQuery('');
+                    setIsSearchOpen(false);
+                  }}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded-md text-emerald-700 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-emerald-800 transition"
+                  aria-label="Clear search"
+                  title="Clear search"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
+
+              {/* Live Global User Search Dropdown */}
+              {isSearchOpen && normalizedSearch.length > 0 && (
+                <div className="absolute left-0 right-0 top-full mt-1.5 rounded-2xl bg-white dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 shadow-2xl overflow-hidden z-50">
+                  <div className="px-3 py-2 bg-emerald-50 dark:bg-emerald-900/80 border-b border-emerald-200 dark:border-emerald-800 flex items-center justify-between gap-2 text-[10px] font-bold uppercase tracking-wider text-emerald-700 dark:text-emerald-300">
+                    <span>People ({filteredUsers.length})</span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setActiveTab('people');
+                        setIsSearchOpen(false);
+                      }}
+                      className="text-emerald-800 dark:text-emerald-200 hover:underline normal-case font-semibold"
+                    >
+                      Open People Tab →
+                    </button>
+                  </div>
+
+                  {filteredUsers.length === 0 ? (
+                    <div className="p-3.5 text-center text-xs text-emerald-700 dark:text-emerald-300">
+                      No user found matching <span className="font-bold">"{searchQuery.trim()}"</span>.
+                    </div>
+                  ) : (
+                    <div className="max-h-64 overflow-y-auto divide-y divide-emerald-100 dark:divide-emerald-800/80">
+                      {filteredUsers.slice(0, 8).map((u) => {
+                        const isMe = u.id === currentUser.id;
+                        return (
+                          <div
+                            key={u.id}
+                            className="px-3 py-2 flex items-center justify-between gap-2 hover:bg-emerald-50 dark:hover:bg-emerald-900/70 transition"
+                          >
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setIsSearchOpen(false);
+                                openUserProfile(u);
+                              }}
+                              className="flex items-center gap-2.5 min-w-0 flex-1 text-left"
+                            >
+                              <img
+                                src={DEFAULT_AVATAR}
+                                alt=""
+                                className="w-7 h-9 rounded-lg bg-emerald-50 dark:bg-emerald-900 object-contain border border-emerald-500/50 shrink-0"
+                              />
+                              <div className="min-w-0">
+                                <div className="text-xs font-bold text-emerald-950 dark:text-white truncate">
+                                  {u.name} {isMe ? '(You)' : ''}
+                                </div>
+                                <div className="text-[10px] text-emerald-700 dark:text-emerald-300 truncate">
+                                  {u.role === 'admin' ? 'Admin' : 'Active Member'}
+                                  {(isAdmin || isMe) && u.phone && u.phone.toLowerCase() !== 'member'
+                                    ? ` · ${u.phone}`
+                                    : ''}
+                                </div>
+                              </div>
+                            </button>
+                            {!isMe && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setIsSearchOpen(false);
+                                  handleMessageUser(u.name);
+                                }}
+                                className="px-2.5 py-1 rounded-lg bg-emerald-400 hover:bg-emerald-300 text-slate-950 text-[11px] font-bold shrink-0 transition"
+                              >
+                                Message
+                              </button>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
 
-            <div className="flex items-center gap-1.5 shrink-0">
-              <button
-                type="button"
-                onClick={() => setActiveTab('profile')}
-                className={`flex items-center gap-1.5 px-2 py-1.5 rounded-xl border transition shrink-0 ${
-                  activeTab === 'profile'
-                    ? 'bg-emerald-400 border-emerald-500 text-slate-950 font-bold shadow-sm'
-                    : 'bg-white dark:bg-emerald-900 border-emerald-300 dark:border-emerald-700 text-emerald-900 dark:text-emerald-100 hover:bg-emerald-100 dark:hover:bg-emerald-800'
-                }`}
-                title="Open My Profile"
-                aria-label="Open My Profile"
-              >
-                <img
-                  src={DEFAULT_AVATAR}
-                  alt=""
-                  className="w-5 h-6 rounded-md bg-emerald-50 dark:bg-emerald-950 object-contain border border-emerald-500/50 shrink-0"
-                />
-                <span className="hidden sm:inline text-xs font-bold max-w-[96px] truncate">{currentUser.name}</span>
-              </button>
-              <button
-                type="button"
-                onClick={toggleLightDark}
-                className="p-2 bg-white dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 rounded-xl text-amber-700 dark:text-amber-300 hover:bg-emerald-100 dark:hover:bg-emerald-800 transition shrink-0"
-                title={resolvedTheme === 'dark' ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
-                aria-label={resolvedTheme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
-              >
-                {resolvedTheme === 'dark' ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
-              </button>
-              <button
-                type="button"
-                onClick={handleShareApp}
-                className="p-2 bg-white dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 rounded-xl text-emerald-800 dark:text-emerald-200 hover:text-emerald-950 dark:hover:text-white hover:border-amber-400/60 transition shrink-0"
-                title={shareCopied ? 'Link Copied!' : 'Share'}
-              >
-                <Share2 className="w-4 h-4" />
-              </button>
-              <button
-                type="button"
-                onClick={handleLogout}
-                className="md:hidden p-2 bg-white dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 rounded-xl text-red-700 dark:text-red-300 hover:text-red-900 dark:hover:text-white shrink-0"
-                title="Logout"
-              >
-                <LogOut className="w-4 h-4" />
-              </button>
-            </div>
+            <button
+              type="button"
+              onClick={() => setIsMenuDrawerOpen(true)}
+              className="p-2.5 bg-white dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 rounded-xl text-emerald-900 dark:text-emerald-100 hover:bg-emerald-100 dark:hover:bg-emerald-800 hover:border-amber-400/70 transition shrink-0 shadow-xs"
+              title="Open Menu & Settings"
+              aria-label="Open Menu and Settings"
+              aria-expanded={isMenuDrawerOpen}
+            >
+              <MoreVertical className="w-4 h-4" />
+            </button>
           </div>
         </header>
 
@@ -2467,73 +2582,132 @@ export default function App() {
           {/* PEOPLE TAB */}
           {activeTab === 'people' && (
             <div className="max-w-xl mx-auto space-y-3">
-              {usersList.map((u) => {
-                const isMe = u.id === currentUser.id;
-                const isBlocked = blockedUsers.includes(u.name);
-                return (
-                  <div
-                    key={u.id}
-                    className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-4 flex items-center justify-between gap-2"
-                  >
+              {/* Dedicated People Search Bar */}
+              <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-3 space-y-2">
+                <div className="relative">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-emerald-700 dark:text-emerald-300 pointer-events-none" />
+                  <input
+                    type="text"
+                    placeholder={isAdmin ? 'Search user by name or phone...' : 'Search user by name...'}
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    className="w-full pl-9 pr-8 py-2 bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 rounded-xl text-xs text-emerald-950 dark:text-white placeholder-emerald-600/60 dark:placeholder-emerald-400 focus:outline-none focus:border-emerald-500"
+                  />
+                  {searchQuery && (
                     <button
                       type="button"
-                      onClick={() => openUserProfile(u)}
-                      className="group flex items-center gap-3 min-w-0 flex-1 text-left rounded-xl p-1 -m-1 hover:bg-emerald-50 dark:hover:bg-emerald-800/50 transition focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400"
-                      title={`View ${u.name}'s profile`}
+                      onClick={() => setSearchQuery('')}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded-md text-emerald-700 dark:text-emerald-300 hover:bg-emerald-200/70 dark:hover:bg-emerald-800 transition"
+                      aria-label="Clear user search"
                     >
-                      <div className="relative shrink-0">
-                        <img
-                          src={DEFAULT_AVATAR}
-                          alt=""
-                          className="w-9 h-12 rounded-xl bg-emerald-50 dark:bg-emerald-950 object-contain border border-emerald-500/50 group-hover:border-emerald-400 transition"
-                        />
-                        <span
-                          className="absolute -bottom-0.5 -right-0.5 w-3 h-3 bg-emerald-400 border-2 border-white dark:border-emerald-950 rounded-full"
-                          title="Online"
-                        ></span>
-                      </div>
-                      <div className="min-w-0">
-                        <div className="text-xs font-bold text-emerald-950 dark:text-white truncate group-hover:text-emerald-700 dark:group-hover:text-emerald-300 group-hover:underline">
-                          {u.name} {isMe ? '(You)' : ''}
-                        </div>
-                        <div className="text-[10px] text-emerald-700 dark:text-emerald-300 truncate">
-                          {u.role === 'admin' ? 'Admin' : 'Active'} · Tap to view profile
-                        </div>
-                      </div>
+                      <X className="w-3.5 h-3.5" />
                     </button>
-                    {!isMe ? (
-                      <div className="flex items-center gap-1.5 shrink-0">
-                        <button
-                          type="button"
-                          onClick={() => handleMessageUser(u.name)}
-                          className="px-2.5 py-1.5 rounded-xl text-xs font-bold bg-emerald-400 hover:bg-emerald-300 text-slate-950 transition"
-                        >
-                          Message
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleToggleBlockUser(u.name)}
-                          className={`px-2.5 py-1.5 rounded-xl text-xs font-bold transition ${
-                            isBlocked
-                              ? 'bg-red-600 text-white hover:bg-red-700'
-                              : 'bg-red-50 dark:bg-red-950 text-red-700 dark:text-red-300 border border-red-300 dark:border-red-700 hover:bg-red-100 dark:hover:bg-red-900'
-                          }`}
-                        >
-                          {isBlocked ? 'Blocked' : 'Block'}
-                        </button>
-                      </div>
-                    ) : (
+                  )}
+                </div>
+                <div className="flex items-center justify-between text-[11px] text-emerald-700 dark:text-emerald-300 px-0.5">
+                  <span>
+                    Showing <span className="font-bold">{filteredUsers.length}</span> of{' '}
+                    <span className="font-bold">{usersList.length}</span> user{usersList.length === 1 ? '' : 's'}
+                  </span>
+                  {normalizedSearch && (
+                    <button
+                      type="button"
+                      onClick={() => setSearchQuery('')}
+                      className="font-bold text-emerald-800 dark:text-emerald-200 hover:underline"
+                    >
+                      Clear filter
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {filteredUsers.length === 0 ? (
+                <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-6 text-center space-y-2">
+                  <div className="text-xs font-bold text-emerald-950 dark:text-white">
+                    No user found for "{searchQuery.trim()}"
+                  </div>
+                  <p className="text-[11px] text-emerald-700 dark:text-emerald-300">
+                    Try another spelling or clear the search box to see all members.
+                  </p>
+                  {searchQuery && (
+                    <button
+                      type="button"
+                      onClick={() => setSearchQuery('')}
+                      className="px-3.5 py-1.5 rounded-xl bg-emerald-400 hover:bg-emerald-300 text-slate-950 text-xs font-bold transition"
+                    >
+                      Show All Users
+                    </button>
+                  )}
+                </div>
+              ) : (
+                filteredUsers.map((u) => {
+                  const isMe = u.id === currentUser.id;
+                  const isBlocked = blockedUsers.includes(u.name);
+                  return (
+                    <div
+                      key={u.id}
+                      className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-4 flex items-center justify-between gap-2"
+                    >
                       <button
                         type="button"
-                        onClick={() => setActiveTab('profile')}
-                        className="px-3 py-1.5 rounded-xl text-xs font-bold bg-emerald-100 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-200 border border-emerald-300 dark:border-emerald-700 hover:bg-emerald-200 dark:hover:bg-emerald-800 transition shrink-0"
+                        onClick={() => openUserProfile(u)}
+                        className="group flex items-center gap-3 min-w-0 flex-1 text-left rounded-xl p-1 -m-1 hover:bg-emerald-50 dark:hover:bg-emerald-800/50 transition focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400"
+                        title={`View ${u.name}'s profile`}
                       >
-                        My Profile
+                        <div className="relative shrink-0">
+                          <img
+                            src={DEFAULT_AVATAR}
+                            alt=""
+                            className="w-9 h-12 rounded-xl bg-emerald-50 dark:bg-emerald-950 object-contain border border-emerald-500/50 group-hover:border-emerald-400 transition"
+                          />
+                          <span
+                            className="absolute -bottom-0.5 -right-0.5 w-3 h-3 bg-emerald-400 border-2 border-white dark:border-emerald-950 rounded-full"
+                            title="Online"
+                          ></span>
+                        </div>
+                        <div className="min-w-0">
+                          <div className="text-xs font-bold text-emerald-950 dark:text-white truncate group-hover:text-emerald-700 dark:group-hover:text-emerald-300 group-hover:underline">
+                            {u.name} {isMe ? '(You)' : ''}
+                          </div>
+                          <div className="text-[10px] text-emerald-700 dark:text-emerald-300 truncate">
+                            {u.role === 'admin' ? 'Admin' : 'Active'} · Tap to view profile
+                          </div>
+                        </div>
                       </button>
-                    )}
-                  </div>
-                );
-              })}
+                      {!isMe ? (
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => handleMessageUser(u.name)}
+                            className="px-2.5 py-1.5 rounded-xl text-xs font-bold bg-emerald-400 hover:bg-emerald-300 text-slate-950 transition"
+                          >
+                            Message
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleToggleBlockUser(u.name)}
+                            className={`px-2.5 py-1.5 rounded-xl text-xs font-bold transition ${
+                              isBlocked
+                                ? 'bg-red-600 text-white hover:bg-red-700'
+                                : 'bg-red-50 dark:bg-red-950 text-red-700 dark:text-red-300 border border-red-300 dark:border-red-700 hover:bg-red-100 dark:hover:bg-red-900'
+                            }`}
+                          >
+                            {isBlocked ? 'Blocked' : 'Block'}
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => setActiveTab('profile')}
+                          className="px-3 py-1.5 rounded-xl text-xs font-bold bg-emerald-100 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-200 border border-emerald-300 dark:border-emerald-700 hover:bg-emerald-200 dark:hover:bg-emerald-800 transition shrink-0"
+                        >
+                          My Profile
+                        </button>
+                      )}
+                    </div>
+                  );
+                })
+              )}
             </div>
           )}
 
@@ -2597,336 +2771,134 @@ export default function App() {
               );
             })()}
 
-          {/* PROFILE / ACCOUNT (ZOOMED OUT FULL PORTRAIT + APPEARANCE & THEME) */}
-          {activeTab === 'profile' && (
-            <div className="max-w-2xl mx-auto space-y-5">
-              {/* Account Card */}
-              <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-5 sm:p-6 shadow-sm">
-                <div className="flex flex-col sm:flex-row items-center sm:items-start gap-5">
-                  <div className="relative w-full max-w-[220px] aspect-[9/16] max-h-[340px] rounded-2xl bg-emerald-50 dark:bg-emerald-950 border-2 border-emerald-500/80 dark:border-emerald-400/80 p-1.5 overflow-hidden shadow-lg shrink-0">
-                    <img
-                      src={DEFAULT_AVATAR}
-                      alt="Account portrait"
-                      className="w-full h-full object-contain rounded-xl"
-                    />
-                  </div>
-                  <div className="min-w-0 flex-1 text-center sm:text-left space-y-3 pt-1">
-                    <div>
-                      <div className="text-[11px] font-semibold text-emerald-700 dark:text-emerald-300">My Account</div>
-                      <h2 className="text-xl font-black text-emerald-950 dark:text-white truncate">{currentUser.name}</h2>
-                      <div className="text-xs text-emerald-800 dark:text-emerald-200 font-mono tabular-nums truncate">
-                        {currentUser.phone}
-                      </div>
-                    </div>
+          {/* CLEAN PROFILE DASHBOARD (ALL CONTROLS MOVED TO 3-DOTS MENU DRAWER) */}
+          {activeTab === 'profile' &&
+            (() => {
+              const myLower = currentUser.name.trim().toLowerCase();
+              const myPosts = posts.filter(
+                (p) => p.authorId === currentUser.id || p.author.name.trim().toLowerCase() === myLower
+              );
+              const myMessages = messages.filter(
+                (m) => m.senderId === currentUser.id || m.sender.trim().toLowerCase() === myLower
+              );
+              const myMediaCount =
+                myPosts.filter((p) => Boolean(p.mediaUrl)).length +
+                myMessages.filter((m) => Boolean(m.mediaUrl)).length;
+              const myHandle = `@${currentUser.name.toLowerCase().replace(/[^a-z0-9]+/g, '') || 'member'}`;
 
-                    <div className="flex flex-wrap items-center justify-center sm:justify-start gap-x-2 gap-y-1 text-xs text-emerald-800 dark:text-emerald-200">
-                      <span className="inline-flex items-center gap-1 font-medium">
-                        <Cloud className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
-                        {storageMode === 'postgres' ? 'PostgreSQL Cloud Sync' : 'Live Server Sync'}
-                      </span>
-                      <span aria-hidden="true" className="text-emerald-400 dark:text-emerald-600">·</span>
-                      <span className="font-semibold text-indigo-700 dark:text-indigo-300">
-                        {isAdmin ? 'Admin' : 'Member'}
-                      </span>
-                      <span aria-hidden="true" className="text-emerald-400 dark:text-emerald-600">·</span>
-                      <span className="font-mono text-[11px] text-emerald-700 dark:text-emerald-300">
-                        Theme: {resolvedTheme === 'dark' ? 'Dark' : 'Light'}
-                      </span>
-                    </div>
-
-                    <div className="pt-2">
-                      <button
-                        type="button"
-                        onClick={handleLogout}
-                        className="px-4 py-2.5 min-h-[40px] rounded-xl bg-red-50 dark:bg-emerald-950 border border-red-300 dark:border-red-500/40 text-red-700 dark:text-red-300 text-xs font-bold hover:bg-red-100 dark:hover:bg-red-950/60 inline-flex items-center gap-2 transition"
-                      >
-                        <LogOut className="w-3.5 h-3.5" /> Logout Account
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              {/* Appearance & Theme Settings */}
-              <section className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-5 sm:p-6 space-y-6 shadow-sm">
-                <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-emerald-200 dark:border-emerald-800">
-                  <div>
-                    <h3 className="text-base font-bold text-emerald-950 dark:text-white">
-                      Appearance &amp; Theme
-                    </h3>
-                    <p className="text-xs text-emerald-700 dark:text-emerald-300 mt-0.5">
-                      Customize Choy Chat lighting, reading scale, and motion across all tabs.
-                    </p>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={resetAppearance}
-                    className="px-3 py-1.5 min-h-[36px] rounded-xl border border-emerald-300 dark:border-emerald-700 bg-emerald-50 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-800 text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition"
-                  >
-                    <RotateCcw className="w-3.5 h-3.5" />
-                    <span>Reset Defaults</span>
-                  </button>
-                </div>
-
-                {/* 1. Light / Dark / System Mode Toggle */}
-                <div className="space-y-3">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <span className="text-xs font-bold text-emerald-950 dark:text-white">Color Theme</span>
-                    <span className="text-[11px] font-mono text-emerald-700 dark:text-emerald-300">
-                      Active: {resolvedTheme === 'dark' ? 'Dark (Royal Emerald)' : 'Light (Emerald Ivory)'}
-                    </span>
-                  </div>
-
-                  <div
-                    role="radiogroup"
-                    aria-label="Application color theme"
-                    className="grid grid-cols-3 gap-2 p-1.5 rounded-xl bg-emerald-50 dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-800"
-                  >
-                    {(
-                      [
-                        { id: 'light', label: 'Light', icon: Sun, desc: 'Emerald Ivory' },
-                        { id: 'dark', label: 'Dark', icon: Moon, desc: 'Royal Emerald' },
-                        { id: 'system', label: 'System', icon: Monitor, desc: 'Device Auto' },
-                      ] as const
-                    ).map((opt) => {
-                      const Icon = opt.icon;
-                      const isActive = themeMode === opt.id;
-                      return (
-                        <button
-                          key={opt.id}
-                          type="button"
-                          role="radio"
-                          aria-checked={isActive}
-                          onClick={() => setThemeMode(opt.id)}
-                          className={`min-h-[54px] px-3 py-2.5 rounded-lg flex flex-col items-center justify-center gap-1 text-xs font-semibold transition whitespace-nowrap ${
-                            isActive
-                              ? 'bg-emerald-600 text-white dark:bg-emerald-400 dark:text-slate-950 shadow-sm'
-                              : 'text-emerald-800 hover:bg-emerald-100 dark:text-emerald-200 dark:hover:bg-emerald-900'
-                          }`}
-                        >
-                          <div className="flex items-center gap-1.5">
-                            <Icon className="w-4 h-4 shrink-0" />
-                            <span>{opt.label}</span>
-                          </div>
-                          <span
-                            className={`text-[10px] font-normal ${
-                              isActive
-                                ? 'text-emerald-50 dark:text-slate-900'
-                                : 'text-emerald-700/80 dark:text-emerald-300/75'
-                            }`}
-                          >
-                            {opt.desc}
-                          </span>
-                        </button>
-                      );
-                    })}
-                  </div>
-
-                  {/* Quick One-Tap Light/Dark Switch Row */}
-                  <div className="flex items-center justify-between gap-3 pt-1">
-                    <div className="min-w-0">
-                      <div className="text-xs font-semibold text-emerald-950 dark:text-white">
-                        Dark Mode Quick Switch
-                      </div>
-                      <div className="text-[11px] text-emerald-700 dark:text-emerald-300">
-                        Instantly flip between daylight and night viewing (also available in the top bar).
-                      </div>
-                    </div>
-                    <button
-                      type="button"
-                      role="switch"
-                      aria-checked={resolvedTheme === 'dark'}
-                      aria-label="Toggle dark mode"
-                      onClick={toggleLightDark}
-                      className={`relative inline-flex h-7 w-12 shrink-0 items-center rounded-full border transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 ${
-                        resolvedTheme === 'dark'
-                          ? 'bg-emerald-400 border-emerald-300'
-                          : 'bg-emerald-200 border-emerald-300'
-                      }`}
-                    >
-                      <span
-                        className={`inline-flex h-5 w-5 items-center justify-center rounded-full bg-white text-emerald-950 shadow transition-transform ${
-                          resolvedTheme === 'dark' ? 'translate-x-6' : 'translate-x-1'
-                        }`}
-                      >
-                        {resolvedTheme === 'dark' ? (
-                          <Moon className="w-3 h-3" />
-                        ) : (
-                          <Sun className="w-3 h-3 text-amber-600" />
-                        )}
-                      </span>
-                    </button>
-                  </div>
-                </div>
-
-                {/* 2. Text Size Scaling */}
-                <div className="space-y-2.5 pt-4 border-t border-emerald-200 dark:border-emerald-800">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-xs font-bold text-emerald-950 dark:text-white inline-flex items-center gap-1.5">
-                      <Type className="w-3.5 h-3.5 text-emerald-700 dark:text-emerald-300" />
-                      Reading Text Size
-                    </span>
-                    <span className="text-[11px] font-mono text-emerald-700 dark:text-emerald-300 capitalize">
-                      {fontScale}
-                    </span>
-                  </div>
-                  <div className="grid grid-cols-3 gap-1.5 p-1 rounded-xl bg-emerald-50 dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-800">
-                    {(
-                      [
-                        { id: 'compact', label: 'Compact' },
-                        { id: 'standard', label: 'Standard' },
-                        { id: 'large', label: 'Large' },
-                      ] as const
-                    ).map((opt) => {
-                      const active = fontScale === opt.id;
-                      return (
-                        <button
-                          key={opt.id}
-                          type="button"
-                          onClick={() => setFontScale(opt.id)}
-                          className={`min-h-[40px] px-3 py-2 rounded-lg text-xs font-semibold transition whitespace-nowrap ${
-                            active
-                              ? 'bg-emerald-600 text-white dark:bg-emerald-400 dark:text-slate-950 shadow-xs'
-                              : 'text-emerald-800 hover:bg-emerald-100 dark:text-emerald-200 dark:hover:bg-emerald-900'
-                          }`}
-                        >
-                          {opt.label}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                {/* 3. Reduced Motion Accessibility Toggle */}
-                <div className="flex items-center justify-between gap-3 pt-4 border-t border-emerald-200 dark:border-emerald-800">
-                  <div className="min-w-0">
-                    <div className="text-xs font-semibold text-emerald-950 dark:text-white">
-                      Reduce Motion
-                    </div>
-                    <div className="text-[11px] text-emerald-700 dark:text-emerald-300">
-                      Minimize interface animations and transitions for faster, calmer navigation.
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    role="switch"
-                    aria-checked={reducedMotion}
-                    aria-label="Toggle reduced motion"
-                    onClick={() => setReducedMotion(!reducedMotion)}
-                    className={`relative inline-flex h-7 w-12 shrink-0 items-center rounded-full border transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 ${
-                      reducedMotion
-                        ? 'bg-emerald-600 dark:bg-emerald-400 border-emerald-500 dark:border-emerald-300'
-                        : 'bg-emerald-200 dark:bg-emerald-950 border-emerald-300 dark:border-emerald-700'
-                    }`}
-                  >
-                    <span
-                      className={`inline-block h-5 w-5 rounded-full bg-white shadow transition-transform ${
-                        reducedMotion ? 'translate-x-6' : 'translate-x-1'
-                      }`}
-                    />
-                  </button>
-                </div>
-
-                {/* 4. Live Surface Preview */}
-                <div className="pt-4 border-t border-emerald-200 dark:border-emerald-800 space-y-2">
-                  <div className="text-[11px] font-semibold text-emerald-700 dark:text-emerald-300">
-                    Live Preview
-                  </div>
-                  <div className="p-3.5 rounded-xl bg-emerald-50 dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-800 flex items-center justify-between gap-3">
-                    <div className="min-w-0">
-                      <div className="text-xs font-bold text-emerald-950 dark:text-white truncate">
-                        Choy Chat · {resolvedTheme === 'dark' ? 'Night Royal Emerald' : 'Daylight Emerald Ivory'}
-                      </div>
-                      <div className="text-[11px] text-emerald-700 dark:text-emerald-300 truncate">
-                        Saved automatically on this device · Syncs PWA status bar color
-                      </div>
-                    </div>
-                    <span className="px-2.5 py-1 rounded-lg bg-emerald-600 text-white dark:bg-emerald-400 dark:text-slate-950 text-[11px] font-bold whitespace-nowrap shrink-0">
-                      Active
-                    </span>
-                  </div>
-                </div>
-              </section>
-
-              {/* Account Setup & Delete Account */}
-              <section className="bg-white dark:bg-emerald-900/60 border border-rose-200 dark:border-rose-800/70 rounded-2xl p-5 sm:p-6 space-y-4 shadow-sm">
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <div>
-                    <h3 className="text-base font-bold text-emerald-950 dark:text-white flex items-center gap-2">
-                      <Trash2 className="w-4 h-4 text-rose-600 dark:text-rose-400" />
-                      <span>Account Setup &amp; Delete Account</span>
-                    </h3>
-                    <p className="text-xs text-emerald-700 dark:text-emerald-300 mt-0.5">
-                      {isAdmin
-                        ? 'Sign-ups are automatically active without admin approval. Open Accounts to remove member accounts.'
-                        : 'Permanently delete your Choy Chat account and sign out of this device.'}
-                    </p>
-                  </div>
-
-                  {isAdmin ? (
-                    <button
-                      type="button"
-                      onClick={() => setActiveTab('admin_approvals')}
-                      className="px-4 py-2 min-h-[40px] rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition shadow-xs"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                      <span>Manage / Delete Accounts</span>
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setShowDeleteAccountSetup((v) => !v);
-                        setDeleteAccountError('');
-                        setDeleteAccountPin('');
-                      }}
-                      className="px-4 py-2 min-h-[40px] rounded-xl border border-rose-300 dark:border-rose-700 bg-rose-50 dark:bg-rose-950/60 text-rose-700 dark:text-rose-200 hover:bg-rose-100 dark:hover:bg-rose-900/70 text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                      <span>{showDeleteAccountSetup ? 'Cancel' : 'Delete Account'}</span>
-                    </button>
-                  )}
-                </div>
-
-                {!isAdmin && showDeleteAccountSetup && (
-                  <form
-                    onSubmit={handleDeleteMyAccount}
-                    className="p-4 rounded-xl bg-rose-50/80 dark:bg-rose-950/50 border border-rose-200 dark:border-rose-800/80 space-y-3"
-                  >
-                    <p className="text-xs text-rose-800 dark:text-rose-200 leading-relaxed">
-                      <strong>Warning:</strong> Deleting your account removes your login credentials permanently. Enter your current PIN below to confirm.
-                    </p>
-                    {deleteAccountError && (
+              return (
+                <div className="max-w-2xl mx-auto space-y-5">
+                  {/* Clean Account Identity Card */}
+                  <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl overflow-hidden shadow-sm">
+                    <div className="p-5 sm:p-6 flex flex-col sm:flex-row items-center sm:items-start gap-5">
                       <div
-                        role="alert"
-                        className="p-2.5 rounded-lg bg-white dark:bg-rose-950 border border-rose-300 dark:border-rose-700 text-xs text-rose-700 dark:text-rose-200"
+                        onClick={() =>
+                          setZoomedImage({
+                            src: DEFAULT_AVATAR,
+                            caption: `${currentUser.name} (${isAdmin ? 'Admin' : 'Active Member'})`
+                          })
+                        }
+                        className="relative w-full max-w-[220px] aspect-[9/16] max-h-[340px] rounded-2xl bg-emerald-50 dark:bg-emerald-950 border-2 border-emerald-500/80 dark:border-emerald-400/80 p-1.5 overflow-hidden shadow-lg shrink-0 cursor-zoom-in"
+                        title="Tap to zoom"
                       >
-                        {deleteAccountError}
+                        <img
+                          src={DEFAULT_AVATAR}
+                          alt="Account portrait"
+                          className="w-full h-full object-contain rounded-xl"
+                        />
+                      </div>
+
+                      <div className="min-w-0 flex-1 text-center sm:text-left space-y-2.5 pt-1">
+                        <div>
+                          <div className="text-[11px] font-semibold text-emerald-700 dark:text-emerald-300">My Account</div>
+                          <h2 className="text-xl font-black text-emerald-950 dark:text-white truncate">{currentUser.name}</h2>
+                          <div className="text-xs text-emerald-700 dark:text-emerald-300 font-mono truncate">{myHandle}</div>
+                          <div className="text-xs text-emerald-800 dark:text-emerald-200 font-mono tabular-nums truncate mt-0.5">
+                            {currentUser.phone}
+                          </div>
+                        </div>
+
+                        <div className="flex flex-wrap items-center justify-center sm:justify-start gap-x-2 gap-y-1 text-xs text-emerald-800 dark:text-emerald-200">
+                          <span className="inline-flex items-center gap-1 font-medium">
+                            <Cloud className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+                            {storageMode === 'postgres' ? 'PostgreSQL Cloud Sync' : 'Live Server Sync'}
+                          </span>
+                          <span aria-hidden="true" className="text-emerald-400 dark:text-emerald-600">·</span>
+                          <span className="font-semibold text-indigo-700 dark:text-indigo-300">
+                            {isAdmin ? 'Admin' : 'Active Member'}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Profile Activity Stats */}
+                    <div className="grid grid-cols-3 divide-x divide-emerald-200 dark:divide-emerald-800 border-t border-emerald-200 dark:border-emerald-800 bg-emerald-50/70 dark:bg-emerald-950/50">
+                      <div className="py-3 px-2 text-center">
+                        <div className="text-base font-black text-emerald-950 dark:text-white font-mono">{myPosts.length}</div>
+                        <div className="text-[10px] font-bold uppercase tracking-wider text-emerald-700 dark:text-emerald-300">Posts</div>
+                      </div>
+                      <div className="py-3 px-2 text-center">
+                        <div className="text-base font-black text-emerald-950 dark:text-white font-mono">{myMediaCount}</div>
+                        <div className="text-[10px] font-bold uppercase tracking-wider text-emerald-700 dark:text-emerald-300">Media</div>
+                      </div>
+                      <div className="py-3 px-2 text-center">
+                        <div className="text-base font-black text-emerald-950 dark:text-white font-mono">{myMessages.length}</div>
+                        <div className="text-[10px] font-bold uppercase tracking-wider text-emerald-700 dark:text-emerald-300">Messages</div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* My Recent Posts */}
+                  <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-4 sm:p-5 space-y-3 shadow-sm">
+                    <div className="text-xs font-bold uppercase tracking-wider text-emerald-700 dark:text-emerald-300">
+                      My Posts ({myPosts.length})
+                    </div>
+                    {myPosts.length === 0 ? (
+                      <div className="p-5 rounded-xl bg-emerald-50/70 dark:bg-emerald-950/60 border border-emerald-200 dark:border-emerald-800 text-center text-xs text-emerald-700 dark:text-emerald-300">
+                        You haven&apos;t published any posts yet.
+                      </div>
+                    ) : (
+                      <div className="space-y-3">
+                        {myPosts.map((post) => (
+                          <div
+                            key={post.id}
+                            className="p-3.5 rounded-xl bg-emerald-50/70 dark:bg-emerald-950/70 border border-emerald-200 dark:border-emerald-800 space-y-2"
+                          >
+                            <div className="flex items-center justify-between text-[10px] text-emerald-700 dark:text-emerald-300">
+                              <span className="font-bold text-emerald-950 dark:text-white">{post.author.name}</span>
+                              <span>{post.timestamp}</span>
+                            </div>
+                            {post.content && (
+                              <p className="text-xs text-emerald-950 dark:text-slate-100 break-words">{post.content}</p>
+                            )}
+                            {post.mediaUrl && post.mediaType === 'image' && (
+                              <div
+                                onClick={() =>
+                                  setZoomedImage({
+                                    src: post.mediaUrl!,
+                                    caption: post.content || `${post.author.name} • ${post.timestamp}`
+                                  })
+                                }
+                                className="rounded-lg overflow-hidden bg-white dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-800 cursor-zoom-in"
+                              >
+                                <img
+                                  src={post.mediaUrl}
+                                  alt={post.content || 'Post image'}
+                                  className="max-h-72 w-full object-contain"
+                                />
+                              </div>
+                            )}
+                            {post.mediaUrl && post.mediaType === 'video' && (
+                              <ChatVideoPlayer src={post.mediaUrl} title={post.author.name} subtitle={post.timestamp} />
+                            )}
+                          </div>
+                        ))}
                       </div>
                     )}
-                    <div className="flex flex-col sm:flex-row gap-2">
-                      <input
-                        type="password"
-                        required
-                        minLength={4}
-                        value={deleteAccountPin}
-                        onChange={(e) => setDeleteAccountPin(e.target.value)}
-                        placeholder="Enter your account PIN..."
-                        className="flex-1 min-h-[40px] px-3 py-2 rounded-xl bg-white dark:bg-emerald-950 border border-rose-300 dark:border-rose-700 text-xs text-emerald-950 dark:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-rose-500"
-                      />
-                      <button
-                        type="submit"
-                        disabled={deletingMyAccount || !deleteAccountPin.trim()}
-                        className="px-4 py-2 min-h-[40px] rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold whitespace-nowrap transition disabled:opacity-50"
-                      >
-                        {deletingMyAccount ? 'Deleting...' : 'Confirm Delete Account'}
-                      </button>
-                    </div>
-                  </form>
-                )}
-              </section>
-            </div>
-          )}
+                  </div>
+                </div>
+              );
+            })()}
 
           {/* MESSAGES WITH REAL-TIME SYNC & REACTIONS */}
           {activeTab === 'messages' && (
@@ -2934,7 +2906,12 @@ export default function App() {
               <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-3 flex flex-col space-y-2 shrink-0">
                 <div className="text-xs font-bold text-emerald-700 dark:text-emerald-300 uppercase">Chats</div>
                 <div className="flex md:flex-col gap-2 overflow-x-auto touch-pan-x overscroll-x-contain [-webkit-overflow-scrolling:touch] md:overflow-visible pb-1.5 md:pb-0">
-                  {chatRoomsList.map((room) => {
+                  {filteredChatRooms.length === 0 ? (
+                    <div className="px-3 py-2 text-[11px] text-emerald-700 dark:text-emerald-300">
+                      No chats match "{searchQuery.trim()}"
+                    </div>
+                  ) : (
+                    filteredChatRooms.map((room) => {
                     const isActive = activeChat === room;
                     return (
                       <button
@@ -2954,7 +2931,8 @@ export default function App() {
                         ></span>
                       </button>
                     );
-                  })}
+                    })
+                  )}
                 </div>
               </div>
 
@@ -3564,7 +3542,12 @@ export default function App() {
                 </div>
 
                 <div className="space-y-2">
-                  {usersList.map((u) => {
+                  {filteredUsers.length === 0 ? (
+                    <div className="p-4 rounded-xl bg-emerald-50 dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-800 text-center text-xs text-emerald-700 dark:text-emerald-300">
+                      No account found matching "{searchQuery.trim()}".
+                    </div>
+                  ) : (
+                  filteredUsers.map((u) => {
                     const isDeleting = deletingUserIds.includes(u.id);
                     const isConfirming = confirmDeleteUserId === u.id;
                     const isAccountAdmin = u.role === 'admin' || u.id === currentUser.id;
@@ -3631,7 +3614,8 @@ export default function App() {
                         </div>
                       </div>
                     );
-                  })}
+                  })
+                  )}
                 </div>
               </div>
             </div>
@@ -4213,6 +4197,336 @@ export default function App() {
             </div>
           );
         })()}
+
+      {/* 3-DOTS / SIDEBAR MENU & SETTINGS DRAWER */}
+      {isMenuDrawerOpen && (
+        <div
+          className="fixed inset-0 z-50 bg-slate-950/65 backdrop-blur-sm flex justify-end"
+          onClick={() => setIsMenuDrawerOpen(false)}
+          role="dialog"
+          aria-modal="true"
+          aria-label="Menu and Settings"
+        >
+          <aside
+            className="w-full max-w-sm h-full bg-white dark:bg-emerald-950 border-l border-emerald-200 dark:border-emerald-800 shadow-2xl flex flex-col overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Drawer Header */}
+            <div className="px-4 py-3.5 border-b border-emerald-200 dark:border-emerald-800 bg-emerald-50/80 dark:bg-emerald-900/70 flex items-center justify-between gap-2 shrink-0">
+              <div className="flex items-center gap-2 min-w-0">
+                <MoreVertical className="w-4 h-4 text-emerald-700 dark:text-emerald-300 shrink-0" />
+                <span className="text-sm font-black text-emerald-950 dark:text-white truncate">
+                  Menu &amp; Settings
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsMenuDrawerOpen(false)}
+                className="p-1.5 rounded-xl bg-white dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-700 text-emerald-800 dark:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-800 transition"
+                aria-label="Close menu"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Scrollable Drawer Body */}
+            <div className="flex-1 overflow-y-auto overscroll-y-contain p-4 space-y-5">
+              {/* Account Summary & Quick Actions */}
+              <div className="space-y-2.5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActiveTab('profile');
+                    setIsMenuDrawerOpen(false);
+                  }}
+                  className={`w-full p-3 rounded-2xl border flex items-center gap-3 text-left transition ${
+                    activeTab === 'profile'
+                      ? 'bg-emerald-100 dark:bg-emerald-900 border-emerald-400 dark:border-emerald-500'
+                      : 'bg-emerald-50/70 dark:bg-emerald-900/40 border-emerald-200 dark:border-emerald-800 hover:bg-emerald-100/80 dark:hover:bg-emerald-900/70'
+                  }`}
+                >
+                  <img
+                    src={DEFAULT_AVATAR}
+                    alt=""
+                    className="w-10 h-13 rounded-xl bg-white dark:bg-emerald-950 object-contain border border-emerald-500/60 shrink-0"
+                  />
+                  <div className="min-w-0 flex-1">
+                    <div className="text-xs font-black text-emerald-950 dark:text-white truncate">{currentUser.name}</div>
+                    <div className="text-[11px] font-mono text-emerald-700 dark:text-emerald-300 truncate">{currentUser.phone}</div>
+                    <div className="text-[10px] font-semibold text-emerald-700 dark:text-emerald-300 mt-0.5">
+                      {isAdmin ? 'Admin' : 'Active Member'} · Tap to view Profile
+                    </div>
+                  </div>
+                </button>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActiveTab('profile');
+                      setIsMenuDrawerOpen(false);
+                    }}
+                    className="px-3 py-2.5 rounded-xl bg-emerald-50 dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700 text-emerald-900 dark:text-emerald-100 hover:bg-emerald-100 dark:hover:bg-emerald-800 text-xs font-bold inline-flex items-center justify-center gap-1.5 transition"
+                  >
+                    <User className="w-3.5 h-3.5" /> My Profile
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleShareApp}
+                    className="px-3 py-2.5 rounded-xl bg-emerald-50 dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700 text-emerald-900 dark:text-emerald-100 hover:bg-emerald-100 dark:hover:bg-emerald-800 text-xs font-bold inline-flex items-center justify-center gap-1.5 transition"
+                  >
+                    <Share2 className="w-3.5 h-3.5" /> {shareCopied ? 'Copied!' : 'Share App'}
+                  </button>
+                </div>
+
+                <div>
+                  <PWAInstallButton fullWidth />
+                </div>
+              </div>
+
+              {/* Appearance & Theme Controls */}
+              <section className="p-4 rounded-2xl bg-emerald-50/70 dark:bg-emerald-900/40 border border-emerald-200 dark:border-emerald-800 space-y-4">
+                <div className="flex items-center justify-between gap-2 pb-2.5 border-b border-emerald-200 dark:border-emerald-800">
+                  <div>
+                    <h3 className="text-xs font-black uppercase tracking-wider text-emerald-950 dark:text-white">
+                      Appearance &amp; Theme
+                    </h3>
+                    <p className="text-[11px] text-emerald-700 dark:text-emerald-300 mt-0.5">
+                      Active: {resolvedTheme === 'dark' ? 'Dark' : 'Light'}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={resetAppearance}
+                    className="px-2.5 py-1.5 rounded-lg border border-emerald-300 dark:border-emerald-700 bg-white dark:bg-emerald-950 text-emerald-800 dark:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-800 text-[11px] font-semibold inline-flex items-center gap-1 transition"
+                  >
+                    <RotateCcw className="w-3 h-3" /> Reset
+                  </button>
+                </div>
+
+                {/* Color Theme Selector */}
+                <div className="space-y-2">
+                  <div className="text-[11px] font-bold text-emerald-950 dark:text-white">Color Theme</div>
+                  <div
+                    role="radiogroup"
+                    aria-label="Application color theme"
+                    className="grid grid-cols-3 gap-1.5 p-1 rounded-xl bg-white dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-800"
+                  >
+                    {(
+                      [
+                        { id: 'light', label: 'Light', icon: Sun },
+                        { id: 'dark', label: 'Dark', icon: Moon },
+                        { id: 'system', label: 'System', icon: Monitor },
+                      ] as const
+                    ).map((opt) => {
+                      const Icon = opt.icon;
+                      const isActive = themeMode === opt.id;
+                      return (
+                        <button
+                          key={opt.id}
+                          type="button"
+                          role="radio"
+                          aria-checked={isActive}
+                          onClick={() => setThemeMode(opt.id)}
+                          className={`min-h-[42px] px-2 py-2 rounded-lg flex items-center justify-center gap-1.5 text-xs font-semibold transition ${
+                            isActive
+                              ? 'bg-emerald-600 text-white dark:bg-emerald-400 dark:text-slate-950 shadow-xs'
+                              : 'text-emerald-800 hover:bg-emerald-100 dark:text-emerald-200 dark:hover:bg-emerald-900'
+                          }`}
+                        >
+                          <Icon className="w-3.5 h-3.5 shrink-0" />
+                          <span>{opt.label}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Quick Dark Mode Switch */}
+                <div className="flex items-center justify-between gap-3 pt-2 border-t border-emerald-200 dark:border-emerald-800">
+                  <div className="min-w-0">
+                    <div className="text-xs font-semibold text-emerald-950 dark:text-white">Dark Mode Switch</div>
+                    <div className="text-[10px] text-emerald-700 dark:text-emerald-300">Quick daylight / night toggle</div>
+                  </div>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={resolvedTheme === 'dark'}
+                    aria-label="Toggle dark mode"
+                    onClick={toggleLightDark}
+                    className={`relative inline-flex h-7 w-12 shrink-0 items-center rounded-full border transition-colors ${
+                      resolvedTheme === 'dark'
+                        ? 'bg-emerald-400 border-emerald-300'
+                        : 'bg-emerald-200 border-emerald-300'
+                    }`}
+                  >
+                    <span
+                      className={`inline-flex h-5 w-5 items-center justify-center rounded-full bg-white text-emerald-950 shadow transition-transform ${
+                        resolvedTheme === 'dark' ? 'translate-x-6' : 'translate-x-1'
+                      }`}
+                    >
+                      {resolvedTheme === 'dark' ? (
+                        <Moon className="w-3 h-3" />
+                      ) : (
+                        <Sun className="w-3 h-3 text-amber-600" />
+                      )}
+                    </span>
+                  </button>
+                </div>
+
+                {/* Reading Text Size */}
+                <div className="space-y-2 pt-2 border-t border-emerald-200 dark:border-emerald-800">
+                  <div className="flex items-center justify-between text-[11px]">
+                    <span className="font-bold text-emerald-950 dark:text-white inline-flex items-center gap-1.5">
+                      <Type className="w-3.5 h-3.5 text-emerald-700 dark:text-emerald-300" /> Reading Text Size
+                    </span>
+                    <span className="font-mono text-emerald-700 dark:text-emerald-300 capitalize">{fontScale}</span>
+                  </div>
+                  <div className="grid grid-cols-3 gap-1.5 p-1 rounded-xl bg-white dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-800">
+                    {(
+                      [
+                        { id: 'compact', label: 'Compact' },
+                        { id: 'standard', label: 'Standard' },
+                        { id: 'large', label: 'Large' },
+                      ] as const
+                    ).map((opt) => {
+                      const active = fontScale === opt.id;
+                      return (
+                        <button
+                          key={opt.id}
+                          type="button"
+                          onClick={() => setFontScale(opt.id)}
+                          className={`min-h-[36px] px-2 py-1.5 rounded-lg text-xs font-semibold transition ${
+                            active
+                              ? 'bg-emerald-600 text-white dark:bg-emerald-400 dark:text-slate-950 shadow-xs'
+                              : 'text-emerald-800 hover:bg-emerald-100 dark:text-emerald-200 dark:hover:bg-emerald-900'
+                          }`}
+                        >
+                          {opt.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Reduce Motion */}
+                <div className="flex items-center justify-between gap-3 pt-2 border-t border-emerald-200 dark:border-emerald-800">
+                  <div className="min-w-0">
+                    <div className="text-xs font-semibold text-emerald-950 dark:text-white">Reduce Motion</div>
+                    <div className="text-[10px] text-emerald-700 dark:text-emerald-300">Minimize animations &amp; transitions</div>
+                  </div>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={reducedMotion}
+                    aria-label="Toggle reduced motion"
+                    onClick={() => setReducedMotion(!reducedMotion)}
+                    className={`relative inline-flex h-7 w-12 shrink-0 items-center rounded-full border transition-colors ${
+                      reducedMotion
+                        ? 'bg-emerald-600 dark:bg-emerald-400 border-emerald-500 dark:border-emerald-300'
+                        : 'bg-emerald-200 dark:bg-emerald-950 border-emerald-300 dark:border-emerald-700'
+                    }`}
+                  >
+                    <span
+                      className={`inline-block h-5 w-5 rounded-full bg-white shadow transition-transform ${
+                        reducedMotion ? 'translate-x-6' : 'translate-x-1'
+                      }`}
+                    />
+                  </button>
+                </div>
+              </section>
+
+              {/* Account Setup & Delete Account */}
+              <section className="p-4 rounded-2xl bg-rose-50/70 dark:bg-rose-950/35 border border-rose-200 dark:border-rose-800/70 space-y-3">
+                <div>
+                  <h3 className="text-xs font-black uppercase tracking-wider text-rose-800 dark:text-rose-200 flex items-center gap-1.5">
+                    <Trash2 className="w-3.5 h-3.5" /> Account Setup &amp; Delete
+                  </h3>
+                  <p className="text-[11px] text-rose-700/90 dark:text-rose-200/80 mt-1 leading-relaxed">
+                    {isAdmin
+                      ? 'Open Accounts to review or permanently remove member accounts.'
+                      : 'Permanently delete your Choy Chat account and sign out of this device.'}
+                  </p>
+                </div>
+
+                {isAdmin ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActiveTab('admin_approvals');
+                      setIsMenuDrawerOpen(false);
+                    }}
+                    className="w-full px-3.5 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold inline-flex items-center justify-center gap-1.5 transition shadow-xs"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" /> Manage / Delete Accounts
+                  </button>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowDeleteAccountSetup((v) => !v);
+                        setDeleteAccountError('');
+                        setDeleteAccountPin('');
+                      }}
+                      className="w-full px-3.5 py-2.5 rounded-xl border border-rose-300 dark:border-rose-700 bg-white dark:bg-rose-950/70 text-rose-700 dark:text-rose-200 hover:bg-rose-100 dark:hover:bg-rose-900/70 text-xs font-bold inline-flex items-center justify-center gap-1.5 transition"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>{showDeleteAccountSetup ? 'Cancel Delete Setup' : 'Set Up Delete Account'}</span>
+                    </button>
+
+                    {showDeleteAccountSetup && (
+                      <form onSubmit={handleDeleteMyAccount} className="space-y-2.5 pt-1">
+                        <p className="text-[11px] text-rose-800 dark:text-rose-200 leading-relaxed">
+                          Enter your current PIN to permanently delete your account:
+                        </p>
+                        {deleteAccountError && (
+                          <div
+                            role="alert"
+                            className="p-2 rounded-lg bg-white dark:bg-rose-950 border border-rose-300 dark:border-rose-700 text-[11px] text-rose-700 dark:text-rose-200"
+                          >
+                            {deleteAccountError}
+                          </div>
+                        )}
+                        <input
+                          type="password"
+                          required
+                          minLength={4}
+                          value={deleteAccountPin}
+                          onChange={(e) => setDeleteAccountPin(e.target.value)}
+                          placeholder="Enter your account PIN..."
+                          className="w-full min-h-[38px] px-3 py-2 rounded-xl bg-white dark:bg-emerald-950 border border-rose-300 dark:border-rose-700 text-xs text-emerald-950 dark:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-rose-500"
+                        />
+                        <button
+                          type="submit"
+                          disabled={deletingMyAccount || !deleteAccountPin.trim()}
+                          className="w-full px-3.5 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold transition disabled:opacity-50"
+                        >
+                          {deletingMyAccount ? 'Deleting...' : 'Confirm Delete Account'}
+                        </button>
+                      </form>
+                    )}
+                  </>
+                )}
+              </section>
+            </div>
+
+            {/* Sticky Drawer Footer: Logout */}
+            <div className="p-4 border-t border-emerald-200 dark:border-emerald-800 bg-emerald-50/70 dark:bg-emerald-900/50 shrink-0">
+              <button
+                type="button"
+                onClick={() => {
+                  setIsMenuDrawerOpen(false);
+                  handleLogout();
+                }}
+                className="w-full px-4 py-2.5 rounded-xl bg-red-50 dark:bg-emerald-950 border border-red-300 dark:border-red-500/50 text-red-700 dark:text-red-300 hover:bg-red-100 dark:hover:bg-red-950/60 text-xs font-bold inline-flex items-center justify-center gap-2 transition"
+              >
+                <LogOut className="w-4 h-4" /> Logout Account
+              </button>
+            </div>
+          </aside>
+        </div>
+      )}
 
       {zoomedImage && (
         <ImageZoomModal
