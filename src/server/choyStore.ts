@@ -235,6 +235,7 @@ export function computeLedgerTotal(row: StoredLedgerRow, settings: StoredPricesS
 export class ChoyStore {
   private pool: Pool | null = null;
   private usePostgres = false;
+  private _storageStatus: 'postgres_connected' | 'no_database_url' | 'auth_failed' | 'connection_failed' = 'no_database_url';
   private readyPromise: Promise<void>;
 
   // In-memory fallback when DATABASE_URL is not yet configured
@@ -254,12 +255,20 @@ export class ChoyStore {
     return this.usePostgres ? 'postgres' : 'memory';
   }
 
+  public get storageStatus(): 'postgres_connected' | 'no_database_url' | 'auth_failed' | 'connection_failed' {
+    return this._storageStatus;
+  }
+
   public async ready(): Promise<void> {
     await this.readyPromise;
   }
 
   private async init(): Promise<void> {
-    const dbUrl = (process.env.DATABASE_URL || '').trim();
+    const rawUrl = (process.env.DATABASE_URL || '').trim();
+    const dbUrl =
+      (rawUrl.startsWith('"') && rawUrl.endsWith('"')) || (rawUrl.startsWith("'") && rawUrl.endsWith("'"))
+        ? rawUrl.slice(1, -1).trim()
+        : rawUrl;
     if (dbUrl) {
       try {
         const isLocal = dbUrl.includes('localhost') || dbUrl.includes('127.0.0.1');
@@ -274,13 +283,21 @@ export class ChoyStore {
         await this.createTables();
         await this.seedIfEmptyPostgres();
         this.usePostgres = true;
+        this._storageStatus = 'postgres_connected';
         console.log('[ChoyStore] Connected to PostgreSQL cloud database.');
         return;
       } catch (err) {
+        const msg = err instanceof Error ? err.message.toLowerCase() : '';
+        this._storageStatus =
+          msg.includes('password') || msg.includes('authentication') || msg.includes('28p01')
+            ? 'auth_failed'
+            : 'connection_failed';
         console.error('[ChoyStore] PostgreSQL connection failed, falling back to in-memory store:', err instanceof Error ? err.message : err);
         this.pool = null;
         this.usePostgres = false;
       }
+    } else {
+      this._storageStatus = 'no_database_url';
     }
     this.seedMemory();
     console.log('[ChoyStore] Running in server memory mode (set DATABASE_URL in Render for permanent PostgreSQL sync).');

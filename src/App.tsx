@@ -226,6 +226,7 @@ export default function App() {
   const [isRecordingAudio, setIsRecordingAudio] = useState(false);
   const [recordingSeconds, setRecordingSeconds] = useState(0);
   const [isProcessingAudio, setIsProcessingAudio] = useState(false);
+  const [isUploadingMsgMedia, setIsUploadingMsgMedia] = useState(false);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const recordingStreamRef = useRef<MediaStream | null>(null);
@@ -545,7 +546,7 @@ export default function App() {
     }
   };
 
-  const compressImageToDataUrl = (file: File): Promise<string> =>
+  const compressImageToBlob = (file: File): Promise<{ blob: Blob; dataUrl: string }> =>
     new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.onerror = () => reject(new Error('Failed to read image file'));
@@ -553,7 +554,7 @@ export default function App() {
         const img = new Image();
         img.onerror = () => reject(new Error('Invalid image file'));
         img.onload = () => {
-          const maxDim = 1080;
+          const maxDim = 1280;
           let { width, height } = img;
           if (width > maxDim || height > maxDim) {
             if (width >= height) {
@@ -569,11 +570,18 @@ export default function App() {
           canvas.height = height;
           const ctx = canvas.getContext('2d');
           if (!ctx) {
-            resolve(String(reader.result || ''));
+            resolve({ blob: file, dataUrl: String(reader.result || '') });
             return;
           }
           ctx.drawImage(img, 0, 0, width, height);
-          resolve(canvas.toDataURL('image/jpeg', 0.8));
+          const dataUrl = canvas.toDataURL('image/jpeg', 0.82);
+          canvas.toBlob(
+            (blob) => {
+              resolve({ blob: blob || file, dataUrl });
+            },
+            'image/jpeg',
+            0.82
+          );
         };
         img.src = String(reader.result || '');
       };
@@ -588,30 +596,73 @@ export default function App() {
       reader.readAsDataURL(file);
     });
 
+  const uploadMediaToCloud = async (
+    blob: Blob,
+    folder: 'posts' | 'messages' | 'voice'
+  ): Promise<{ url: string; mediaType: 'image' | 'video' | 'audio' } | null> => {
+    const headers: Record<string, string> = {
+      'Content-Type': blob.type || 'application/octet-stream',
+      'X-Media-Folder': folder,
+      'X-Requested-With': 'XMLHttpRequest',
+    };
+    if (authToken) {
+      headers.Authorization = `Bearer ${authToken}`;
+    }
+    const res = await fetch('/api/media/upload', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers,
+      body: blob,
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.error || `Upload failed (${res.status})`);
+    }
+    if (data.uploaded && typeof data.url === 'string') {
+      return {
+        url: data.url,
+        mediaType: (data.mediaType as 'image' | 'video' | 'audio') || 'image',
+      };
+    }
+    return null;
+  };
+
   const handlePostFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     setIsProcessingPostMedia(true);
     try {
       if (file.type.startsWith('image/')) {
-        const dataUrl = await compressImageToDataUrl(file);
-        setNewPostMedia(dataUrl);
+        const { blob, dataUrl } = await compressImageToBlob(file);
+        const cloud = await uploadMediaToCloud(blob, 'posts');
+        setNewPostMedia(cloud ? cloud.url : dataUrl);
         setNewPostType('image');
         setNewPostMediaName(file.name);
       } else if (file.type.startsWith('video/')) {
-        if (file.size > 6 * 1024 * 1024) {
-          showNotice('Video must be 6 MB or smaller para ma-sync sa tanan device.');
+        if (file.size > 25 * 1024 * 1024) {
+          showNotice('Video must be 25 MB or smaller.');
           return;
         }
-        const dataUrl = await readFileAsDataUrl(file);
-        setNewPostMedia(dataUrl);
-        setNewPostType('video');
-        setNewPostMediaName(file.name);
+        const cloud = await uploadMediaToCloud(file, 'posts');
+        if (cloud) {
+          setNewPostMedia(cloud.url);
+          setNewPostType('video');
+          setNewPostMediaName(file.name);
+        } else {
+          if (file.size > 6 * 1024 * 1024) {
+            showNotice('Videos over 6 MB require Supabase Storage keys (SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY) in Render.');
+            return;
+          }
+          const dataUrl = await readFileAsDataUrl(file);
+          setNewPostMedia(dataUrl);
+          setNewPostType('video');
+          setNewPostMediaName(file.name);
+        }
       } else {
-        showNotice('Please select an image or short video file.');
+        showNotice('Please select an image or video file.');
       }
     } catch (err) {
-      showNotice(err instanceof Error ? err.message : 'Failed to load selected file');
+      showNotice(err instanceof Error ? err.message : 'Failed to upload selected file');
     } finally {
       setIsProcessingPostMedia(false);
       e.target.value = '';
@@ -738,19 +789,27 @@ export default function App() {
         }
 
         const audioBlob = new Blob(chunks, { type: finalMime });
-        if (audioBlob.size > 3.5 * 1024 * 1024) {
-          showNotice('Voice snippet is too large (max 3.5 MB). Please record a shorter clip.');
+        if (audioBlob.size > 15 * 1024 * 1024) {
+          showNotice('Voice snippet is too large (max 15 MB). Please record a shorter clip.');
           return;
         }
 
         setIsProcessingAudio(true);
         try {
-          const dataUrl = await new Promise<string>((resolve, reject) => {
-            const reader = new FileReader();
-            reader.onerror = () => reject(new Error('Failed to encode voice recording'));
-            reader.onload = () => resolve(String(reader.result || ''));
-            reader.readAsDataURL(audioBlob);
-          });
+          const cloud = await uploadMediaToCloud(audioBlob, 'voice');
+          let mediaUrl = cloud ? cloud.url : '';
+          if (!mediaUrl) {
+            if (audioBlob.size > 3.5 * 1024 * 1024) {
+              showNotice('Long voice notes (>3.5 MB) require Supabase Storage keys in Render.');
+              return;
+            }
+            mediaUrl = await new Promise<string>((resolve, reject) => {
+              const reader = new FileReader();
+              reader.onerror = () => reject(new Error('Failed to encode voice recording'));
+              reader.onload = () => resolve(String(reader.result || ''));
+              reader.readAsDataURL(audioBlob);
+            });
+          }
 
           if (action === 'send') {
             await apiFetch('/api/choy/messages', {
@@ -758,7 +817,7 @@ export default function App() {
               body: JSON.stringify({
                 roomId: activeChat,
                 text: msgInput.trim() || 'Voice message',
-                mediaUrl: dataUrl,
+                mediaUrl,
                 mediaType: 'audio'
               })
             });
@@ -768,7 +827,7 @@ export default function App() {
             await fetchSyncedState();
           } else {
             setMsgMediaType('audio');
-            setMsgMediaUrl(dataUrl);
+            setMsgMediaUrl(mediaUrl);
           }
         } catch (err) {
           showNotice(err instanceof Error ? err.message : 'Failed to process voice recording');
@@ -802,32 +861,59 @@ export default function App() {
   const handleMsgFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    setIsUploadingMsgMedia(true);
     try {
       if (file.type.startsWith('image/')) {
-        const dataUrl = await compressImageToDataUrl(file);
+        const { blob, dataUrl } = await compressImageToBlob(file);
+        const cloud = await uploadMediaToCloud(blob, 'messages');
         setMsgMediaType('image');
-        setMsgMediaUrl(dataUrl);
-      } else if (file.type.startsWith('video/') && file.size <= 6 * 1024 * 1024) {
-        const dataUrl = await readFileAsDataUrl(file);
-        setMsgMediaType('video');
-        setMsgMediaUrl(dataUrl);
-      } else if (file.type.startsWith('audio/') && file.size <= 3.5 * 1024 * 1024) {
-        const dataUrl = await readFileAsDataUrl(file);
-        setMsgMediaType('audio');
-        setMsgMediaUrl(dataUrl);
+        setMsgMediaUrl(cloud ? cloud.url : dataUrl);
+      } else if (file.type.startsWith('video/')) {
+        if (file.size <= 25 * 1024 * 1024) {
+          const cloud = await uploadMediaToCloud(file, 'messages');
+          if (cloud) {
+            setMsgMediaType('video');
+            setMsgMediaUrl(cloud.url);
+            return;
+          }
+        }
+        if (file.size <= 6 * 1024 * 1024) {
+          const dataUrl = await readFileAsDataUrl(file);
+          setMsgMediaType('video');
+          setMsgMediaUrl(dataUrl);
+        } else {
+          const url = URL.createObjectURL(file);
+          setMsgMediaType('video');
+          setMsgMediaUrl(url);
+          showNotice('Video preview is local-only until Supabase Storage keys are active (max 25 MB).');
+        }
+      } else if (file.type.startsWith('audio/')) {
+        if (file.size <= 15 * 1024 * 1024) {
+          const cloud = await uploadMediaToCloud(file, 'messages');
+          if (cloud) {
+            setMsgMediaType('audio');
+            setMsgMediaUrl(cloud.url);
+            return;
+          }
+        }
+        if (file.size <= 3.5 * 1024 * 1024) {
+          const dataUrl = await readFileAsDataUrl(file);
+          setMsgMediaType('audio');
+          setMsgMediaUrl(dataUrl);
+        } else {
+          const url = URL.createObjectURL(file);
+          setMsgMediaType('audio');
+          setMsgMediaUrl(url);
+        }
       } else {
         const url = URL.createObjectURL(file);
-        const type = file.type.startsWith('video/')
-          ? 'video'
-          : file.type.startsWith('audio/')
-          ? 'audio'
-          : 'file';
-        setMsgMediaType(type);
+        setMsgMediaType('file');
         setMsgMediaUrl(url);
       }
-    } catch {
-      showNotice('Failed to load selected attachment');
+    } catch (err) {
+      showNotice(err instanceof Error ? err.message : 'Failed to upload selected attachment');
     } finally {
+      setIsUploadingMsgMedia(false);
       e.target.value = '';
     }
   };
@@ -2616,15 +2702,16 @@ export default function App() {
                     <form onSubmit={handleSendMessage} className="flex items-center gap-1.5 sm:gap-2">
                       <button
                         type="button"
+                        disabled={isUploadingMsgMedia}
                         onClick={() => msgFileInputRef.current?.click()}
-                        className="p-2.5 rounded-xl bg-emerald-900 border border-emerald-700 text-emerald-300 hover:text-white hover:bg-emerald-800 transition shrink-0"
-                        title="Upload local picture, video, audio or file"
+                        className="p-2.5 rounded-xl bg-emerald-900 border border-emerald-700 text-emerald-300 hover:text-white hover:bg-emerald-800 transition shrink-0 disabled:opacity-50"
+                        title="Upload picture, video, audio or file to cloud storage"
                       >
                         <Plus className="w-4 h-4" />
                       </button>
                       <button
                         type="button"
-                        disabled={isProcessingAudio}
+                        disabled={isProcessingAudio || isUploadingMsgMedia}
                         onClick={startAudioRecording}
                         className="p-2.5 rounded-xl bg-emerald-900 border border-emerald-700 text-emerald-300 hover:text-white hover:bg-emerald-800 transition shrink-0 disabled:opacity-50"
                         title="Record voice message"
@@ -2645,14 +2732,20 @@ export default function App() {
                       </button>
                       <input
                         type="text"
-                        placeholder={isProcessingAudio ? 'Preparing voice clip...' : `Message ${activeChat}...`}
+                        placeholder={
+                          isUploadingMsgMedia
+                            ? 'Uploading media...'
+                            : isProcessingAudio
+                            ? 'Uploading voice clip...'
+                            : `Message ${activeChat}...`
+                        }
                         value={msgInput}
                         onChange={(e) => setMsgInput(e.target.value)}
                         className="flex-1 min-w-0 p-2.5 bg-emerald-900 border border-emerald-700 rounded-xl text-xs text-white placeholder-emerald-400 focus:outline-none"
                       />
                       <button
                         type="submit"
-                        disabled={isProcessingAudio}
+                        disabled={isProcessingAudio || isUploadingMsgMedia}
                         className="px-3.5 sm:px-4 py-2.5 bg-emerald-400 text-slate-950 font-bold text-xs rounded-xl shadow hover:bg-emerald-300 transition shrink-0 disabled:opacity-50"
                       >
                         Send

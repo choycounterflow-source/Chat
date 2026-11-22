@@ -98,7 +98,7 @@ const KNOWN_KEY_DEFAULTS: MainKeysConfig = {
   DATABASE_URL: '',
   ADMIN_PHONE: '09361223978',
   ADMIN_PIN: '',
-  APP_URL: 'https://chat-1-5b9f.onrender.com',
+  APP_URL: 'https://chat-9-si9x.onrender.com',
   GEMINI_API_KEY: '',
   SUPABASE_URL: '',
   SUPABASE_ANON_KEY: '',
@@ -155,6 +155,7 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
     return { ...KNOWN_KEY_DEFAULTS };
   });
   const [serverConfigured, setServerConfigured] = useState<Record<string, boolean>>({});
+  const [mediaStorageMode, setMediaStorageMode] = useState<'supabase' | 'inline'>('inline');
   const [revealedFields, setRevealedFields] = useState<Record<string, boolean>>({});
   const [customPairs, setCustomPairs] = useState<KeyValueItem[]>(() => {
     try {
@@ -238,6 +239,9 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
         if (cancelled || !data) return;
         if (data.configured && typeof data.configured === 'object') {
           setServerConfigured(data.configured);
+        }
+        if (data.mediaStorageMode === 'supabase' || data.mediaStorageMode === 'inline') {
+          setMediaStorageMode(data.mediaStorageMode);
         }
         if (data.defaults && typeof data.defaults === 'object') {
           setMainKeys((prev) => ({
@@ -462,6 +466,11 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
           <div>
             <div className="flex flex-wrap items-center gap-2">
               <h2 className="text-base font-black text-white uppercase tracking-wide">Security Studio</h2>
+              {mediaStorageMode === 'supabase' && (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-cyan-500/20 border border-cyan-400/40 text-cyan-200">
+                  Supabase Storage Active
+                </span>
+              )}
               {isCloudSynced && (
                 <span
                   className={`px-2 py-0.5 rounded-md border text-[10px] font-bold ${

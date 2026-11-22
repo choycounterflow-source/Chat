@@ -17,8 +17,15 @@ import {
   clampNum,
   type StoredUser,
 } from './src/server/choyStore.ts';
+import {
+  getSupabaseStorageStatus,
+  uploadToSupabaseStorage,
+} from './src/server/supabaseStorage.ts';
 
 dotenv.config();
+if (fs.existsSync('/etc/secrets/.env')) {
+  dotenv.config({ path: '/etc/secrets/.env', override: false });
+}
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const store = new ChoyStore();
@@ -120,10 +127,14 @@ app.use(express.json({ limit: '10mb' }));
 // Health check endpoint for Render hosting
 app.get('/api/health', async (_req, res) => {
   await store.ready();
+  const mediaStorage = getSupabaseStorageStatus();
   res.json({
     status: 'ok',
     host: 'render',
     storageMode: store.storageMode,
+    storageStatus: store.storageStatus,
+    mediaStorageMode: mediaStorage.configured ? 'supabase' : 'inline',
+    mediaBucket: mediaStorage.bucket,
     timestamp: new Date().toISOString(),
   });
 });
@@ -140,26 +151,93 @@ app.get('/api/auth/status', async (_req, res) => {
 
 app.get('/api/admin/env-status', requireAuth, requireAdmin, async (_req, res) => {
   await store.ready();
+  const mediaStorage = getSupabaseStorageStatus();
   res.json({
     storageMode: store.storageMode,
+    mediaStorageMode: mediaStorage.configured ? 'supabase' : 'inline',
     defaults: {
-      APP_URL: (process.env.APP_URL || 'https://chat-1-5b9f.onrender.com').trim(),
+      APP_URL: (process.env.APP_URL || 'https://chat-9-si9x.onrender.com').trim(),
       ADMIN_PHONE: (process.env.ADMIN_PHONE || '09361223978').trim(),
       SUPABASE_URL: (process.env.SUPABASE_URL || '').trim(),
-      SUPABASE_BUCKET: (process.env.SUPABASE_BUCKET || 'choychat-media').trim(),
+      SUPABASE_BUCKET: mediaStorage.bucket,
     },
     configured: {
       DATABASE_URL: Boolean((process.env.DATABASE_URL || '').trim()),
       ADMIN_PHONE: Boolean((process.env.ADMIN_PHONE || '').trim()),
       ADMIN_PIN: Boolean((process.env.ADMIN_PIN || '').trim()),
-      APP_URL: Boolean((process.env.APP_URL || 'https://chat-1-5b9f.onrender.com').trim()),
+      APP_URL: Boolean((process.env.APP_URL || 'https://chat-9-si9x.onrender.com').trim()),
       GEMINI_API_KEY: Boolean((process.env.GEMINI_API_KEY || '').trim()),
-      SUPABASE_URL: Boolean((process.env.SUPABASE_URL || '').trim()),
+      SUPABASE_URL: mediaStorage.hasUrl,
       SUPABASE_ANON_KEY: Boolean((process.env.SUPABASE_ANON_KEY || '').trim()),
-      SUPABASE_BUCKET: Boolean((process.env.SUPABASE_BUCKET || 'choychat-media').trim()),
+      SUPABASE_SERVICE_ROLE_KEY: mediaStorage.hasServiceKey,
+      SUPABASE_BUCKET: Boolean(mediaStorage.bucket),
     },
   });
 });
+
+// ---- SUPABASE STORAGE MEDIA UPLOAD ENDPOINT ----
+app.post(
+  '/api/media/upload',
+  requireAuth,
+  express.raw({ type: () => true, limit: '26mb' }),
+  async (req: AuthedRequest, res: Response) => {
+    try {
+      const user = req.choyUser;
+      if (!user || (user.status !== 'approved' && user.role !== 'admin')) {
+        return res.status(403).json({ error: 'Account must be approved to upload media' });
+      }
+
+      // CSRF protection when authenticated via session cookie
+      const hasBearer = Boolean(req.headers.authorization?.startsWith('Bearer '));
+      if (!hasBearer) {
+        const origin = req.headers.origin;
+        const expectedHost = (req.headers['x-forwarded-host'] || req.headers.host || '').toString().split(',')[0].trim();
+        const hasRequestedWith = req.headers['x-requested-with'] === 'XMLHttpRequest';
+        let originMatches = false;
+        if (typeof origin === 'string' && expectedHost) {
+          try {
+            originMatches = new URL(origin).host === expectedHost;
+          } catch {
+            originMatches = false;
+          }
+        }
+        if (!originMatches && !hasRequestedWith) {
+          return res.status(403).json({ error: 'Cross-origin upload blocked' });
+        }
+      }
+
+      const status = getSupabaseStorageStatus();
+      if (!status.configured) {
+        return res.json({
+          uploaded: false,
+          configured: false,
+          fallback: true,
+          bucket: status.bucket,
+        });
+      }
+
+      if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
+        return res.status(400).json({ error: 'No media data received' });
+      }
+
+      const contentType = String(req.headers['content-type'] || '');
+      const folder = String(req.headers['x-media-folder'] || 'posts');
+      const result = await uploadToSupabaseStorage(req.body, contentType, folder);
+      return res.status(201).json({
+        uploaded: true,
+        configured: true,
+        ...result,
+      });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Media upload failed';
+      const isClientErr =
+        message.includes('Unsupported media') ||
+        message.includes('Empty file') ||
+        message.includes('exceeds maximum');
+      return res.status(isClientErr ? 400 : 502).json({ error: message });
+    }
+  }
+);
 
 app.get('/api/auth/session', async (req, res) => {
   await store.ready();
