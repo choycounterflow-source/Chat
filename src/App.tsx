@@ -62,7 +62,10 @@ import {
   Music,
   MapPin,
   Copy,
-  ExternalLink
+  ExternalLink,
+  Globe,
+  CheckCircle2,
+  Lock
 } from 'lucide-react';
 import { PWAInstallButton } from './components/PWAInstallButton';
 import { OfflineIndicator } from './components/OfflineIndicator';
@@ -86,6 +89,7 @@ interface CurrentUser {
   status: 'pending' | 'approved';
   blockedUsers: string[];
   avatar?: string;
+  newsfeed?: 'feed_a' | 'feed_b' | 'both';
 }
 
 interface UserAccount {
@@ -95,6 +99,7 @@ interface UserAccount {
   role?: 'admin' | 'member';
   status: 'pending' | 'approved';
   avatar?: string;
+  newsfeed?: 'feed_a' | 'feed_b' | 'both';
   loginDate: string;
 }
 
@@ -105,6 +110,7 @@ interface ViewedProfile {
   phone?: string;
   loginDate?: string;
   avatar: string;
+  newsfeed?: 'feed_a' | 'feed_b' | 'both';
   isSelf: boolean;
 }
 
@@ -117,6 +123,7 @@ interface Post {
   mediaType?: 'text' | 'image' | 'video';
   timestamp: string;
   category: 'feed' | 'myday' | 'video';
+  newsfeed?: 'feed_a' | 'feed_b' | 'both';
 }
 
 interface Message {
@@ -471,6 +478,11 @@ export default function App() {
   const [newPostType, setNewPostType] = useState<'text' | 'image' | 'video'>('text');
   const [newPostCategory, setNewPostCategory] = useState<'feed' | 'myday' | 'video'>('feed');
   const [newPostNewsfeed, setNewPostNewsfeed] = useState<'feed_a' | 'feed_b' | 'both'>('both');
+  const [newsfeedConfig, setNewsfeedConfig] = useState<{ feedATitle: string; feedBTitle: string }>(() => ({
+    feedATitle: localStorage.getItem('choychat_nf_a_title') || 'Newsfeed A',
+    feedBTitle: localStorage.getItem('choychat_nf_b_title') || 'Newsfeed B',
+  }));
+  const [adminNewsfeedFilter, setAdminNewsfeedFilter] = useState<'all' | 'feed_a' | 'feed_b'>('all');
   const [isProcessingPostMedia, setIsProcessingPostMedia] = useState(false);
   const postFileInputRef = useRef<HTMLInputElement>(null);
 
@@ -832,6 +844,7 @@ export default function App() {
         phone: safePhone,
         loginDate: matched?.loginDate || target.loginDate || 'Active recently',
         avatar: resolvedAvatar,
+        newsfeed: isSelf ? currentUser?.newsfeed || matched?.newsfeed || 'both' : matched?.newsfeed || 'both',
         isSelf
       });
     },
@@ -976,7 +989,11 @@ export default function App() {
             mediaUrl: typeof p.mediaUrl === 'string' ? p.mediaUrl : undefined,
             mediaType: (p.mediaType as 'text' | 'image' | 'video') || 'text',
             timestamp: formatIsoTime(typeof p.createdAt === 'string' ? p.createdAt : undefined),
-            category: (p.category as 'feed' | 'myday' | 'video') || 'feed'
+            category: (p.category as 'feed' | 'myday' | 'video') || 'feed',
+            newsfeed:
+              p.newsfeed === 'feed_a' || p.newsfeed === 'feed_b' || p.newsfeed === 'both'
+                ? p.newsfeed
+                : 'both',
           }))
         );
       }
@@ -1049,6 +1066,15 @@ export default function App() {
       }
       if (Array.isArray(data.onlineUsers)) {
         setOnlineUsers(data.onlineUsers.map((u: unknown) => String(u || '').trim().toLowerCase()));
+      }
+      if (data.newsfeedConfig) {
+        const nextCfg = {
+          feedATitle: String(data.newsfeedConfig.feedATitle || '').trim() || 'Newsfeed A',
+          feedBTitle: String(data.newsfeedConfig.feedBTitle || '').trim() || 'Newsfeed B',
+        };
+        setNewsfeedConfig(nextCfg);
+        localStorage.setItem('choychat_nf_a_title', nextCfg.feedATitle);
+        localStorage.setItem('choychat_nf_b_title', nextCfg.feedBTitle);
       }
       if (Array.isArray(data.ledger)) {
         setLedgerRows(data.ledger);
@@ -2839,6 +2865,12 @@ export default function App() {
       setUsersList((prev) =>
         prev.map((u) => (u.id === userId ? { ...u, newsfeed: data.user.newsfeed } : u))
       );
+      setCurrentUser((prev) =>
+        prev && prev.id === userId ? { ...prev, newsfeed: data.user.newsfeed } : prev
+      );
+      setSelectedProfileUser((prev) =>
+        prev && prev.id === userId ? { ...prev, newsfeed: data.user.newsfeed } : prev
+      );
     } catch (err) {
       showNotice(err instanceof Error ? err.message : 'Failed to update newsfeed');
     }
@@ -2908,7 +2940,7 @@ export default function App() {
           mediaUrl: newPostMedia.trim() || undefined,
           mediaType: newPostMedia.trim() ? newPostType : 'text',
           category: newPostCategory,
-          newsfeed: newPostNewsfeed,
+          ...(isAdmin ? { newsfeed: newPostNewsfeed } : {}),
         }),
       });
       setNewPostText('');
@@ -3813,8 +3845,19 @@ export default function App() {
     );
   });
 
+  const getNewsfeedLabel = (nf?: 'feed_a' | 'feed_b' | 'both') => {
+    if (nf === 'feed_a') return newsfeedConfig.feedATitle;
+    if (nf === 'feed_b') return newsfeedConfig.feedBTitle;
+    return `Both (${newsfeedConfig.feedATitle} & ${newsfeedConfig.feedBTitle})`;
+  };
+
   const filteredPosts = posts
     .filter((p) => !blockedUsers.includes(p.author.name))
+    .filter((p) => {
+      if (!isAdmin || adminNewsfeedFilter === 'all') return true;
+      const postNf = p.newsfeed || 'both';
+      return postNf === adminNewsfeedFilter || postNf === 'both';
+    })
     .filter((p) => {
       if (!normalizedSearch) return true;
       return (
@@ -4999,6 +5042,91 @@ export default function App() {
           {/* FEED */}
           {activeTab === 'feed' && (
             <div className="max-w-2xl mx-auto space-y-4">
+              {/* Visible Newsfeed Choices Bar (Admin chooses assignment; Users see choices read-only) */}
+              <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-3.5 shadow-sm space-y-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-1.5 text-xs font-bold text-emerald-950 dark:text-white">
+                    <Globe className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+                    <span>Newsfeed Choices</span>
+                  </div>
+                  <span className="text-[10px] font-semibold text-emerald-700 dark:text-emerald-300">
+                    {isAdmin
+                      ? 'Admin Filter & Assignment Active'
+                      : `Assigned by Admin: ${getNewsfeedLabel(currentUser.newsfeed)}`}
+                  </span>
+                </div>
+
+                {isAdmin ? (
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => setAdminNewsfeedFilter('all')}
+                      className={`px-3 py-1 rounded-xl text-[11px] font-bold transition ${
+                        adminNewsfeedFilter === 'all'
+                          ? 'bg-emerald-500 text-slate-950 shadow-sm'
+                          : 'bg-emerald-50 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-200 border border-emerald-200 dark:border-emerald-700 hover:bg-emerald-100 dark:hover:bg-emerald-800'
+                      }`}
+                    >
+                      All ({newsfeedConfig.feedATitle} & {newsfeedConfig.feedBTitle})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setAdminNewsfeedFilter('feed_a')}
+                      className={`px-3 py-1 rounded-xl text-[11px] font-bold transition ${
+                        adminNewsfeedFilter === 'feed_a'
+                          ? 'bg-emerald-500 text-slate-950 shadow-sm'
+                          : 'bg-emerald-50 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-200 border border-emerald-200 dark:border-emerald-700 hover:bg-emerald-100 dark:hover:bg-emerald-800'
+                      }`}
+                    >
+                      {newsfeedConfig.feedATitle}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setAdminNewsfeedFilter('feed_b')}
+                      className={`px-3 py-1 rounded-xl text-[11px] font-bold transition ${
+                        adminNewsfeedFilter === 'feed_b'
+                          ? 'bg-emerald-500 text-slate-950 shadow-sm'
+                          : 'bg-emerald-50 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-200 border border-emerald-200 dark:border-emerald-700 hover:bg-emerald-100 dark:hover:bg-emerald-800'
+                      }`}
+                    >
+                      {newsfeedConfig.feedBTitle}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab('admin_security')}
+                      className="ml-auto px-2.5 py-1 rounded-xl text-[11px] font-bold bg-amber-100 dark:bg-amber-500/20 text-amber-900 dark:text-amber-200 border border-amber-300 dark:border-amber-500/40 hover:brightness-95 transition"
+                    >
+                      Assign Users
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {(
+                      [
+                        { id: 'feed_a', label: newsfeedConfig.feedATitle },
+                        { id: 'feed_b', label: newsfeedConfig.feedBTitle },
+                        { id: 'both', label: `Both (${newsfeedConfig.feedATitle} & ${newsfeedConfig.feedBTitle})` },
+                      ] as const
+                    ).map((choice) => {
+                      const assigned = (currentUser.newsfeed || 'both') === choice.id;
+                      return (
+                        <span
+                          key={choice.id}
+                          className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-xl text-[11px] font-bold border ${
+                            assigned
+                              ? 'bg-emerald-500/20 dark:bg-emerald-500/25 border-emerald-500 text-emerald-950 dark:text-emerald-100'
+                              : 'bg-emerald-50/60 dark:bg-emerald-950/60 border-emerald-200/80 dark:border-emerald-800 text-emerald-700/80 dark:text-emerald-300/75'
+                          }`}
+                        >
+                          {assigned ? <CheckCircle2 className="w-3 h-3 text-emerald-600 dark:text-emerald-400" /> : <Lock className="w-2.5 h-2.5 opacity-60" />}
+                          <span>{choice.label}</span>
+                        </span>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
               <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-4 shadow space-y-3">
                 <div className="flex flex-wrap items-center gap-2 border-b border-emerald-200 dark:border-emerald-800 pb-2 text-xs font-bold">
                   <button
@@ -5033,18 +5161,20 @@ export default function App() {
                 </div>
 
                 <form onSubmit={handleCreatePost} className="space-y-2.5">
-                  <div className="flex items-center gap-2">
-                    <span className="text-[11px] font-bold text-emerald-800 dark:text-emerald-200">Target Newsfeed:</span>
-                    <select
-                      value={newPostNewsfeed}
-                      onChange={(e) => setNewPostNewsfeed(e.target.value as 'feed_a' | 'feed_b' | 'both')}
-                      className="p-1.5 rounded-xl bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 text-emerald-950 dark:text-white text-xs font-bold"
-                    >
-                      <option value="feed_a">Newsfeed A</option>
-                      <option value="feed_b">Newsfeed B</option>
-                      <option value="both">Both A & B</option>
-                    </select>
-                  </div>
+                  {isAdmin && (
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-[11px] font-bold text-emerald-800 dark:text-emerald-200">Target Newsfeed (Admin):</span>
+                      <select
+                        value={newPostNewsfeed}
+                        onChange={(e) => setNewPostNewsfeed(e.target.value as 'feed_a' | 'feed_b' | 'both')}
+                        className="p-1.5 rounded-xl bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 text-emerald-950 dark:text-white text-xs font-bold"
+                      >
+                        <option value="feed_a">{newsfeedConfig.feedATitle}</option>
+                        <option value="feed_b">{newsfeedConfig.feedBTitle}</option>
+                        <option value="both">Both ({newsfeedConfig.feedATitle} & {newsfeedConfig.feedBTitle})</option>
+                      </select>
+                    </div>
+                  )}
                   <input
                     type="file"
                     ref={postFileInputRef}
@@ -5163,7 +5293,13 @@ export default function App() {
                             <div className="text-xs font-bold text-emerald-950 dark:text-white group-hover:text-emerald-700 dark:group-hover:text-emerald-300 group-hover:underline">
                               {p.author.name}
                             </div>
-                            <div className="text-[10px] text-emerald-700 dark:text-emerald-300">{p.timestamp}</div>
+                            <div className="flex flex-wrap items-center gap-1.5 text-[10px] text-emerald-700 dark:text-emerald-300">
+                              <span>{p.timestamp}</span>
+                              <span>·</span>
+                              <span className="px-1.5 py-0.5 rounded-md bg-emerald-100 dark:bg-emerald-950 border border-emerald-300/70 dark:border-emerald-700 font-bold text-emerald-800 dark:text-emerald-200">
+                                {getNewsfeedLabel(p.newsfeed)}
+                              </span>
+                            </div>
                           </div>
                         </button>
                         {(p.authorId === currentUser.id || isAdmin) && (
@@ -5302,8 +5438,11 @@ export default function App() {
                           <div className="text-xs font-bold text-emerald-950 dark:text-white truncate group-hover:text-emerald-700 dark:group-hover:text-emerald-300 group-hover:underline">
                             {u.name} {isMe ? '(You)' : ''}
                           </div>
-                          <div className="text-[10px] text-emerald-700 dark:text-emerald-300 truncate">
-                            {u.role === 'admin' ? 'Admin' : 'Active'} · Tap to view profile
+                          <div className="flex flex-wrap items-center gap-1.5 text-[10px] text-emerald-700 dark:text-emerald-300">
+                            <span className="truncate">{u.role === 'admin' ? 'Admin' : 'Active'}</span>
+                            <span className="px-1.5 py-0.5 rounded-md bg-emerald-100 dark:bg-emerald-950 border border-emerald-300/70 dark:border-emerald-700 font-bold text-emerald-800 dark:text-emerald-200">
+                              {getNewsfeedLabel(u.newsfeed)}
+                            </span>
                           </div>
                         </div>
                       </button>
@@ -5485,6 +5624,11 @@ export default function App() {
                           <span aria-hidden="true" className="text-emerald-400 dark:text-emerald-600">·</span>
                           <span className="font-semibold text-indigo-700 dark:text-indigo-300">
                             {isAdmin ? 'Admin' : 'Active Member'}
+                          </span>
+                          <span aria-hidden="true" className="text-emerald-400 dark:text-emerald-600">·</span>
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-100 dark:bg-emerald-950 border border-emerald-300/70 dark:border-emerald-700 text-[11px] font-bold text-emerald-800 dark:text-emerald-200">
+                            <Globe className="w-3 h-3" />
+                            {getNewsfeedLabel(currentUser.newsfeed)}
                           </span>
                         </div>
 
@@ -7099,6 +7243,12 @@ export default function App() {
               }}
               defaultAppIcon={DEFAULT_AVATAR}
               syncTick={securitySyncTick}
+              newsfeedConfig={newsfeedConfig}
+              onNewsfeedConfigChanged={(cfg) => {
+                setNewsfeedConfig(cfg);
+                localStorage.setItem('choychat_nf_a_title', cfg.feedATitle);
+                localStorage.setItem('choychat_nf_b_title', cfg.feedBTitle);
+              }}
             />
           )}
 
@@ -7339,12 +7489,36 @@ export default function App() {
                           <ShieldCheck className="w-3 h-3" />
                           {viewed.role === 'admin' ? 'Admin' : 'Active Member'}
                         </span>
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-emerald-100 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-200 border border-emerald-300/70 dark:border-emerald-700">
+                          <Globe className="w-3 h-3" />
+                          {getNewsfeedLabel(viewed.newsfeed)}
+                        </span>
                         {isViewedBlocked && !viewed.isSelf && (
                           <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold uppercase bg-rose-100 dark:bg-rose-500/20 text-rose-700 dark:text-rose-300 border border-rose-300 dark:border-rose-600/50">
                             Blocked
                           </span>
                         )}
                       </div>
+
+                      {isAdmin && viewed.id && (
+                        <div className="pt-1 flex flex-wrap items-center gap-2">
+                          <span className="text-[10px] font-bold text-emerald-800 dark:text-emerald-200">
+                            Assign Newsfeed (Admin):
+                          </span>
+                          <select
+                            value={viewed.newsfeed || 'both'}
+                            onChange={(e) => {
+                              const nextNf = e.target.value as 'feed_a' | 'feed_b' | 'both';
+                              handleUpdateUserNewsfeed(viewed.id!, nextNf);
+                            }}
+                            className="px-2 py-1 rounded-lg bg-white dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 text-[11px] font-bold text-emerald-950 dark:text-white"
+                          >
+                            <option value="feed_a">{newsfeedConfig.feedATitle}</option>
+                            <option value="feed_b">{newsfeedConfig.feedBTitle}</option>
+                            <option value="both">Both ({newsfeedConfig.feedATitle} & {newsfeedConfig.feedBTitle})</option>
+                          </select>
+                        </div>
+                      )}
 
                       <div className="pt-1 space-y-1 text-[11px] text-emerald-800 dark:text-emerald-200">
                         {viewed.phone && (

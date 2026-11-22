@@ -139,6 +139,11 @@ export interface StoredEnvVaultEntry {
   updatedAt: string;
 }
 
+export interface StoredNewsfeedConfig {
+  feedATitle: string;
+  feedBTitle: string;
+}
+
 export interface SessionPayload {
   uid: string;
   role: 'admin' | 'member';
@@ -146,6 +151,10 @@ export interface SessionPayload {
 }
 
 const DEFAULT_AVATAR = '/assets/aistudio/image_20261121_145253_f477cbfa.webp';
+const DEFAULT_NEWSFEED_CONFIG: StoredNewsfeedConfig = {
+  feedATitle: 'Newsfeed A',
+  feedBTitle: 'Newsfeed B',
+};
 const DEFAULT_SETTINGS: StoredPricesSettings = {
   fiveH: 50,
   bulig: 100,
@@ -319,6 +328,7 @@ export class ChoyStore {
   private memLedger: StoredLedgerRow[] = [];
   private memKnowledge: StoredKnowledgeQA[] = [];
   private memSettings: StoredPricesSettings = { ...DEFAULT_SETTINGS };
+  private memNewsfeedConfig: StoredNewsfeedConfig = { ...DEFAULT_NEWSFEED_CONFIG };
   private memPushSubs: StoredPushSubscription[] = [];
   private memVapidKeys: VapidKeyPair | null = null;
   private memLocations: Array<{ userId: string; userName: string; lat: number; lng: number; accuracy?: number; updatedAt: string }> = [];
@@ -1394,6 +1404,53 @@ export class ChoyStore {
       );
     } else {
       this.memSettings = clean;
+    }
+    return clean;
+  }
+
+  public async getNewsfeedConfig(): Promise<StoredNewsfeedConfig> {
+    await this.ready();
+    if (this.usePostgres && this.pool) {
+      const res = await this.pool.query('SELECT data FROM app_settings WHERE id = $1 LIMIT 1', ['newsfeed_config']);
+      if (res.rowCount && res.rows[0]?.data) {
+        const d = res.rows[0].data as Partial<StoredNewsfeedConfig>;
+        return {
+          feedATitle:
+            typeof d.feedATitle === 'string' && d.feedATitle.trim()
+              ? d.feedATitle.trim().slice(0, 60)
+              : DEFAULT_NEWSFEED_CONFIG.feedATitle,
+          feedBTitle:
+            typeof d.feedBTitle === 'string' && d.feedBTitle.trim()
+              ? d.feedBTitle.trim().slice(0, 60)
+              : DEFAULT_NEWSFEED_CONFIG.feedBTitle,
+        };
+      }
+      return { ...DEFAULT_NEWSFEED_CONFIG };
+    }
+    return { ...this.memNewsfeedConfig };
+  }
+
+  public async saveNewsfeedConfig(next: Partial<StoredNewsfeedConfig>): Promise<StoredNewsfeedConfig> {
+    await this.ready();
+    const feedATitle =
+      typeof next.feedATitle === 'string' && next.feedATitle.trim()
+        ? next.feedATitle.trim().slice(0, 60)
+        : DEFAULT_NEWSFEED_CONFIG.feedATitle;
+    const feedBTitle =
+      typeof next.feedBTitle === 'string' && next.feedBTitle.trim()
+        ? next.feedBTitle.trim().slice(0, 60)
+        : DEFAULT_NEWSFEED_CONFIG.feedBTitle;
+    const clean: StoredNewsfeedConfig = { feedATitle, feedBTitle };
+
+    if (this.usePostgres && this.pool) {
+      await this.pool.query(
+        `INSERT INTO app_settings (id, data, updated_at)
+         VALUES ($1, $2::jsonb, NOW())
+         ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`,
+        ['newsfeed_config', JSON.stringify(clean)]
+      );
+    } else {
+      this.memNewsfeedConfig = clean;
     }
     return clean;
   }

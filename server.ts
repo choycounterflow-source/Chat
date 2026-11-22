@@ -471,6 +471,7 @@ app.get('/api/auth/session', async (req, res) => {
         status: user.status,
         blockedUsers: user.blockedUsers,
         avatar: user.avatar,
+        newsfeed: user.newsfeed,
       },
     });
   } catch {
@@ -526,6 +527,7 @@ app.post('/api/auth/setup-admin', async (req, res) => {
         status: user.status,
         blockedUsers: user.blockedUsers,
         avatar: user.avatar,
+        newsfeed: user.newsfeed,
       },
     });
   } catch (err: unknown) {
@@ -574,6 +576,7 @@ app.post('/api/auth/register', async (req, res) => {
         status: user.status,
         blockedUsers: user.blockedUsers,
         avatar: user.avatar,
+        newsfeed: user.newsfeed,
       },
     });
   } catch (err: unknown) {
@@ -607,6 +610,7 @@ app.post('/api/auth/login', async (req, res) => {
           status: adminUser.status,
           blockedUsers: adminUser.blockedUsers,
           avatar: adminUser.avatar,
+          newsfeed: adminUser.newsfeed,
         },
       });
     }
@@ -631,6 +635,7 @@ app.post('/api/auth/login', async (req, res) => {
         status: user.status,
         blockedUsers: user.blockedUsers,
         avatar: user.avatar,
+        newsfeed: user.newsfeed,
       },
     });
   } catch (err: unknown) {
@@ -1190,13 +1195,14 @@ app.get('/api/choy/state', requireAuth, async (req: AuthedRequest, res: Response
     const user = req.choyUser!;
     touchUserPresence(user.name);
     const isAdmin = user.role === 'admin';
-    const [posts, allMessages, users, knowledge, leaderboard, emojiLinks] = await Promise.all([
+    const [posts, allMessages, users, knowledge, leaderboard, emojiLinks, newsfeedConfig] = await Promise.all([
       store.listPosts(),
       store.listMessages(),
       store.listUsers(isAdmin),
       store.listKnowledge(),
       store.getPublicLeaderboard(),
       store.listEmojiLinks(),
+      store.getNewsfeedConfig(),
     ]);
     const activeEmojiLink = emojiLinks.find((l) => l.pinnedToAppIcon) || emojiLinks[0] || null;
 
@@ -1217,7 +1223,7 @@ app.get('/api/choy/state', requireAuth, async (req: AuthedRequest, res: Response
     const filteredPosts =
       isAdmin || userNewsfeed === 'both'
         ? posts
-        : posts.filter((p) => p.newsfeed === userNewsfeed);
+        : posts.filter((p) => p.newsfeed === userNewsfeed || p.newsfeed === 'both');
 
     let ledger = undefined;
     let settings = undefined;
@@ -1244,6 +1250,7 @@ app.get('/api/choy/state', requireAuth, async (req: AuthedRequest, res: Response
       leaderboard,
       emojiLinks,
       activeEmojiLink,
+      newsfeedConfig,
       onlineUsers: getOnlineUserNames(),
       ...(isAdmin ? { ledger, settings } : {}),
     });
@@ -1268,7 +1275,7 @@ app.post('/api/choy/posts', requireAuth, async (req: AuthedRequest, res: Respons
       rawCat === 'myday' || rawCat === 'video' ? rawCat : 'feed';
     const userNf = user.newsfeed || 'both';
     let postNewsfeed: 'feed_a' | 'feed_b' | 'both' = userNf;
-    if (userNf === 'both') {
+    if (user.role === 'admin') {
       const rawNf = req.body?.newsfeed;
       if (rawNf === 'feed_a' || rawNf === 'feed_b' || rawNf === 'both') {
         postNewsfeed = rawNf;
@@ -1436,6 +1443,18 @@ app.patch('/api/admin/users/:id/newsfeed', requireAuth, requireAdmin, async (req
     });
   } catch (err: unknown) {
     return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to update user newsfeed' });
+  }
+});
+
+app.put('/api/admin/newsfeed-config', requireAuth, requireAdmin, async (req: AuthedRequest, res: Response) => {
+  try {
+    const feedATitle = typeof req.body?.feedATitle === 'string' ? req.body.feedATitle : '';
+    const feedBTitle = typeof req.body?.feedBTitle === 'string' ? req.body.feedBTitle : '';
+    const saved = await store.saveNewsfeedConfig({ feedATitle, feedBTitle });
+    broadcastSync('settings');
+    return res.json({ ok: true, newsfeedConfig: saved });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to save newsfeed titles' });
   }
 });
 

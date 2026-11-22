@@ -84,6 +84,8 @@ interface SecurityStudioProps {
   onEmojiLinksChanged?: (links: EmojiLinkItem[]) => void;
   defaultAppIcon?: string;
   syncTick?: number;
+  newsfeedConfig?: { feedATitle: string; feedBTitle: string };
+  onNewsfeedConfigChanged?: (cfg: { feedATitle: string; feedBTitle: string }) => void;
 }
 
 interface StudioNoteEntry {
@@ -204,6 +206,8 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
   onEmojiLinksChanged,
   defaultAppIcon = '/assets/aistudio/image_20261121_145253_f477cbfa.webp',
   syncTick = 0,
+  newsfeedConfig,
+  onNewsfeedConfigChanged,
 }) => {
   // 1. Direct Admin Links
   const [adminLinks, setAdminLinks] = useState(() => {
@@ -216,9 +220,26 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
   });
   const [editingLinks, setEditingLinks] = useState(false);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
-  const [newsfeedATitle, setNewsfeedATitle] = useState(() => localStorage.getItem('choychat_nf_a_title') || 'Newsfeed A');
-  const [newsfeedBTitle, setNewsfeedBTitle] = useState(() => localStorage.getItem('choychat_nf_b_title') || 'Newsfeed B');
+  const [newsfeedATitle, setNewsfeedATitle] = useState(
+    () => newsfeedConfig?.feedATitle || localStorage.getItem('choychat_nf_a_title') || 'Newsfeed A'
+  );
+  const [newsfeedBTitle, setNewsfeedBTitle] = useState(
+    () => newsfeedConfig?.feedBTitle || localStorage.getItem('choychat_nf_b_title') || 'Newsfeed B'
+  );
   const [nfTitlesSaved, setNfTitlesSaved] = useState(false);
+  const [savingNfTitles, setSavingNfTitles] = useState(false);
+
+  useEffect(() => {
+    if (!newsfeedConfig) return;
+    if (newsfeedConfig.feedATitle) {
+      setNewsfeedATitle(newsfeedConfig.feedATitle);
+      localStorage.setItem('choychat_nf_a_title', newsfeedConfig.feedATitle);
+    }
+    if (newsfeedConfig.feedBTitle) {
+      setNewsfeedBTitle(newsfeedConfig.feedBTitle);
+      localStorage.setItem('choychat_nf_b_title', newsfeedConfig.feedBTitle);
+    }
+  }, [newsfeedConfig]);
 
   // 2. Simple Unified Keys (Pre-filled with safe known values)
   const [mainKeys, setMainKeys] = useState<MainKeysConfig>(() => {
@@ -2796,17 +2817,48 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
           <div className="sm:col-span-2 flex items-center justify-between pt-1">
             <button
               type="button"
-              onClick={() => {
-                localStorage.setItem('choychat_nf_a_title', newsfeedATitle);
-                localStorage.setItem('choychat_nf_b_title', newsfeedBTitle);
+              disabled={savingNfTitles}
+              onClick={async () => {
+                const cleanA = newsfeedATitle.trim() || 'Newsfeed A';
+                const cleanB = newsfeedBTitle.trim() || 'Newsfeed B';
+                setNewsfeedATitle(cleanA);
+                setNewsfeedBTitle(cleanB);
+                localStorage.setItem('choychat_nf_a_title', cleanA);
+                localStorage.setItem('choychat_nf_b_title', cleanB);
+                if (authToken) {
+                  setSavingNfTitles(true);
+                  try {
+                    const res = await fetch('/api/admin/newsfeed-config', {
+                      method: 'PUT',
+                      headers: {
+                        'Content-Type': 'application/json',
+                        Authorization: `Bearer ${authToken}`,
+                      },
+                      credentials: 'same-origin',
+                      body: JSON.stringify({ feedATitle: cleanA, feedBTitle: cleanB }),
+                    });
+                    const data = await res.json().catch(() => ({}));
+                    if (res.ok && data.newsfeedConfig) {
+                      onNewsfeedConfigChanged?.(data.newsfeedConfig);
+                    } else {
+                      onNewsfeedConfigChanged?.({ feedATitle: cleanA, feedBTitle: cleanB });
+                    }
+                  } catch {
+                    onNewsfeedConfigChanged?.({ feedATitle: cleanA, feedBTitle: cleanB });
+                  } finally {
+                    setSavingNfTitles(false);
+                  }
+                } else {
+                  onNewsfeedConfigChanged?.({ feedATitle: cleanA, feedBTitle: cleanB });
+                }
                 setNfTitlesSaved(true);
                 setTimeout(() => setNfTitlesSaved(false), 2000);
               }}
-              className="px-3 py-1.5 rounded-lg bg-emerald-400 text-slate-950 font-bold text-xs"
+              className="px-3 py-1.5 rounded-lg bg-emerald-400 hover:bg-emerald-300 text-slate-950 font-bold text-xs disabled:opacity-50"
             >
-              Save Newsfeed Titles
+              {savingNfTitles ? 'Saving...' : 'Save Newsfeed Titles'}
             </button>
-            {nfTitlesSaved && <span className="text-emerald-700 dark:text-emerald-300 text-xs font-semibold">Titles Saved!</span>}
+            {nfTitlesSaved && <span className="text-emerald-700 dark:text-emerald-300 text-xs font-semibold">Titles Saved & Synced!</span>}
           </div>
         </div>
 
