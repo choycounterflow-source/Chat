@@ -153,6 +153,8 @@ interface IncomingCallPayload {
 interface RtcSignalPayload {
   type: 'offer' | 'answer' | 'ice' | 'hangup' | 'decline';
   callId: string;
+  signalId?: string;
+  seq?: number;
   roomId?: string;
   targetName?: string;
   fromUserId?: string;
@@ -167,8 +169,12 @@ const CHAT_ROOMS = ['VIP Group', 'Choy Admin', 'Maria Santos'] as const;
 const RTC_ICE_CONFIG: RTCConfiguration = {
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun1.l.google.com:19302' }
-  ]
+    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun2.l.google.com:19302' },
+    { urls: 'stun:stun3.l.google.com:19302' },
+    { urls: 'stun:stun4.l.google.com:19302' }
+  ],
+  iceCandidatePoolSize: 10
 };
 
 function messageBelongsToRoom(m: Message, room: string, myName: string): boolean {
@@ -265,11 +271,17 @@ export default function App() {
   const localStreamRef = useRef<MediaStream | null>(null);
   const remoteStreamRef = useRef<MediaStream | null>(null);
   const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
-  const pendingIceCandidatesRef = useRef<RTCIceCandidateInit[]>([]);
+  const pendingIceCandidatesRef = useRef<{ callId: string; candidate: RTCIceCandidateInit }[]>([]);
+  const processedRtcSignalIdsRef = useRef<Set<string>>(new Set());
+  const lastRtcSeqRef = useRef<number>(0);
   const activeCallIdRef = useRef<string | null>(null);
   const callTargetNameRef = useRef<string>('');
   const callRoomIdRef = useRef<string>('VIP Group');
   const handleRtcSignalRef = useRef<(payload: RtcSignalPayload) => void>(() => {});
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const seenMessageIdsRef = useRef<Set<string>>(new Set());
+  const initialMsgSyncDoneRef = useRef<boolean>(false);
+  const [liveMsgBanner, setLiveMsgBanner] = useState<{ sender: string; room: string; preview: string } | null>(null);
 
   const [usersList, setUsersList] = useState<UserAccount[]>([]);
   const [knowledgeBase, setKnowledgeBase] = useState<KnowledgeQA[]>([]);
@@ -475,7 +487,12 @@ export default function App() {
       if (options.body && !headers['Content-Type']) {
         headers['Content-Type'] = 'application/json';
       }
-      const res = await fetch(url, { ...options, headers, credentials: 'same-origin' });
+      const res = await fetch(url, {
+        ...options,
+        headers,
+        credentials: 'same-origin',
+        cache: 'no-store'
+      });
       const data = await res.json().catch(() => ({}));
       if (res.status === 401 && authToken) {
         setAuthToken(null);
@@ -520,12 +537,12 @@ export default function App() {
     checkAuthStatus();
   }, [checkAuthStatus]);
 
-  // 2. Sync full state from backend database
+  // 2. Sync full state from backend database (cache-busted for mobile/PWA reliability)
   const fetchSyncedState = useCallback(async () => {
     if (!authToken) return;
     const seq = ++syncSeqRef.current;
     try {
-      const data = await apiFetch('/api/choy/state');
+      const data = await apiFetch(`/api/choy/state?_t=${Date.now()}`);
       // Ignore stale responses if a newer sync or mutation already started
       if (seq !== syncSeqRef.current) return;
       if (data.storageMode) setStorageMode(data.storageMode);
@@ -553,22 +570,50 @@ export default function App() {
       }
       if (Array.isArray(data.messages)) {
         const myId = data.user?.id;
-        setCloudMessages(
-          data.messages.map((m: Record<string, unknown>) => ({
-            id: String(m.id),
-            senderId: String(m.senderId || ''),
-            sender: String(m.senderName || 'Member'),
-            receiver: String(m.roomId || 'VIP Group'),
-            text: String(m.text || ''),
-            mediaUrl: typeof m.mediaUrl === 'string' ? m.mediaUrl : undefined,
-            mediaType: (m.mediaType as Message['mediaType']) || 'text',
-            transcript: typeof m.transcript === 'string' ? m.transcript : undefined,
-            time: formatIsoTime(typeof m.createdAt === 'string' ? m.createdAt : undefined),
-            createdAtMs: typeof m.createdAt === 'string' ? new Date(m.createdAt).getTime() : Date.now(),
-            isMe: m.senderId === myId,
-            reactions: Array.isArray(m.reactions) ? (m.reactions as string[]) : []
-          }))
-        );
+        const myNameLower = String(data.user?.name || '').trim().toLowerCase();
+        const mappedMsgs: Message[] = data.messages.map((m: Record<string, unknown>) => ({
+          id: String(m.id),
+          senderId: String(m.senderId || ''),
+          sender: String(m.senderName || 'Member'),
+          receiver: String(m.roomId || 'VIP Group'),
+          text: String(m.text || ''),
+          mediaUrl: typeof m.mediaUrl === 'string' ? m.mediaUrl : undefined,
+          mediaType: (m.mediaType as Message['mediaType']) || 'text',
+          transcript: typeof m.transcript === 'string' ? m.transcript : undefined,
+          time: formatIsoTime(typeof m.createdAt === 'string' ? m.createdAt : undefined),
+          createdAtMs: typeof m.createdAt === 'string' ? new Date(m.createdAt).getTime() : Date.now(),
+          isMe: m.senderId === myId,
+          reactions: Array.isArray(m.reactions) ? (m.reactions as string[]) : []
+        }));
+
+        if (initialMsgSyncDoneRef.current) {
+          const brandNewIncoming = mappedMsgs.filter(
+            (m) =>
+              !seenMessageIdsRef.current.has(m.id) &&
+              !m.isMe &&
+              (m.receiver.trim().toLowerCase() === 'vip group' ||
+                m.receiver.trim().toLowerCase() === myNameLower)
+          );
+          if (brandNewIncoming.length > 0) {
+            const latest = brandNewIncoming[brandNewIncoming.length - 1];
+            const targetRoom =
+              latest.receiver.trim().toLowerCase() === 'vip group' ? 'VIP Group' : latest.sender;
+            const preview =
+              latest.text ||
+              (latest.mediaType === 'image'
+                ? 'Sent a photo'
+                : latest.mediaType === 'video'
+                ? 'Sent a video'
+                : latest.mediaType === 'audio'
+                ? 'Sent a voice message'
+                : 'New message');
+            setLiveMsgBanner({ sender: latest.sender, room: targetRoom, preview });
+          }
+        } else {
+          initialMsgSyncDoneRef.current = true;
+        }
+        mappedMsgs.forEach((m) => seenMessageIdsRef.current.add(m.id));
+        setCloudMessages(mappedMsgs);
       }
       if (Array.isArray(data.users)) {
         setUsersList(data.users);
@@ -603,9 +648,14 @@ export default function App() {
     }
   }, [authToken, apiFetch]);
 
-  // 3. Initial sync + Real-Time SSE stream + fallback polling
+  // 3. Initial sync + Real-Time SSE stream + Fast Guaranteed Polling Fallback (Messages + Calls)
   useEffect(() => {
-    if (!authToken) return;
+    if (!authToken) {
+      initialMsgSyncDoneRef.current = false;
+      seenMessageIdsRef.current.clear();
+      lastRtcSeqRef.current = 0;
+      return;
+    }
     fetchSyncedState();
 
     const abortController = new AbortController();
@@ -615,6 +665,8 @@ export default function App() {
       try {
         const res = await fetch('/api/choy/stream', {
           headers: { Authorization: `Bearer ${authToken}` },
+          credentials: 'same-origin',
+          cache: 'no-store',
           signal: abortController.signal
         });
         if (!res.ok || !res.body) return;
@@ -654,23 +706,72 @@ export default function App() {
         // Ignore abort / reconnect cleanly
       }
       if (!abortController.signal.aborted) {
-        reconnectTimer = setTimeout(connectSSE, 4000);
+        reconnectTimer = setTimeout(connectSSE, 2000);
       }
     };
 
     connectSSE();
-    const pollInterval = setInterval(() => {
+
+    // Guaranteed real-time message & state sync (2.5s) even if proxy buffers SSE
+    const statePollInterval = window.setInterval(() => {
       if (document.visibilityState === 'visible') {
         fetchSyncedState();
       }
-    }, 6000);
+    }, 2500);
+
+    // Immediate sync when returning to the tab / unlocking phone
+    const handleVisibilityOrFocus = () => {
+      if (document.visibilityState === 'visible') {
+        fetchSyncedState();
+      }
+    };
+    window.addEventListener('focus', handleVisibilityOrFocus);
+    document.addEventListener('visibilitychange', handleVisibilityOrFocus);
 
     return () => {
       abortController.abort();
       if (reconnectTimer) clearTimeout(reconnectTimer);
-      clearInterval(pollInterval);
+      window.clearInterval(statePollInterval);
+      window.removeEventListener('focus', handleVisibilityOrFocus);
+      document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
     };
   }, [authToken, fetchSyncedState]);
+
+  // Dedicated RTC Signal Polling Fallback (1.2s idle / 0.5s during active call) so calls ALWAYS ring even if SSE is buffered
+  useEffect(() => {
+    if (!authToken) return;
+    let cancelled = false;
+    let inFlight = false;
+
+    const pollRtc = async () => {
+      if (cancelled || inFlight) return;
+      inFlight = true;
+      try {
+        const data = await apiFetch(`/api/choy/rtc/poll?since=${lastRtcSeqRef.current}&_t=${Date.now()}`);
+        if (cancelled) return;
+        if (typeof data.latestSeq === 'number' && data.latestSeq > lastRtcSeqRef.current) {
+          lastRtcSeqRef.current = data.latestSeq;
+        }
+        if (Array.isArray(data.signals)) {
+          for (const sig of data.signals) {
+            handleRtcSignalRef.current(sig as RtcSignalPayload);
+          }
+        }
+      } catch {
+        // Ignore transient poll errors
+      } finally {
+        inFlight = false;
+      }
+    };
+
+    void pollRtc();
+    const intervalMs = isInVideoCall || Boolean(incomingCall) ? 500 : 1200;
+    const rtcPollTimer = window.setInterval(pollRtc, intervalMs);
+    return () => {
+      cancelled = true;
+      window.clearInterval(rtcPollTimer);
+    };
+  }, [authToken, apiFetch, isInVideoCall, incomingCall]);
 
   const messages = [...cloudMessages, ...localMessages].sort((a, b) => a.createdAtMs - b.createdAtMs);
   const chatRoomsList = (() => {
@@ -713,22 +814,25 @@ export default function App() {
       targetName: string;
       sdp?: RTCSessionDescriptionInit;
       candidate?: RTCIceCandidateInit;
-    }): Promise<{ ok: boolean; delivered: number }> => {
+    }): Promise<{ ok: boolean; delivered: number; targetOnline: boolean }> => {
       try {
-        const res = await apiFetch('/api/choy/rtc/signal', {
+        const data = await apiFetch('/api/choy/rtc/signal', {
           method: 'POST',
           body: JSON.stringify(payload)
         });
-        const data = await res.json().catch(() => ({}));
-        return { ok: true, delivered: Number(data.delivered) || 0 };
+        return {
+          ok: true,
+          delivered: Number(data?.delivered) || 0,
+          targetOnline: Boolean(data?.targetOnline) || (Number(data?.delivered) || 0) > 0
+        };
       } catch {
-        return { ok: false, delivered: 0 };
+        return { ok: false, delivered: 0, targetOnline: false };
       }
     },
     [apiFetch]
   );
 
-  const cleanupVideoCallResources = useCallback(() => {
+  const cleanupVideoCallResources = useCallback((preservePendingIce = false) => {
     if (peerConnectionRef.current) {
       try {
         peerConnectionRef.current.onicecandidate = null;
@@ -754,7 +858,9 @@ export default function App() {
     if (remoteVideoRef.current) {
       remoteVideoRef.current.srcObject = null;
     }
-    pendingIceCandidatesRef.current = [];
+    if (!preservePendingIce) {
+      pendingIceCandidatesRef.current = [];
+    }
     activeCallIdRef.current = null;
     callTargetNameRef.current = '';
     setHasRemoteStream(false);
@@ -895,7 +1001,7 @@ export default function App() {
           sdp: offer
         });
 
-        if (signalRes.delivered === 0) {
+        if (!signalRes.targetOnline) {
           setCallPeerOfflineHint(true);
         }
       } catch (err) {
@@ -910,7 +1016,8 @@ export default function App() {
     if (!incomingCall) return;
     const callData = incomingCall;
     setIncomingCall(null);
-    cleanupVideoCallResources();
+    // Preserve queued ICE candidates received while ringing!
+    cleanupVideoCallResources(true);
     setIsInVideoCall(true);
     setCallPartnerName(callData.fromUserName);
     setCallStatus('ringing');
@@ -935,10 +1042,13 @@ export default function App() {
       stream.getTracks().forEach((track) => pc.addTrack(track, stream));
 
       await pc.setRemoteDescription(new RTCSessionDescription(callData.sdp));
-      for (const candidate of pendingIceCandidatesRef.current) {
-        await pc.addIceCandidate(new RTCIceCandidate(candidate)).catch(() => {});
+      const matchingIce = pendingIceCandidatesRef.current.filter((item) => item.callId === callData.callId);
+      pendingIceCandidatesRef.current = pendingIceCandidatesRef.current.filter(
+        (item) => item.callId !== callData.callId
+      );
+      for (const item of matchingIce) {
+        await pc.addIceCandidate(new RTCIceCandidate(item.candidate)).catch(() => {});
       }
-      pendingIceCandidatesRef.current = [];
 
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
@@ -1029,10 +1139,22 @@ export default function App() {
     }
   }, [cameraFacing, isVideoMuted]);
 
-  // Keep SSE RTC signal handler always up-to-date without restarting SSE
+  // Keep SSE + Poll RTC signal handler always up-to-date & deduplicated
   useEffect(() => {
     handleRtcSignalRef.current = async (payload: RtcSignalPayload) => {
       if (!payload || !payload.type || !payload.callId) return;
+
+      if (typeof payload.seq === 'number' && payload.seq > lastRtcSeqRef.current) {
+        lastRtcSeqRef.current = payload.seq;
+      }
+      if (payload.signalId) {
+        if (processedRtcSignalIdsRef.current.has(payload.signalId)) return;
+        processedRtcSignalIdsRef.current.add(payload.signalId);
+        if (processedRtcSignalIdsRef.current.size > 400) {
+          const oldest = Array.from(processedRtcSignalIdsRef.current).slice(0, 150);
+          oldest.forEach((id) => processedRtcSignalIdsRef.current.delete(id));
+        }
+      }
 
       if (payload.type === 'offer' && payload.sdp) {
         if (activeCallIdRef.current && activeCallIdRef.current !== payload.callId) {
@@ -1044,7 +1166,6 @@ export default function App() {
           });
           return;
         }
-        pendingIceCandidatesRef.current = [];
         setIncomingCall({
           callId: payload.callId,
           roomId: payload.roomId || 'VIP Group',
@@ -1063,10 +1184,13 @@ export default function App() {
             setCallPartnerName(payload.fromUserName);
           }
           await peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(payload.sdp));
-          for (const candidate of pendingIceCandidatesRef.current) {
-            await peerConnectionRef.current.addIceCandidate(new RTCIceCandidate(candidate)).catch(() => {});
+          const matchingIce = pendingIceCandidatesRef.current.filter((item) => item.callId === payload.callId);
+          pendingIceCandidatesRef.current = pendingIceCandidatesRef.current.filter(
+            (item) => item.callId !== payload.callId
+          );
+          for (const item of matchingIce) {
+            await peerConnectionRef.current.addIceCandidate(new RTCIceCandidate(item.candidate)).catch(() => {});
           }
-          pendingIceCandidatesRef.current = [];
           setCallPeerOfflineHint(false);
           setCallStatus('connected');
         } catch {
@@ -1080,7 +1204,10 @@ export default function App() {
         if (pc && activeCallIdRef.current === payload.callId && pc.remoteDescription) {
           await pc.addIceCandidate(new RTCIceCandidate(payload.candidate)).catch(() => {});
         } else {
-          pendingIceCandidatesRef.current.push(payload.candidate);
+          pendingIceCandidatesRef.current.push({
+            callId: payload.callId,
+            candidate: payload.candidate
+          });
         }
         return;
       }
@@ -1104,6 +1231,55 @@ export default function App() {
       }
     };
   }, [endVideoCall, incomingCall, sendRtcSignalToServer]);
+
+  // Subtle incoming call chime + mobile vibration while ringing
+  useEffect(() => {
+    if (!incomingCall || isInVideoCall) return;
+    const playChime = () => {
+      try {
+        if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
+          navigator.vibrate([250, 150, 250]);
+        }
+        const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+        if (!AudioCtx) return;
+        const ctx = new AudioCtx();
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(660, ctx.currentTime);
+        osc.frequency.setValueAtTime(880, ctx.currentTime + 0.16);
+        gain.gain.setValueAtTime(0.08, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.42);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start();
+        osc.stop(ctx.currentTime + 0.44);
+        window.setTimeout(() => ctx.close().catch(() => {}), 500);
+      } catch {
+        // Autoplay may be restricted until user interacts
+      }
+    };
+    playChime();
+    const ringInterval = window.setInterval(playChime, 2400);
+    return () => window.clearInterval(ringInterval);
+  }, [incomingCall, isInVideoCall]);
+
+  // Auto-dismiss live incoming message banner after 5s
+  useEffect(() => {
+    if (!liveMsgBanner) return;
+    const t = window.setTimeout(() => setLiveMsgBanner(null), 5000);
+    return () => window.clearTimeout(t);
+  }, [liveMsgBanner]);
+
+  // Auto-scroll active chat to bottom when new messages arrive
+  const activeRoomMessageCount = messages.filter((m) =>
+    messageBelongsToRoom(m, activeChat, currentUser?.name || '')
+  ).length;
+  useEffect(() => {
+    if (activeTab === 'messages') {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+    }
+  }, [activeTab, activeChat, activeRoomMessageCount]);
 
   // Bind live MediaStreams whenever the Video Call modal mounts/updates
   useEffect(() => {
@@ -2390,6 +2566,48 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {/* LIVE INCOMING MESSAGE TOAST */}
+      {liveMsgBanner &&
+        !incomingCall &&
+        !(activeTab === 'messages' && activeChat.trim().toLowerCase() === liveMsgBanner.room.trim().toLowerCase()) && (
+          <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[55] w-[92%] max-w-md bg-white dark:bg-emerald-950/95 border border-emerald-400 rounded-2xl p-3 shadow-2xl backdrop-blur-md flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <div className="w-9 h-9 rounded-full bg-emerald-100 dark:bg-emerald-500/20 border border-emerald-400/60 flex items-center justify-center shrink-0 text-emerald-700 dark:text-emerald-300">
+                <MessageSquare className="w-4 h-4" />
+              </div>
+              <div className="min-w-0">
+                <div className="text-xs font-black text-emerald-950 dark:text-white truncate">
+                  {liveMsgBanner.sender}
+                </div>
+                <div className="text-[11px] text-emerald-700 dark:text-emerald-200 truncate">
+                  {liveMsgBanner.preview}
+                </div>
+              </div>
+            </div>
+            <div className="flex items-center gap-1.5 shrink-0">
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveChat(liveMsgBanner.room);
+                  setActiveTab('messages');
+                  setLiveMsgBanner(null);
+                }}
+                className="px-3 py-1.5 rounded-lg bg-emerald-400 hover:bg-emerald-300 text-slate-950 text-[11px] font-bold"
+              >
+                Open
+              </button>
+              <button
+                type="button"
+                onClick={() => setLiveMsgBanner(null)}
+                className="p-1 text-emerald-700 dark:text-emerald-300 hover:text-emerald-950 dark:hover:text-white"
+                aria-label="Dismiss"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+        )}
 
       {/* REAL LIVE WEBRTC VIDEO CALL MODAL */}
       {isInVideoCall && (
@@ -3857,6 +4075,7 @@ export default function App() {
                         </div>
                       </div>
                     ))}
+                  <div ref={messagesEndRef} />
                 </div>
 
                 <div className="p-3 border-t border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950 space-y-2">

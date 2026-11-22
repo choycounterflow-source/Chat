@@ -36,6 +36,36 @@ interface SseClient {
 }
 
 const sseClients = new Set<SseClient>();
+const userLastSeenMap = new Map<string, number>();
+
+interface QueuedRtcSignal {
+  seq: number;
+  signalId: string;
+  targetNameLower: string;
+  senderUserId: string;
+  createdAtMs: number;
+  payload: Record<string, unknown>;
+}
+
+const rtcSignalQueue: QueuedRtcSignal[] = [];
+let rtcSignalSeq = 0;
+
+function pruneRtcQueue(now = Date.now()) {
+  const cutoff = now - 60_000;
+  while (rtcSignalQueue.length > 0 && rtcSignalQueue[0].createdAtMs < cutoff) {
+    rtcSignalQueue.shift();
+  }
+  if (rtcSignalQueue.length > 500) {
+    rtcSignalQueue.splice(0, rtcSignalQueue.length - 500);
+  }
+}
+
+function touchUserPresence(userName: string) {
+  const key = userName.trim().toLowerCase();
+  if (key) {
+    userLastSeenMap.set(key, Date.now());
+  }
+}
 
 function broadcastSync(topic: string) {
   const payload = `event: sync\ndata: ${JSON.stringify({ topic, ts: Date.now() })}\n\n`;
@@ -52,10 +82,31 @@ function sendRtcSignal(
   targetName: string,
   senderUserId: string,
   eventPayload: Record<string, unknown>
-): number {
-  const payload = `event: rtc\ndata: ${JSON.stringify(eventPayload)}\n\n`;
+): { delivered: number; targetOnline: boolean; signalId: string; seq: number } {
+  const now = Date.now();
+  pruneRtcQueue(now);
+  rtcSignalSeq += 1;
+  const seq = rtcSignalSeq;
+  const signalId = `sig_${seq}_${now}`;
+  const enrichedPayload: Record<string, unknown> = {
+    ...eventPayload,
+    signalId,
+    seq,
+  };
+
   const normalizedTarget = targetName.trim().toLowerCase();
   const isGroup = normalizedTarget === 'vip group' || normalizedTarget === '';
+
+  rtcSignalQueue.push({
+    seq,
+    signalId,
+    targetNameLower: isGroup ? 'vip group' : normalizedTarget,
+    senderUserId,
+    createdAtMs: now,
+    payload: enrichedPayload,
+  });
+
+  const payload = `event: rtc\ndata: ${JSON.stringify(enrichedPayload)}\n\n`;
   let delivered = 0;
 
   for (const client of sseClients) {
@@ -69,7 +120,23 @@ function sendRtcSignal(
       sseClients.delete(client);
     }
   }
-  return delivered;
+
+  let targetOnline = delivered > 0;
+  if (!targetOnline) {
+    if (isGroup) {
+      for (const [, lastSeen] of userLastSeenMap.entries()) {
+        if (now - lastSeen <= 15_000) {
+          targetOnline = true;
+          break;
+        }
+      }
+    } else {
+      const lastSeen = userLastSeenMap.get(normalizedTarget) || 0;
+      targetOnline = now - lastSeen <= 15_000;
+    }
+  }
+
+  return { delivered, targetOnline, signalId, seq };
 }
 
 const SESSION_COOKIE_NAME = 'choy_session';
@@ -153,6 +220,12 @@ function requireAdmin(req: AuthedRequest, res: Response, next: NextFunction) {
 const app = express();
 app.set('trust proxy', 1);
 app.use(express.json({ limit: '15mb' }));
+app.use('/api', (_req, res, next) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+  next();
+});
 
 // Health check endpoint for Render hosting
 app.get('/api/health', async (_req, res) => {
@@ -513,22 +586,27 @@ app.delete('/api/auth/account', requireAuth, handleSelfDeleteAccount);
 
 app.get('/api/choy/stream', requireAuth, (req: AuthedRequest, res: Response) => {
   const user = req.choyUser!;
-  res.setHeader('Content-Type', 'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  touchUserPresence(user.name);
+  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache, no-store, no-transform');
   res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.setHeader('Content-Encoding', 'identity');
   res.flushHeaders?.();
-  res.write(`event: connected\ndata: ${JSON.stringify({ ok: true, uid: user.id })}\n\n`);
+  res.write(`:${' '.repeat(2048)}\n\n`);
+  res.write(`event: connected\ndata: ${JSON.stringify({ ok: true, uid: user.id, latestRtcSeq: rtcSignalSeq })}\n\n`);
   const client: SseClient = { res, userId: user.id, userName: user.name };
   sseClients.add(client);
 
   const keepAlive = setInterval(() => {
     try {
+      touchUserPresence(user.name);
       res.write(': ping\n\n');
     } catch {
       clearInterval(keepAlive);
       sseClients.delete(client);
     }
-  }, 25000);
+  }, 15000);
 
   req.on('close', () => {
     clearInterval(keepAlive);
@@ -536,10 +614,39 @@ app.get('/api/choy/stream', requireAuth, (req: AuthedRequest, res: Response) => 
   });
 });
 
-// ---- REAL-TIME WEBRTC VIDEO CALL SIGNALING ----
+// ---- REAL-TIME WEBRTC VIDEO CALL SIGNALING (SSE + RELIABLE POLL FALLBACK) ----
+app.get('/api/choy/rtc/poll', requireAuth, (req: AuthedRequest, res: Response) => {
+  const user = req.choyUser!;
+  const now = Date.now();
+  touchUserPresence(user.name);
+  pruneRtcQueue(now);
+
+  const rawSince = Number(req.query.since);
+  const since = Number.isFinite(rawSince) && rawSince > 0 ? rawSince : 0;
+  const myNameLower = user.name.trim().toLowerCase();
+  const minFreshTs = since === 0 ? now - 25_000 : 0;
+
+  const matched = rtcSignalQueue.filter((item) => {
+    if (item.seq <= since) return false;
+    if (since === 0 && item.createdAtMs < minFreshTs) return false;
+    if (item.senderUserId === user.id) return false;
+    return (
+      item.targetNameLower === 'vip group' ||
+      item.targetNameLower === '' ||
+      item.targetNameLower === myNameLower
+    );
+  });
+
+  return res.json({
+    signals: matched.map((m) => m.payload),
+    latestSeq: rtcSignalSeq,
+  });
+});
+
 app.post('/api/choy/rtc/signal', requireAuth, async (req: AuthedRequest, res: Response) => {
   try {
     const user = req.choyUser!;
+    touchUserPresence(user.name);
     const type = typeof req.body?.type === 'string' ? req.body.type.trim() : '';
     if (!['offer', 'answer', 'ice', 'hangup', 'decline'].includes(type)) {
       return res.status(400).json({ error: 'Invalid signaling event type' });
@@ -555,7 +662,7 @@ app.post('/api/choy/rtc/signal', requireAuth, async (req: AuthedRequest, res: Re
       return res.status(400).json({ error: 'callId is required' });
     }
 
-    const delivered = sendRtcSignal(targetName, user.id, {
+    const result = sendRtcSignal(targetName, user.id, {
       type,
       callId,
       roomId,
@@ -567,7 +674,7 @@ app.post('/api/choy/rtc/signal', requireAuth, async (req: AuthedRequest, res: Re
       ts: Date.now(),
     });
 
-    return res.json({ ok: true, delivered });
+    return res.json({ ok: true, ...result });
   } catch (err: unknown) {
     return res.status(500).json({ error: err instanceof Error ? err.message : 'Signaling failed' });
   }
@@ -576,6 +683,7 @@ app.post('/api/choy/rtc/signal', requireAuth, async (req: AuthedRequest, res: Re
 app.get('/api/choy/state', requireAuth, async (req: AuthedRequest, res: Response) => {
   try {
     const user = req.choyUser!;
+    touchUserPresence(user.name);
     const isAdmin = user.role === 'admin';
     const [posts, messages, users, knowledge, leaderboard] = await Promise.all([
       store.listPosts(),
