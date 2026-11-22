@@ -17,8 +17,30 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
     <link rel="icon" type="image/png" sizes="192x192" href="/pwa-192x192.png" />
     <link rel="icon" href="/favicon.ico" />
+    <script>
+      (function () {
+        try {
+          var mode = localStorage.getItem('choychat_theme_mode') || 'dark';
+          var isDark =
+            mode === 'dark' ||
+            (mode === 'system' && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
+          var root = document.documentElement;
+          root.classList.toggle('dark', isDark);
+          root.style.colorScheme = isDark ? 'dark' : 'light';
+          var meta = document.querySelector('meta[name="theme-color"]');
+          if (meta) meta.setAttribute('content', isDark ? '#022c22' : '#ecfdf5');
+          var scale = localStorage.getItem('choychat_font_scale');
+          if (scale === 'compact' || scale === 'standard' || scale === 'large') {
+            root.setAttribute('data-font-scale', scale);
+          }
+          if (localStorage.getItem('choychat_reduced_motion') === 'true') {
+            root.setAttribute('data-reduced-motion', 'true');
+          }
+        } catch (e) {}
+      })();
+    </script>
   </head>
-  <body>
+  <body class="bg-emerald-50 text-emerald-950 dark:bg-emerald-950 dark:text-slate-100 antialiased transition-colors duration-200">
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

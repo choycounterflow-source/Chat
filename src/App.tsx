@@ -38,13 +38,21 @@ import {
   Square,
   Send,
   Eye,
-  EyeOff
+  EyeOff,
+  GitBranch,
+  Sun,
+  Moon,
+  Monitor,
+  Type,
+  RotateCcw
 } from 'lucide-react';
 import { PWAInstallButton } from './components/PWAInstallButton';
 import { OfflineIndicator } from './components/OfflineIndicator';
 import { SecurityStudio } from './components/SecurityStudio';
+import { GitHubIntelligence } from './components/GitHubIntelligence';
 import { ChatVideoPlayer } from './components/ChatVideoPlayer';
 import { ImageZoomModal } from './components/ImageZoomModal';
+import { useThemePreferences } from './hooks/useThemePreferences';
 
 interface CurrentUser {
   id: string;
@@ -127,6 +135,19 @@ function formatIsoTime(iso?: string): string {
 }
 
 export default function App() {
+  // Appearance & Theme Preferences (Light / Dark / System, Text Size, Reduce Motion)
+  const {
+    themeMode,
+    resolvedTheme,
+    fontScale,
+    reducedMotion,
+    setThemeMode,
+    toggleLightDark,
+    setFontScale,
+    setReducedMotion,
+    resetAppearance
+  } = useThemePreferences();
+
   // Auth state (Bearer session token held strictly in JS/React memory)
   const [authToken, setAuthToken] = useState<string | null>(null);
   const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
@@ -157,6 +178,7 @@ export default function App() {
     | 'admin_prices'
     | 'admin_security'
     | 'choyai'
+    | 'github'
     | 'people'
     | 'videos'
   >('feed');
@@ -1294,11 +1316,11 @@ export default function App() {
   // Loading state while checking server status
   if (!authChecked) {
     return (
-      <div className="fixed inset-0 bg-emerald-950 text-slate-100 flex flex-col items-center justify-center gap-3 p-4">
-        <div className="w-16 h-24 rounded-2xl overflow-hidden border border-emerald-400 bg-emerald-950 p-0.5 shadow-lg">
+      <div className="fixed inset-0 bg-emerald-50 dark:bg-emerald-950 text-emerald-950 dark:text-slate-100 flex flex-col items-center justify-center gap-3 p-4">
+        <div className="w-16 h-24 rounded-2xl overflow-hidden border border-emerald-400 bg-emerald-50 dark:bg-emerald-950 p-0.5 shadow-lg">
           <img src={DEFAULT_AVATAR} alt="" className="w-full h-full object-contain rounded-xl" />
         </div>
-        <div className="flex items-center gap-2 text-xs text-emerald-300 font-semibold">
+        <div className="flex items-center gap-2 text-xs text-emerald-700 dark:text-emerald-300 font-semibold">
           <Loader2 className="w-4 h-4 animate-spin" /> Connecting to Choy Chat...
         </div>
       </div>
@@ -1308,50 +1330,60 @@ export default function App() {
   // Auth Gate: First-Run Admin Setup OR Standard Phone + PIN Login / Register
   if (!authToken || !currentUser) {
     return (
-      <div className="fixed inset-0 bg-emerald-950 text-slate-100 flex items-center justify-center p-4 overflow-hidden">
-        <div className="absolute inset-0 z-0 flex items-center justify-center bg-emerald-950">
-          <img src={DEFAULT_AVATAR} alt="" className="w-full h-full object-contain opacity-35" />
-          <div className="absolute inset-0 bg-emerald-950/65"></div>
+      <div className="fixed inset-0 bg-emerald-50 dark:bg-emerald-950 text-emerald-950 dark:text-slate-100 flex items-center justify-center p-4 overflow-hidden">
+        <div className="absolute inset-0 z-0 flex items-center justify-center bg-emerald-50 dark:bg-emerald-950">
+          <img src={DEFAULT_AVATAR} alt="" className="w-full h-full object-contain opacity-25 dark:opacity-35" />
+          <div className="absolute inset-0 bg-emerald-50/75 dark:bg-emerald-950/65"></div>
         </div>
 
-        <div className="relative z-15 w-[95%] max-w-sm max-h-[92vh] overflow-y-auto bg-emerald-950/90 border border-emerald-500/40 rounded-3xl p-6 shadow-2xl space-y-4">
+        <div className="relative z-15 w-[95%] max-w-sm max-h-[92vh] overflow-y-auto bg-white/95 dark:bg-emerald-950/90 border border-emerald-300 dark:border-emerald-500/40 rounded-3xl p-6 shadow-2xl space-y-4">
+          <button
+            type="button"
+            onClick={toggleLightDark}
+            aria-label={resolvedTheme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
+            title={resolvedTheme === 'dark' ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
+            className="absolute top-4 right-4 p-2 rounded-xl bg-emerald-100/90 dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 text-emerald-800 dark:text-amber-300 hover:bg-emerald-200 dark:hover:bg-emerald-800 transition"
+          >
+            {resolvedTheme === 'dark' ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+          </button>
+
           <div className="text-center space-y-1.5">
-            <div className="w-16 h-24 rounded-2xl overflow-hidden border border-emerald-400 bg-emerald-950 p-0.5 mx-auto shadow-md">
+            <div className="w-16 h-24 rounded-2xl overflow-hidden border border-emerald-500 dark:border-emerald-400 bg-emerald-50 dark:bg-emerald-950 p-0.5 mx-auto shadow-md">
               <img src={DEFAULT_AVATAR} alt="" className="w-full h-full object-contain rounded-xl" />
             </div>
-            <h1 className="text-3xl font-black tracking-[0.22em] uppercase bg-gradient-to-r from-amber-200 via-emerald-200 to-amber-300 bg-clip-text text-transparent drop-shadow-[0_2px_10px_rgba(251,191,36,0.35)]">
+            <h1 className="text-3xl font-black tracking-[0.22em] uppercase bg-gradient-to-r from-emerald-900 via-emerald-700 to-amber-700 dark:from-amber-200 dark:via-emerald-200 dark:to-amber-300 bg-clip-text text-transparent drop-shadow-[0_2px_10px_rgba(251,191,36,0.25)]">
               CHOY CHAT
             </h1>
-            <p className="text-[11px] text-emerald-300 flex items-center justify-center gap-1.5">
+            <p className="text-[11px] text-emerald-700 dark:text-emerald-300 flex items-center justify-center gap-1.5">
               <Cloud className="w-3.5 h-3.5" />
               {storageMode === 'postgres' ? 'PostgreSQL Cloud Sync Ready' : 'Render Live Sync Ready'}
             </p>
           </div>
 
           {loginError && (
-            <div className="p-2.5 rounded-xl bg-red-500/15 border border-red-400/40 text-red-200 text-xs text-center">
+            <div className="p-2.5 rounded-xl bg-red-50 dark:bg-red-500/15 border border-red-300 dark:border-red-400/40 text-red-800 dark:text-red-200 text-xs text-center">
               {loginError}
             </div>
           )}
 
           {needsAdminSetup ? (
             <form onSubmit={handleFirstRunAdminSetup} className="space-y-3 text-xs">
-              <div className="p-2.5 rounded-xl bg-emerald-900/70 border border-emerald-500/40 text-emerald-200 text-[11px] leading-relaxed">
-                <strong className="text-white">First-Run Admin Setup:</strong> I-claim imong Admin account gamit imong phone number ug gusto nimong PIN.
+              <div className="p-2.5 rounded-xl bg-white dark:bg-emerald-900/70 border border-emerald-500/40 text-emerald-800 dark:text-emerald-200 text-[11px] leading-relaxed">
+                <strong className="text-emerald-950 dark:text-white">First-Run Admin Setup:</strong> I-claim imong Admin account gamit imong phone number ug gusto nimong PIN.
               </div>
               <div>
-                <label className="block text-slate-300 mb-1">Admin Name</label>
+                <label className="block text-emerald-800 dark:text-slate-300 mb-1">Admin Name</label>
                 <input
                   type="text"
                   required
                   placeholder="Choy Admin"
                   value={authName}
                   onChange={(e) => setAuthName(e.target.value)}
-                  className="w-full p-2.5 bg-slate-900 border border-slate-700 rounded-xl text-white"
+                  className="w-full p-2.5 bg-white dark:bg-slate-900 border border-emerald-300 dark:border-slate-700 rounded-xl text-emerald-950 dark:text-white"
                 />
               </div>
               <div>
-                <label className="block text-slate-300 mb-1">Admin Phone Number</label>
+                <label className="block text-emerald-800 dark:text-slate-300 mb-1">Admin Phone Number</label>
                 <input
                   type="text"
                   inputMode="tel"
@@ -1360,11 +1392,11 @@ export default function App() {
                   placeholder="09361223978"
                   value={authPhone}
                   onChange={(e) => setAuthPhone(e.target.value)}
-                  className="w-full p-2.5 bg-slate-900 border border-slate-700 rounded-xl text-white"
+                  className="w-full p-2.5 bg-white dark:bg-slate-900 border border-emerald-300 dark:border-slate-700 rounded-xl text-emerald-950 dark:text-white"
                 />
               </div>
               <div>
-                <label className="block text-slate-300 mb-1">Create Admin PIN (min. 4 chars)</label>
+                <label className="block text-emerald-800 dark:text-slate-300 mb-1">Create Admin PIN (min. 4 chars)</label>
                 <div className="relative">
                   <input
                     type={showAuthPin ? 'text' : 'password'}
@@ -1373,12 +1405,12 @@ export default function App() {
                     placeholder="Enter your secret PIN..."
                     value={authPin}
                     onChange={(e) => setAuthPin(e.target.value)}
-                    className="w-full p-2.5 pr-10 bg-slate-900 border border-slate-700 rounded-xl text-white"
+                    className="w-full p-2.5 pr-10 bg-white dark:bg-slate-900 border border-emerald-300 dark:border-slate-700 rounded-xl text-emerald-950 dark:text-white"
                   />
                   <button
                     type="button"
                     onClick={() => setShowAuthPin((v) => !v)}
-                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white p-1"
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-emerald-700/80 dark:text-slate-400 hover:text-emerald-950 dark:hover:text-white p-1"
                     title={showAuthPin ? 'Hide PIN' : 'Show PIN'}
                   >
                     {showAuthPin ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
@@ -1396,7 +1428,7 @@ export default function App() {
             </form>
           ) : (
             <>
-              <div className="grid grid-cols-2 gap-1.5 p-1 rounded-xl bg-emerald-900/60 border border-emerald-800 text-xs">
+              <div className="grid grid-cols-2 gap-1.5 p-1 rounded-xl bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-800 text-xs">
                 <button
                   type="button"
                   onClick={() => {
@@ -1426,19 +1458,19 @@ export default function App() {
               <form onSubmit={handleAuthSubmit} className="space-y-3 text-xs">
                 {authMode === 'register' && (
                   <div>
-                    <label className="block text-slate-300 mb-1">Full Name</label>
+                    <label className="block text-emerald-800 dark:text-slate-300 mb-1">Full Name</label>
                     <input
                       type="text"
                       required
                       placeholder="Your name..."
                       value={authName}
                       onChange={(e) => setAuthName(e.target.value)}
-                      className="w-full p-2.5 bg-slate-900 border border-slate-700 rounded-xl text-white"
+                      className="w-full p-2.5 bg-white dark:bg-slate-900 border border-emerald-300 dark:border-slate-700 rounded-xl text-emerald-950 dark:text-white"
                     />
                   </div>
                 )}
                 <div>
-                  <label className="block text-slate-300 mb-1">Phone</label>
+                  <label className="block text-emerald-800 dark:text-slate-300 mb-1">Phone</label>
                   <input
                     type="text"
                     inputMode="tel"
@@ -1447,11 +1479,11 @@ export default function App() {
                     placeholder="09..."
                     value={authPhone}
                     onChange={(e) => setAuthPhone(e.target.value)}
-                    className="w-full p-2.5 bg-slate-900 border border-slate-700 rounded-xl text-white"
+                    className="w-full p-2.5 bg-white dark:bg-slate-900 border border-emerald-300 dark:border-slate-700 rounded-xl text-emerald-950 dark:text-white"
                   />
                 </div>
                 <div>
-                  <label className="block text-slate-300 mb-1">PIN</label>
+                  <label className="block text-emerald-800 dark:text-slate-300 mb-1">PIN</label>
                   <div className="relative">
                     <input
                       type={showAuthPin ? 'text' : 'password'}
@@ -1460,12 +1492,12 @@ export default function App() {
                       placeholder="Enter PIN..."
                       value={authPin}
                       onChange={(e) => setAuthPin(e.target.value)}
-                      className="w-full p-2.5 pr-10 bg-slate-900 border border-slate-700 rounded-xl text-white"
+                      className="w-full p-2.5 pr-10 bg-white dark:bg-slate-900 border border-emerald-300 dark:border-slate-700 rounded-xl text-emerald-950 dark:text-white"
                     />
                     <button
                       type="button"
                       onClick={() => setShowAuthPin((v) => !v)}
-                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white p-1"
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-emerald-700/80 dark:text-slate-400 hover:text-emerald-950 dark:hover:text-white p-1"
                       title={showAuthPin ? 'Hide PIN' : 'Show PIN'}
                     >
                       {showAuthPin ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
@@ -1483,7 +1515,7 @@ export default function App() {
             </>
           )}
 
-          <div className="pt-2 border-t border-emerald-800/80">
+          <div className="pt-2 border-t border-emerald-200 dark:border-emerald-800/80">
             <PWAInstallButton fullWidth />
           </div>
         </div>
@@ -1493,7 +1525,7 @@ export default function App() {
   }
 
   return (
-    <div className="fixed inset-0 bg-emerald-950/95 text-slate-100 flex flex-col md:flex-row overflow-hidden text-sm">
+    <div className="fixed inset-0 bg-emerald-50 dark:bg-emerald-950/95 text-emerald-950 dark:text-slate-100 flex flex-col md:flex-row overflow-hidden text-sm">
       {/* VIDEO CALL MODAL */}
       {isInVideoCall && (
         <div className="fixed inset-0 z-50 bg-slate-950 flex flex-col items-center justify-center p-4">
@@ -1542,17 +1574,17 @@ export default function App() {
       {/* PHOTO EDITOR MODAL */}
       {isPhotoEditorOpen && (
         <div className="fixed inset-0 z-50 bg-slate-950/90 flex flex-col items-center justify-center p-4">
-          <div className="bg-emerald-950 border border-emerald-500/50 rounded-3xl p-5 max-w-lg w-full space-y-4 shadow-2xl">
-            <div className="flex justify-between items-center border-b border-emerald-800 pb-3">
-              <h3 className="text-sm font-bold text-white uppercase flex items-center gap-2">
-                <Edit3 className="w-4 h-4 text-emerald-400" /> Photo Editor (Draw & Crop)
+          <div className="bg-emerald-50 dark:bg-emerald-950 border border-emerald-500/50 rounded-3xl p-5 max-w-lg w-full space-y-4 shadow-2xl">
+            <div className="flex justify-between items-center border-b border-emerald-200 dark:border-emerald-800 pb-3">
+              <h3 className="text-sm font-bold text-emerald-950 dark:text-white uppercase flex items-center gap-2">
+                <Edit3 className="w-4 h-4 text-emerald-700 dark:text-emerald-400" /> Photo Editor (Draw & Crop)
               </h3>
-              <button type="button" onClick={() => setIsPhotoEditorOpen(false)} className="text-slate-400 hover:text-white">
+              <button type="button" onClick={() => setIsPhotoEditorOpen(false)} className="text-emerald-700/80 dark:text-slate-400 hover:text-emerald-950 dark:hover:text-white">
                 ✕
               </button>
             </div>
 
-            <div className="flex justify-center bg-slate-900 p-2 rounded-2xl border border-emerald-800 overflow-auto max-h-[50vh]">
+            <div className="flex justify-center bg-white dark:bg-slate-900 p-2 rounded-2xl border border-emerald-200 dark:border-emerald-800 overflow-auto max-h-[50vh]">
               <canvas
                 ref={canvasRef}
                 onMouseDown={startDrawing}
@@ -1570,14 +1602,14 @@ export default function App() {
                 <button
                   type="button"
                   onClick={handleCropSquare}
-                  className="px-3 py-1.5 bg-emerald-900 border border-emerald-700 rounded-xl text-emerald-200 hover:bg-emerald-800 font-semibold"
+                  className="px-3 py-1.5 bg-emerald-100/80 dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 rounded-xl text-emerald-800 dark:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-800 font-semibold"
                 >
                   Square Crop
                 </button>
                 <button
                   type="button"
                   onClick={handleApplyFilterGrayscale}
-                  className="px-3 py-1.5 bg-emerald-900 border border-emerald-700 rounded-xl text-emerald-200 hover:bg-emerald-800 font-semibold"
+                  className="px-3 py-1.5 bg-emerald-100/80 dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 rounded-xl text-emerald-800 dark:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-800 font-semibold"
                 >
                   Grayscale
                 </button>
@@ -1623,19 +1655,19 @@ export default function App() {
             galleryFilter === 'all' ? scopedMedia : scopedMedia.filter((m) => m.mediaType === galleryFilter);
           return (
             <div className="fixed inset-0 z-50 bg-slate-950/90 flex flex-col items-center justify-center p-4">
-              <div className="bg-emerald-950 border border-emerald-500/50 rounded-3xl p-5 max-w-2xl w-full space-y-4 shadow-2xl max-h-[88vh] flex flex-col">
-                <div className="flex flex-wrap justify-between items-center gap-2 border-b border-emerald-800 pb-3 shrink-0">
-                  <h3 className="text-sm font-bold text-white uppercase flex items-center gap-2">
+              <div className="bg-emerald-50 dark:bg-emerald-950 border border-emerald-500/50 rounded-3xl p-5 max-w-2xl w-full space-y-4 shadow-2xl max-h-[88vh] flex flex-col">
+                <div className="flex flex-wrap justify-between items-center gap-2 border-b border-emerald-200 dark:border-emerald-800 pb-3 shrink-0">
+                  <h3 className="text-sm font-bold text-emerald-950 dark:text-white uppercase flex items-center gap-2">
                     {galleryFilter === 'video' ? (
-                      <Video className="w-4 h-4 text-emerald-400" />
+                      <Video className="w-4 h-4 text-emerald-700 dark:text-emerald-400" />
                     ) : (
-                      <ImageIcon className="w-4 h-4 text-emerald-400" />
+                      <ImageIcon className="w-4 h-4 text-emerald-700 dark:text-emerald-400" />
                     )}
                     {galleryFilter === 'video' ? 'Shared Videos' : 'Media Gallery'} (
                     {galleryScope === 'all' ? 'All Chats' : activeChat})
                   </h3>
                   <div className="flex items-center gap-2">
-                    <div className="flex rounded-lg bg-emerald-900/80 border border-emerald-700 p-0.5 text-[10px]">
+                    <div className="flex rounded-lg bg-white dark:bg-emerald-900/80 border border-emerald-300 dark:border-emerald-700 p-0.5 text-[10px]">
                       <button
                         type="button"
                         onClick={() => setGalleryScope('chat')}
@@ -1661,7 +1693,7 @@ export default function App() {
                         setSelectedGalleryVideo(null);
                         setIsMediaGalleryOpen(false);
                       }}
-                      className="text-slate-300 hover:text-white px-2 py-1 font-bold"
+                      className="text-emerald-800 dark:text-slate-300 hover:text-emerald-950 dark:hover:text-white px-2 py-1 font-bold"
                     >
                       ✕
                     </button>
@@ -1692,15 +1724,15 @@ export default function App() {
 
                 {/* Expanded Video Player with Sound Enabled */}
                 {selectedGalleryVideo && selectedGalleryVideo.mediaUrl && (
-                  <div className="p-3 rounded-2xl bg-emerald-900/70 border border-emerald-500/50 space-y-2 shrink-0">
+                  <div className="p-3 rounded-2xl bg-white dark:bg-emerald-900/70 border border-emerald-500/50 space-y-2 shrink-0">
                     <div className="flex items-center justify-between text-xs">
-                      <span className="font-bold text-white truncate">
+                      <span className="font-bold text-emerald-950 dark:text-white truncate">
                         Playing Video from {selectedGalleryVideo.sender} ({selectedGalleryVideo.receiver})
                       </span>
                       <button
                         type="button"
                         onClick={() => setSelectedGalleryVideo(null)}
-                        className="text-emerald-300 hover:text-white text-[11px] font-bold"
+                        className="text-emerald-700 dark:text-emerald-300 hover:text-emerald-950 dark:hover:text-white text-[11px] font-bold"
                       >
                         Close Player
                       </button>
@@ -1720,7 +1752,7 @@ export default function App() {
                   }`}
                 >
                   {filteredGallery.length === 0 ? (
-                    <div className="col-span-full py-12 text-center text-emerald-400 text-xs">
+                    <div className="col-span-full py-12 text-center text-emerald-700 dark:text-emerald-400 text-xs">
                       No shared {galleryFilter === 'all' ? 'media' : galleryFilter} files in{' '}
                       {galleryScope === 'all' ? 'any chat' : activeChat} yet.
                     </div>
@@ -1728,7 +1760,7 @@ export default function App() {
                     filteredGallery.map((m) => (
                       <div
                         key={m.id}
-                        className="bg-emerald-900/60 border border-emerald-700/50 rounded-2xl p-2.5 space-y-2 flex flex-col justify-between"
+                        className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-2.5 space-y-2 flex flex-col justify-between"
                       >
                         {m.mediaType === 'image' && (
                           <img src={m.mediaUrl} alt="" className="w-full h-28 object-cover rounded-xl" />
@@ -1744,7 +1776,7 @@ export default function App() {
                             <button
                               type="button"
                               onClick={() => setSelectedGalleryVideo(m)}
-                              className="w-full py-1.5 rounded-lg bg-emerald-400/20 border border-emerald-400/50 text-emerald-200 hover:bg-emerald-400 hover:text-slate-950 font-bold text-[11px] transition"
+                              className="w-full py-1.5 rounded-lg bg-emerald-400/20 border border-emerald-400/50 text-emerald-800 dark:text-emerald-200 hover:bg-emerald-400 hover:text-slate-950 font-bold text-[11px] transition"
                             >
                               Expand Video with Sound
                             </button>
@@ -1752,10 +1784,10 @@ export default function App() {
                         )}
                         {m.mediaType === 'audio' && <audio src={m.mediaUrl} controls className="w-full h-8 my-auto" />}
                         {m.mediaType === 'file' && (
-                          <div className="text-amber-300 text-xs py-8 text-center">📎 Shared File</div>
+                          <div className="text-amber-700 dark:text-amber-300 text-xs py-8 text-center">📎 Shared File</div>
                         )}
                         {m.mediaType !== 'video' && (
-                          <div className="text-[10px] text-emerald-300 truncate w-full text-center">
+                          <div className="text-[10px] text-emerald-700 dark:text-emerald-300 truncate w-full text-center">
                             {m.sender} • {m.time}
                           </div>
                         )}
@@ -1764,7 +1796,7 @@ export default function App() {
                   )}
                 </div>
 
-                <div className="flex justify-end pt-2 border-t border-emerald-800 shrink-0">
+                <div className="flex justify-end pt-2 border-t border-emerald-200 dark:border-emerald-800 shrink-0">
                   <button
                     type="button"
                     onClick={() => {
@@ -1782,15 +1814,15 @@ export default function App() {
         })()}
 
       {/* SIDEBAR / MOBILE SWIPEABLE NAV BAR */}
-      <aside className="w-full md:w-60 bg-emerald-900/90 border-b md:border-b-0 md:border-r border-emerald-800 p-2.5 md:p-3 flex flex-row md:flex-col justify-between shrink-0 overflow-x-auto md:overflow-x-hidden md:overflow-y-auto touch-pan-x md:touch-pan-y overscroll-x-contain [-webkit-overflow-scrolling:touch]">
+      <aside className="w-full md:w-60 bg-white/95 dark:bg-emerald-900/90 border-b md:border-b-0 md:border-r border-emerald-200 dark:border-emerald-800 p-2.5 md:p-3 flex flex-row md:flex-col justify-between shrink-0 overflow-x-auto md:overflow-x-hidden md:overflow-y-auto touch-pan-x md:touch-pan-y overscroll-x-contain [-webkit-overflow-scrolling:touch]">
         <div className="flex md:flex-col items-center md:items-stretch gap-1.5 w-max md:w-full">
           <div className="hidden md:flex items-center gap-2 px-2 py-2 mb-2">
-            <div className="w-9 h-12 rounded-lg overflow-hidden border border-emerald-400 bg-emerald-950 p-0.5 shrink-0">
+            <div className="w-9 h-12 rounded-lg overflow-hidden border border-emerald-400 bg-emerald-50 dark:bg-emerald-950 p-0.5 shrink-0">
               <img src={DEFAULT_AVATAR} alt="" className="w-full h-full object-contain rounded" />
             </div>
             <div className="min-w-0">
-              <div className="text-sm font-bold text-white truncate">Choy Chat</div>
-              <div className="text-[10px] text-emerald-300 flex items-center gap-1">
+              <div className="text-sm font-bold text-emerald-950 dark:text-white truncate">Choy Chat</div>
+              <div className="text-[10px] text-emerald-700 dark:text-emerald-300 flex items-center gap-1">
                 <Cloud className="w-3 h-3" /> {storageMode === 'postgres' ? 'Postgres Synced' : 'Live Synced'}
               </div>
             </div>
@@ -1879,9 +1911,21 @@ export default function App() {
               <img
                 src={DEFAULT_AVATAR}
                 alt=""
-                className="w-4 h-5 rounded bg-emerald-950 object-contain shrink-0 border border-cyan-300"
+                className="w-4 h-5 rounded bg-emerald-50 dark:bg-emerald-950 object-contain shrink-0 border border-cyan-300"
               />
               <span>Choy AI</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab('github')}
+              className={`px-3 py-2 rounded-xl flex items-center gap-2 shrink-0 whitespace-nowrap ${
+                activeTab === 'github'
+                  ? 'bg-emerald-400 text-slate-950 font-bold'
+                  : 'text-emerald-100 hover:bg-emerald-800'
+              }`}
+            >
+              <GitBranch className="w-4 h-4 shrink-0" />
+              <span>GitHub Intelligence</span>
             </button>
             <button
               type="button"
@@ -1893,14 +1937,14 @@ export default function App() {
               <img
                 src={DEFAULT_AVATAR}
                 alt=""
-                className="w-4 h-5 rounded bg-emerald-950 object-contain shrink-0 border border-emerald-400"
+                className="w-4 h-5 rounded bg-emerald-50 dark:bg-emerald-950 object-contain shrink-0 border border-emerald-400"
               />
               <span>Account</span>
             </button>
 
             {isAdmin && (
               <>
-                <div className="pt-2 pb-1 text-[10px] font-bold uppercase text-indigo-300 hidden md:block px-2">
+                <div className="pt-2 pb-1 text-[10px] font-bold uppercase text-indigo-700 dark:text-indigo-300 hidden md:block px-2">
                   Admin Panel
                 </div>
 
@@ -1957,23 +2001,23 @@ export default function App() {
           </nav>
         </div>
 
-        <div className="hidden md:block pt-3 border-t border-emerald-800 space-y-2">
+        <div className="hidden md:block pt-3 border-t border-emerald-200 dark:border-emerald-800 space-y-2">
           <button
             type="button"
             onClick={() => setActiveTab('profile')}
-            className="w-full p-2 rounded-xl bg-emerald-950/70 border border-emerald-800 flex items-center gap-2 text-left hover:bg-emerald-800/70 transition"
+            className="w-full p-2 rounded-xl bg-emerald-50 dark:bg-emerald-950/70 border border-emerald-200 dark:border-emerald-800 flex items-center gap-2 text-left hover:bg-emerald-100 dark:hover:bg-emerald-800/70 transition"
           >
-            <img src={DEFAULT_AVATAR} alt="" className="w-8 h-11 rounded-lg bg-emerald-950 object-contain shrink-0 border border-emerald-500/50" />
+            <img src={DEFAULT_AVATAR} alt="" className="w-8 h-11 rounded-lg bg-emerald-50 dark:bg-emerald-950 object-contain shrink-0 border border-emerald-500/50" />
             <div className="min-w-0 flex-1">
-              <div className="text-[11px] font-bold text-white truncate">{currentUser.name}</div>
-              <div className="text-[9px] text-emerald-300 truncate">{isAdmin ? 'Admin • Synced' : 'Member • Synced'}</div>
+              <div className="text-[11px] font-bold text-emerald-950 dark:text-white truncate">{currentUser.name}</div>
+              <div className="text-[9px] text-emerald-700 dark:text-emerald-300 truncate">{isAdmin ? 'Admin • Synced' : 'Member • Synced'}</div>
             </div>
           </button>
           <PWAInstallButton fullWidth />
           <button
             type="button"
             onClick={handleLogout}
-            className="w-full px-3 py-2 rounded-xl bg-emerald-950 text-red-300 text-xs font-semibold hover:bg-emerald-800 flex items-center justify-center gap-2"
+            className="w-full px-3 py-2 rounded-xl bg-emerald-50 dark:bg-emerald-950 text-red-700 dark:text-red-300 text-xs font-semibold hover:bg-emerald-100 dark:hover:bg-emerald-800 flex items-center justify-center gap-2"
           >
             <LogOut className="w-3.5 h-3.5" /> Logout
           </button>
@@ -1983,43 +2027,43 @@ export default function App() {
       {/* MAIN VIEW */}
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
         {/* TOP BAR — FULL-WIDTH DESIGNED CHOY CHAT BANNER */}
-        <header className="flex flex-col px-3 sm:px-5 pt-3 pb-3 border-b border-emerald-700/70 bg-gradient-to-b from-emerald-950 via-emerald-900/70 to-emerald-950/90 shrink-0 gap-2.5">
+        <header className="flex flex-col px-3 sm:px-5 pt-3 pb-3 border-b border-emerald-200 dark:border-emerald-700/70 bg-gradient-to-b from-white via-emerald-50/70 to-emerald-50 dark:from-emerald-950 dark:via-emerald-900/70 dark:to-emerald-950/90 shrink-0 gap-2.5">
           {/* Full-width edge-to-edge CHOY CHAT Hero Banner */}
-          <div className="relative w-full overflow-hidden rounded-2xl border border-amber-400/45 bg-gradient-to-r from-emerald-950 via-emerald-900/95 to-emerald-950 px-3 sm:px-6 py-2.5 sm:py-3.5 shadow-[0_0_25px_rgba(16,185,129,0.22)]">
+          <div className="relative w-full overflow-hidden rounded-2xl border border-amber-500/50 dark:border-amber-400/45 bg-gradient-to-r from-emerald-100 via-white to-emerald-100 dark:from-emerald-950 dark:via-emerald-900/95 dark:to-emerald-950 px-3 sm:px-6 py-2.5 sm:py-3.5 shadow-[0_4px_20px_rgba(6,95,70,0.12)] dark:shadow-[0_0_25px_rgba(16,185,129,0.22)]">
             {/* Soft ambient emerald & gold glow */}
-            <div className="pointer-events-none absolute -top-10 left-1/4 w-48 h-24 rounded-full bg-amber-400/15 blur-2xl"></div>
+            <div className="pointer-events-none absolute -top-10 left-1/4 w-48 h-24 rounded-full bg-amber-400/20 dark:bg-amber-400/15 blur-2xl"></div>
             <div className="pointer-events-none absolute -bottom-10 right-1/4 w-48 h-24 rounded-full bg-emerald-400/20 blur-2xl"></div>
 
             {/* Ornamental Gold Corner Accents */}
-            <span className="pointer-events-none absolute top-1.5 left-1.5 w-3.5 h-3.5 border-t-2 border-l-2 border-amber-300/80 rounded-tl-md"></span>
-            <span className="pointer-events-none absolute top-1.5 right-1.5 w-3.5 h-3.5 border-t-2 border-r-2 border-amber-300/80 rounded-tr-md"></span>
-            <span className="pointer-events-none absolute bottom-1.5 left-1.5 w-3.5 h-3.5 border-b-2 border-l-2 border-amber-300/80 rounded-bl-md"></span>
-            <span className="pointer-events-none absolute bottom-1.5 right-1.5 w-3.5 h-3.5 border-b-2 border-r-2 border-amber-300/80 rounded-br-md"></span>
+            <span className="pointer-events-none absolute top-1.5 left-1.5 w-3.5 h-3.5 border-t-2 border-l-2 border-amber-600/70 dark:border-amber-300/80 rounded-tl-md"></span>
+            <span className="pointer-events-none absolute top-1.5 right-1.5 w-3.5 h-3.5 border-t-2 border-r-2 border-amber-600/70 dark:border-amber-300/80 rounded-tr-md"></span>
+            <span className="pointer-events-none absolute bottom-1.5 left-1.5 w-3.5 h-3.5 border-b-2 border-l-2 border-amber-600/70 dark:border-amber-300/80 rounded-bl-md"></span>
+            <span className="pointer-events-none absolute bottom-1.5 right-1.5 w-3.5 h-3.5 border-b-2 border-r-2 border-amber-600/70 dark:border-amber-300/80 rounded-br-md"></span>
 
             <div className="relative z-10 w-full flex items-center justify-between gap-2 sm:gap-4">
               {/* Left ornamental wing */}
               <div className="hidden xs:flex sm:flex items-center gap-1.5 flex-1 min-w-[20px]">
-                <span className="h-[2px] flex-1 bg-gradient-to-r from-transparent via-amber-400/80 to-emerald-300"></span>
-                <span className="w-2 h-2 rotate-45 bg-amber-300 shadow-[0_0_8px_rgba(251,191,36,0.9)] shrink-0"></span>
+                <span className="h-[2px] flex-1 bg-gradient-to-r from-transparent via-amber-500/80 dark:via-amber-400/80 to-emerald-600 dark:to-emerald-300"></span>
+                <span className="w-2 h-2 rotate-45 bg-amber-500 dark:bg-amber-300 shadow-[0_0_8px_rgba(251,191,36,0.7)] shrink-0"></span>
               </div>
 
               {/* Stretched Full-Width CHOY CHAT Wordmark */}
-              <h1 className="flex-1 sm:flex-none text-center font-black uppercase leading-none select-none text-[clamp(1.65rem,7.2vw,3.4rem)] tracking-[0.18em] sm:tracking-[0.28em] md:tracking-[0.34em] bg-gradient-to-r from-amber-200 via-white via-50% to-emerald-300 bg-clip-text text-transparent drop-shadow-[0_3px_14px_rgba(251,191,36,0.4)] whitespace-nowrap pl-[0.18em] sm:pl-[0.28em] md:pl-[0.34em]">
+              <h1 className="flex-1 sm:flex-none text-center font-black uppercase leading-none select-none text-[clamp(1.65rem,7.2vw,3.4rem)] tracking-[0.18em] sm:tracking-[0.28em] md:tracking-[0.34em] bg-gradient-to-r from-emerald-950 via-emerald-700 via-50% to-amber-700 dark:from-amber-200 dark:via-white dark:via-50% dark:to-emerald-300 bg-clip-text text-transparent drop-shadow-[0_2px_10px_rgba(16,185,129,0.2)] dark:drop-shadow-[0_3px_14px_rgba(251,191,36,0.4)] whitespace-nowrap pl-[0.18em] sm:pl-[0.28em] md:pl-[0.34em]">
                 CHOY CHAT
               </h1>
 
               {/* Right ornamental wing */}
               <div className="hidden xs:flex sm:flex items-center gap-1.5 flex-1 min-w-[20px]">
-                <span className="w-2 h-2 rotate-45 bg-amber-300 shadow-[0_0_8px_rgba(251,191,36,0.9)] shrink-0"></span>
-                <span className="h-[2px] flex-1 bg-gradient-to-l from-transparent via-amber-400/80 to-emerald-300"></span>
+                <span className="w-2 h-2 rotate-45 bg-amber-500 dark:bg-amber-300 shadow-[0_0_8px_rgba(251,191,36,0.7)] shrink-0"></span>
+                <span className="h-[2px] flex-1 bg-gradient-to-l from-transparent via-amber-500/80 dark:via-amber-400/80 to-emerald-600 dark:to-emerald-300"></span>
               </div>
             </div>
 
             {/* Subtle gold bottom shimmer line */}
-            <div className="relative z-10 mt-1.5 flex items-center justify-center gap-2 text-[9px] sm:text-[10px] font-bold uppercase tracking-[0.25em] text-amber-200/85">
-              <span className="h-px w-8 sm:w-16 bg-gradient-to-r from-transparent to-amber-300/70"></span>
+            <div className="relative z-10 mt-1.5 flex items-center justify-center gap-2 text-[9px] sm:text-[10px] font-bold uppercase tracking-[0.25em] text-amber-800/90 dark:text-amber-200/85">
+              <span className="h-px w-8 sm:w-16 bg-gradient-to-r from-transparent to-amber-600/60 dark:to-amber-300/70"></span>
               <span className="truncate">VIP Social • Live Cloud Sync</span>
-              <span className="h-px w-8 sm:w-16 bg-gradient-to-l from-transparent to-amber-300/70"></span>
+              <span className="h-px w-8 sm:w-16 bg-gradient-to-l from-transparent to-amber-600/60 dark:to-amber-300/70"></span>
             </div>
           </div>
 
@@ -2030,21 +2074,30 @@ export default function App() {
             </div>
 
             <div className="relative flex-1 min-w-0">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-emerald-300" />
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-emerald-700 dark:text-emerald-300" />
               <input
                 type="text"
                 placeholder="Search posts, people, chats..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full pl-9 pr-4 py-2 bg-emerald-950 border border-emerald-700/80 rounded-xl text-xs text-white placeholder-emerald-400 focus:outline-none focus:border-amber-300/80 shadow-inner"
+                className="w-full pl-9 pr-4 py-2 bg-white dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700/80 rounded-xl text-xs text-emerald-950 dark:text-white placeholder-emerald-600/60 dark:placeholder-emerald-400 focus:outline-none focus:border-amber-500 dark:focus:border-amber-300/80 shadow-inner"
               />
             </div>
 
             <div className="flex items-center gap-1.5 shrink-0">
               <button
                 type="button"
+                onClick={toggleLightDark}
+                className="p-2 bg-white dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 rounded-xl text-amber-700 dark:text-amber-300 hover:bg-emerald-100 dark:hover:bg-emerald-800 transition shrink-0"
+                title={resolvedTheme === 'dark' ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
+                aria-label={resolvedTheme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
+              >
+                {resolvedTheme === 'dark' ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+              </button>
+              <button
+                type="button"
                 onClick={handleShareApp}
-                className="p-2 bg-emerald-900 border border-emerald-700 rounded-xl text-emerald-200 hover:text-white hover:border-amber-300/60 transition shrink-0"
+                className="p-2 bg-white dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 rounded-xl text-emerald-800 dark:text-emerald-200 hover:text-emerald-950 dark:hover:text-white hover:border-amber-400/60 transition shrink-0"
                 title={shareCopied ? 'Link Copied!' : 'Share'}
               >
                 <Share2 className="w-4 h-4" />
@@ -2052,7 +2105,7 @@ export default function App() {
               <button
                 type="button"
                 onClick={handleLogout}
-                className="md:hidden p-2 bg-emerald-900 border border-emerald-700 rounded-xl text-red-300 hover:text-white shrink-0"
+                className="md:hidden p-2 bg-white dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 rounded-xl text-red-700 dark:text-red-300 hover:text-red-900 dark:hover:text-white shrink-0"
                 title="Logout"
               >
                 <LogOut className="w-4 h-4" />
@@ -2074,15 +2127,15 @@ export default function App() {
           {/* FEED */}
           {activeTab === 'feed' && (
             <div className="max-w-2xl mx-auto space-y-4">
-              <div className="bg-emerald-900/60 border border-emerald-700/50 rounded-2xl p-4 shadow space-y-3">
-                <div className="flex flex-wrap items-center gap-2 border-b border-emerald-800 pb-2 text-xs font-bold">
+              <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-4 shadow space-y-3">
+                <div className="flex flex-wrap items-center gap-2 border-b border-emerald-200 dark:border-emerald-800 pb-2 text-xs font-bold">
                   <button
                     type="button"
                     onClick={() => setNewPostCategory('feed')}
                     className={`flex items-center gap-2 px-3.5 py-2 rounded-xl transition ${
                       newPostCategory === 'feed'
                         ? 'bg-gradient-to-r from-emerald-400 to-teal-400 text-slate-950 font-extrabold shadow-md'
-                        : 'text-emerald-200 bg-emerald-950/80 hover:bg-emerald-800'
+                        : 'text-emerald-800 dark:text-emerald-200 bg-emerald-100/90 dark:bg-emerald-950/80 hover:bg-emerald-200/80 dark:hover:bg-emerald-800'
                     }`}
                   >
                     <Home className="w-3.5 h-3.5" /> Post Feed
@@ -2093,7 +2146,7 @@ export default function App() {
                     className={`flex items-center gap-2 px-3.5 py-2 rounded-xl transition ${
                       newPostCategory === 'myday'
                         ? 'bg-gradient-to-r from-emerald-400 to-teal-400 text-slate-950 font-extrabold shadow-md'
-                        : 'text-emerald-200 bg-emerald-950/80 hover:bg-emerald-800'
+                        : 'text-emerald-800 dark:text-emerald-200 bg-emerald-100/90 dark:bg-emerald-950/80 hover:bg-emerald-200/80 dark:hover:bg-emerald-800'
                     }`}
                   >
                     <Sparkles className="w-3.5 h-3.5" /> Story (My Day)
@@ -2120,11 +2173,11 @@ export default function App() {
                     placeholder="Share an update across all devices..."
                     value={newPostText}
                     onChange={(e) => setNewPostText(e.target.value)}
-                    className="w-full p-2.5 bg-emerald-950 border border-emerald-700 rounded-xl text-xs text-white focus:outline-none resize-none"
+                    className="w-full p-2.5 bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 rounded-xl text-xs text-emerald-950 dark:text-white focus:outline-none resize-none"
                   ></textarea>
 
                   {newPostMedia && (
-                    <div className="relative rounded-xl overflow-hidden bg-emerald-950 border border-emerald-700 p-2">
+                    <div className="relative rounded-xl overflow-hidden bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 p-2">
                       <button
                         type="button"
                         onClick={() => {
@@ -2132,7 +2185,7 @@ export default function App() {
                           setNewPostMediaName('');
                           setNewPostType('text');
                         }}
-                        className="absolute top-2.5 right-2.5 z-10 px-2 py-0.5 rounded-lg bg-slate-950/85 border border-red-400/50 text-red-300 hover:text-white text-[11px] font-bold"
+                        className="absolute top-2.5 right-2.5 z-10 px-2 py-0.5 rounded-lg bg-white/95 dark:bg-slate-950/85 border border-red-400/60 text-red-700 dark:text-red-300 hover:bg-red-50 dark:hover:text-white text-[11px] font-bold shadow-sm"
                         title="Remove attachment"
                       >
                         ✕
@@ -2141,18 +2194,18 @@ export default function App() {
                         <img
                           src={newPostMedia}
                           alt="Selected attachment"
-                          className="max-h-56 w-full object-contain rounded-lg bg-slate-950/60"
+                          className="max-h-56 w-full object-contain rounded-lg bg-emerald-100/70 dark:bg-slate-950/60"
                         />
                       ) : (
                         <video
                           src={newPostMedia}
                           controls
                           playsInline
-                          className="max-h-56 w-full rounded-lg bg-slate-950"
+                          className="max-h-56 w-full rounded-lg bg-white dark:bg-slate-950"
                         />
                       )}
                       {newPostMediaName && (
-                        <div className="text-[10px] text-emerald-300 mt-1.5 truncate px-1">{newPostMediaName}</div>
+                        <div className="text-[10px] text-emerald-700 dark:text-emerald-300 mt-1.5 truncate px-1">{newPostMediaName}</div>
                       )}
                     </div>
                   )}
@@ -2162,9 +2215,9 @@ export default function App() {
                       type="button"
                       disabled={isProcessingPostMedia}
                       onClick={() => postFileInputRef.current?.click()}
-                      className="px-3.5 py-2 rounded-xl bg-emerald-950 border border-emerald-500/60 text-emerald-200 hover:bg-emerald-800 hover:text-white font-bold text-xs flex items-center gap-1.5 transition shadow-sm disabled:opacity-60"
+                      className="px-3.5 py-2 rounded-xl bg-emerald-50 dark:bg-emerald-950 border border-emerald-500/60 text-emerald-800 dark:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-800 hover:text-emerald-950 dark:hover:text-white font-bold text-xs flex items-center gap-1.5 transition shadow-sm disabled:opacity-60"
                     >
-                      <Plus className="w-4 h-4 text-emerald-400" />
+                      <Plus className="w-4 h-4 text-emerald-700 dark:text-emerald-400" />
                       <span>{isProcessingPostMedia ? 'Loading...' : 'Add + Image / Video'}</span>
                     </button>
                     <button
@@ -2181,38 +2234,38 @@ export default function App() {
               {/* Public Newsfeed Posts */}
               <div className="space-y-3">
                 {filteredPosts.length === 0 ? (
-                  <div className="bg-emerald-900/40 border border-emerald-800 rounded-2xl p-8 text-center text-xs text-emerald-300">
+                  <div className="bg-emerald-50/80 dark:bg-emerald-900/40 border border-emerald-200 dark:border-emerald-800 rounded-2xl p-8 text-center text-xs text-emerald-700 dark:text-emerald-300">
                     No posts yet. Publish your first update above to sync across all devices!
                   </div>
                 ) : (
                   filteredPosts.map((p) => (
-                    <div key={p.id} className="bg-emerald-900/60 border border-emerald-700/50 rounded-2xl p-4 space-y-3">
+                    <div key={p.id} className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-4 space-y-3">
                       <div className="flex justify-between items-center">
                         <div className="flex items-center gap-2 cursor-pointer" onClick={() => setActiveTab('profile')}>
                           <div className="relative">
-                            <img src={p.author.avatar} alt="" className="w-9 h-12 rounded-lg bg-emerald-950 object-contain border border-emerald-500/50" />
+                            <img src={p.author.avatar} alt="" className="w-9 h-12 rounded-lg bg-emerald-50 dark:bg-emerald-950 object-contain border border-emerald-500/50" />
                             <span
                               className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 bg-emerald-400 border-2 border-emerald-950 rounded-full"
                               title="Online"
                             ></span>
                           </div>
                           <div>
-                            <div className="text-xs font-bold text-white">{p.author.name}</div>
-                            <div className="text-[10px] text-emerald-300">{p.timestamp}</div>
+                            <div className="text-xs font-bold text-emerald-950 dark:text-white">{p.author.name}</div>
+                            <div className="text-[10px] text-emerald-700 dark:text-emerald-300">{p.timestamp}</div>
                           </div>
                         </div>
                         {(p.authorId === currentUser.id || isAdmin) && (
                           <button
                             type="button"
                             onClick={() => handleDeletePost(p.id)}
-                            className="text-red-300 hover:text-red-100"
+                            className="text-red-700 dark:text-red-300 hover:text-red-100"
                             title="Delete Post"
                           >
                             <Trash2 className="w-3.5 h-3.5" />
                           </button>
                         )}
                       </div>
-                      {p.content && <p className="text-xs text-slate-100 break-words">{p.content}</p>}
+                      {p.content && <p className="text-xs text-emerald-950 dark:text-slate-100 break-words">{p.content}</p>}
                       {p.mediaUrl && p.mediaType === 'image' && (
                         <button
                           type="button"
@@ -2222,7 +2275,7 @@ export default function App() {
                               caption: p.content || `${p.author.name} • ${p.timestamp}`
                             })
                           }
-                          className="group relative block w-full rounded-xl overflow-hidden bg-emerald-950/70 border border-emerald-700/50 hover:border-emerald-400/80 transition cursor-zoom-in text-left"
+                          className="group relative block w-full rounded-xl overflow-hidden bg-emerald-50 dark:bg-emerald-950/70 border border-emerald-200 dark:border-emerald-700/50 hover:border-emerald-400/80 transition cursor-zoom-in text-left"
                           title="Tap to zoom in / zoom out"
                         >
                           <img
@@ -2230,7 +2283,7 @@ export default function App() {
                             alt={p.content || 'Post image'}
                             className="max-h-96 w-full object-contain group-hover:scale-[1.01] transition duration-200"
                           />
-                          <span className="absolute bottom-2 right-2 px-2.5 py-1 rounded-lg bg-slate-950/85 border border-emerald-400/60 text-emerald-200 text-[10px] font-bold flex items-center gap-1 shadow">
+                          <span className="absolute bottom-2 right-2 px-2.5 py-1 rounded-lg bg-white/95 dark:bg-slate-950/85 border border-emerald-500/50 dark:border-emerald-400/60 text-emerald-800 dark:text-emerald-200 text-[10px] font-bold flex items-center gap-1 shadow">
                             <ZoomIn className="w-3 h-3" /> Tap to Zoom
                           </span>
                         </button>
@@ -2254,21 +2307,21 @@ export default function App() {
                 return (
                   <div
                     key={u.id}
-                    className="bg-emerald-900/60 border border-emerald-700/50 rounded-2xl p-4 flex items-center justify-between gap-2"
+                    className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-4 flex items-center justify-between gap-2"
                   >
                     <div className="flex items-center gap-3 min-w-0">
                       <div className="relative shrink-0">
-                        <img src={DEFAULT_AVATAR} alt="" className="w-9 h-12 rounded-xl bg-emerald-950 object-contain border border-emerald-500/50" />
+                        <img src={DEFAULT_AVATAR} alt="" className="w-9 h-12 rounded-xl bg-emerald-50 dark:bg-emerald-950 object-contain border border-emerald-500/50" />
                         <span
                           className="absolute -bottom-0.5 -right-0.5 w-3 h-3 bg-emerald-400 border-2 border-emerald-950 rounded-full"
                           title="Online"
                         ></span>
                       </div>
                       <div className="min-w-0">
-                        <div className="text-xs font-bold text-white truncate">
+                        <div className="text-xs font-bold text-emerald-950 dark:text-white truncate">
                           {u.name} {isMe ? '(You)' : ''}
                         </div>
-                        <div className="text-[10px] text-emerald-300 truncate">{u.status}</div>
+                        <div className="text-[10px] text-emerald-700 dark:text-emerald-300 truncate">{u.status}</div>
                       </div>
                     </div>
                     {!isMe && (
@@ -2307,21 +2360,21 @@ export default function App() {
               );
               return (
                 <div className="max-w-2xl mx-auto space-y-4">
-                  <div className="bg-emerald-900/60 border border-emerald-700/50 rounded-2xl p-4 space-y-3">
+                  <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-4 space-y-3">
                     <div className="flex items-center justify-between">
-                      <div className="text-xs font-bold text-white flex items-center gap-2">
-                        <Video className="w-4 h-4 text-emerald-400" /> Shared Chat Videos ({sharedChatVideos.length})
+                      <div className="text-xs font-bold text-emerald-950 dark:text-white flex items-center gap-2">
+                        <Video className="w-4 h-4 text-emerald-700 dark:text-emerald-400" /> Shared Chat Videos ({sharedChatVideos.length})
                       </div>
-                      <span className="text-[10px] text-emerald-300">Sound Enabled • Cloud Synced</span>
+                      <span className="text-[10px] text-emerald-700 dark:text-emerald-300">Sound Enabled • Cloud Synced</span>
                     </div>
                     {sharedChatVideos.length === 0 ? (
-                      <div className="py-6 text-center text-xs text-emerald-300">
+                      <div className="py-6 text-center text-xs text-emerald-700 dark:text-emerald-300">
                         No shared videos from chats yet. Share a video link in Messages to sync it across all devices.
                       </div>
                     ) : (
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                         {sharedChatVideos.map((vid) => (
-                          <div key={vid.id} className="p-2.5 rounded-xl bg-emerald-950 border border-emerald-800">
+                          <div key={vid.id} className="p-2.5 rounded-xl bg-emerald-50 dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-800">
                             <ChatVideoPlayer
                               src={vid.mediaUrl!}
                               title={vid.text || `Video from ${vid.sender}`}
@@ -2334,8 +2387,8 @@ export default function App() {
                     )}
                   </div>
 
-                  <div className="bg-emerald-900/60 border border-emerald-700/50 rounded-2xl p-4 space-y-2">
-                    <div className="text-xs font-bold text-white">Video Streams & Entertainment</div>
+                  <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-4 space-y-2">
+                    <div className="text-xs font-bold text-emerald-950 dark:text-white">Video Streams & Entertainment</div>
                     <ChatVideoPlayer
                       src="https://www.w3schools.com/html/mov_bbb.mp4"
                       title="Featured Stream"
@@ -2346,55 +2399,264 @@ export default function App() {
               );
             })()}
 
-          {/* PROFILE / ACCOUNT (ZOOMED OUT FULL PORTRAIT) */}
+          {/* PROFILE / ACCOUNT (ZOOMED OUT FULL PORTRAIT + APPEARANCE & THEME) */}
           {activeTab === 'profile' && (
-            <div className="max-w-xl mx-auto bg-emerald-900/60 border border-emerald-700/50 rounded-2xl p-5 space-y-5 shadow-lg">
-              <div className="flex flex-col sm:flex-row items-center sm:items-start gap-5">
-                <div className="relative w-full max-w-[240px] aspect-[9/16] max-h-[380px] rounded-2xl bg-emerald-950 border-2 border-emerald-400/80 p-1.5 overflow-hidden shadow-xl shrink-0">
-                  <img
-                    src={DEFAULT_AVATAR}
-                    alt="Account portrait"
-                    className="w-full h-full object-contain rounded-xl"
-                  />
-                  <span
-                    className="absolute bottom-3 right-3 w-3.5 h-3.5 bg-emerald-400 border-2 border-emerald-950 rounded-full"
-                    title="Online"
-                  ></span>
-                </div>
-                <div className="min-w-0 flex-1 text-center sm:text-left space-y-2.5 pt-1">
-                  <div>
-                    <div className="text-[10px] uppercase tracking-wider font-bold text-emerald-300">My Account</div>
-                    <div className="text-lg font-black text-white truncate">{currentUser.name}</div>
-                    <div className="text-xs text-emerald-200 font-mono truncate">{currentUser.phone}</div>
+            <div className="max-w-2xl mx-auto space-y-5">
+              {/* Account Card */}
+              <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-5 sm:p-6 shadow-sm">
+                <div className="flex flex-col sm:flex-row items-center sm:items-start gap-5">
+                  <div className="relative w-full max-w-[220px] aspect-[9/16] max-h-[340px] rounded-2xl bg-emerald-50 dark:bg-emerald-950 border-2 border-emerald-500/80 dark:border-emerald-400/80 p-1.5 overflow-hidden shadow-lg shrink-0">
+                    <img
+                      src={DEFAULT_AVATAR}
+                      alt="Account portrait"
+                      className="w-full h-full object-contain rounded-xl"
+                    />
                   </div>
-                  <div className="flex flex-wrap items-center justify-center sm:justify-start gap-2">
-                    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-500/20 border border-emerald-400/40 text-[10px] font-bold text-emerald-200">
-                      <Cloud className="w-3 h-3" />{' '}
-                      {storageMode === 'postgres' ? 'PostgreSQL Cloud Sync Active' : 'Live Server Sync Active'}
-                    </span>
-                    <span className="px-2.5 py-1 rounded-lg bg-indigo-500/20 border border-indigo-400/40 text-[10px] font-bold text-indigo-200 uppercase">
-                      {isAdmin ? 'Admin' : 'Member'}
-                    </span>
-                  </div>
-                  <div className="pt-2">
-                    <button
-                      type="button"
-                      onClick={handleLogout}
-                      className="px-4 py-2 rounded-xl bg-emerald-950 border border-red-500/40 text-red-300 text-xs font-bold hover:bg-red-950/60 inline-flex items-center gap-2"
-                    >
-                      <LogOut className="w-3.5 h-3.5" /> Logout Account
-                    </button>
+                  <div className="min-w-0 flex-1 text-center sm:text-left space-y-3 pt-1">
+                    <div>
+                      <div className="text-[11px] font-semibold text-emerald-700 dark:text-emerald-300">My Account</div>
+                      <h2 className="text-xl font-black text-emerald-950 dark:text-white truncate">{currentUser.name}</h2>
+                      <div className="text-xs text-emerald-800 dark:text-emerald-200 font-mono tabular-nums truncate">
+                        {currentUser.phone}
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center justify-center sm:justify-start gap-x-2 gap-y-1 text-xs text-emerald-800 dark:text-emerald-200">
+                      <span className="inline-flex items-center gap-1 font-medium">
+                        <Cloud className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+                        {storageMode === 'postgres' ? 'PostgreSQL Cloud Sync' : 'Live Server Sync'}
+                      </span>
+                      <span aria-hidden="true" className="text-emerald-400 dark:text-emerald-600">·</span>
+                      <span className="font-semibold text-indigo-700 dark:text-indigo-300">
+                        {isAdmin ? 'Admin' : 'Member'}
+                      </span>
+                      <span aria-hidden="true" className="text-emerald-400 dark:text-emerald-600">·</span>
+                      <span className="font-mono text-[11px] text-emerald-700 dark:text-emerald-300">
+                        Theme: {resolvedTheme === 'dark' ? 'Dark' : 'Light'}
+                      </span>
+                    </div>
+
+                    <div className="pt-2">
+                      <button
+                        type="button"
+                        onClick={handleLogout}
+                        className="px-4 py-2.5 min-h-[40px] rounded-xl bg-red-50 dark:bg-emerald-950 border border-red-300 dark:border-red-500/40 text-red-700 dark:text-red-300 text-xs font-bold hover:bg-red-100 dark:hover:bg-red-950/60 inline-flex items-center gap-2 transition"
+                      >
+                        <LogOut className="w-3.5 h-3.5" /> Logout Account
+                      </button>
+                    </div>
                   </div>
                 </div>
               </div>
+
+              {/* Appearance & Theme Settings */}
+              <section className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-5 sm:p-6 space-y-6 shadow-sm">
+                <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-emerald-200 dark:border-emerald-800">
+                  <div>
+                    <h3 className="text-base font-bold text-emerald-950 dark:text-white">
+                      Appearance &amp; Theme
+                    </h3>
+                    <p className="text-xs text-emerald-700 dark:text-emerald-300 mt-0.5">
+                      Customize Choy Chat lighting, reading scale, and motion across all tabs.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={resetAppearance}
+                    className="px-3 py-1.5 min-h-[36px] rounded-xl border border-emerald-300 dark:border-emerald-700 bg-emerald-50 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-800 text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                    <span>Reset Defaults</span>
+                  </button>
+                </div>
+
+                {/* 1. Light / Dark / System Mode Toggle */}
+                <div className="space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-xs font-bold text-emerald-950 dark:text-white">Color Theme</span>
+                    <span className="text-[11px] font-mono text-emerald-700 dark:text-emerald-300">
+                      Active: {resolvedTheme === 'dark' ? 'Dark (Royal Emerald)' : 'Light (Emerald Ivory)'}
+                    </span>
+                  </div>
+
+                  <div
+                    role="radiogroup"
+                    aria-label="Application color theme"
+                    className="grid grid-cols-3 gap-2 p-1.5 rounded-xl bg-emerald-50 dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-800"
+                  >
+                    {(
+                      [
+                        { id: 'light', label: 'Light', icon: Sun, desc: 'Emerald Ivory' },
+                        { id: 'dark', label: 'Dark', icon: Moon, desc: 'Royal Emerald' },
+                        { id: 'system', label: 'System', icon: Monitor, desc: 'Device Auto' },
+                      ] as const
+                    ).map((opt) => {
+                      const Icon = opt.icon;
+                      const isActive = themeMode === opt.id;
+                      return (
+                        <button
+                          key={opt.id}
+                          type="button"
+                          role="radio"
+                          aria-checked={isActive}
+                          onClick={() => setThemeMode(opt.id)}
+                          className={`min-h-[54px] px-3 py-2.5 rounded-lg flex flex-col items-center justify-center gap-1 text-xs font-semibold transition whitespace-nowrap ${
+                            isActive
+                              ? 'bg-emerald-600 text-white dark:bg-emerald-400 dark:text-slate-950 shadow-sm'
+                              : 'text-emerald-800 hover:bg-emerald-100 dark:text-emerald-200 dark:hover:bg-emerald-900'
+                          }`}
+                        >
+                          <div className="flex items-center gap-1.5">
+                            <Icon className="w-4 h-4 shrink-0" />
+                            <span>{opt.label}</span>
+                          </div>
+                          <span
+                            className={`text-[10px] font-normal ${
+                              isActive
+                                ? 'text-emerald-50 dark:text-slate-900'
+                                : 'text-emerald-700/80 dark:text-emerald-300/75'
+                            }`}
+                          >
+                            {opt.desc}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {/* Quick One-Tap Light/Dark Switch Row */}
+                  <div className="flex items-center justify-between gap-3 pt-1">
+                    <div className="min-w-0">
+                      <div className="text-xs font-semibold text-emerald-950 dark:text-white">
+                        Dark Mode Quick Switch
+                      </div>
+                      <div className="text-[11px] text-emerald-700 dark:text-emerald-300">
+                        Instantly flip between daylight and night viewing (also available in the top bar).
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={resolvedTheme === 'dark'}
+                      aria-label="Toggle dark mode"
+                      onClick={toggleLightDark}
+                      className={`relative inline-flex h-7 w-12 shrink-0 items-center rounded-full border transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 ${
+                        resolvedTheme === 'dark'
+                          ? 'bg-emerald-400 border-emerald-300'
+                          : 'bg-emerald-200 border-emerald-300'
+                      }`}
+                    >
+                      <span
+                        className={`inline-flex h-5 w-5 items-center justify-center rounded-full bg-white text-emerald-950 shadow transition-transform ${
+                          resolvedTheme === 'dark' ? 'translate-x-6' : 'translate-x-1'
+                        }`}
+                      >
+                        {resolvedTheme === 'dark' ? (
+                          <Moon className="w-3 h-3" />
+                        ) : (
+                          <Sun className="w-3 h-3 text-amber-600" />
+                        )}
+                      </span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* 2. Text Size Scaling */}
+                <div className="space-y-2.5 pt-4 border-t border-emerald-200 dark:border-emerald-800">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-bold text-emerald-950 dark:text-white inline-flex items-center gap-1.5">
+                      <Type className="w-3.5 h-3.5 text-emerald-700 dark:text-emerald-300" />
+                      Reading Text Size
+                    </span>
+                    <span className="text-[11px] font-mono text-emerald-700 dark:text-emerald-300 capitalize">
+                      {fontScale}
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-3 gap-1.5 p-1 rounded-xl bg-emerald-50 dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-800">
+                    {(
+                      [
+                        { id: 'compact', label: 'Compact' },
+                        { id: 'standard', label: 'Standard' },
+                        { id: 'large', label: 'Large' },
+                      ] as const
+                    ).map((opt) => {
+                      const active = fontScale === opt.id;
+                      return (
+                        <button
+                          key={opt.id}
+                          type="button"
+                          onClick={() => setFontScale(opt.id)}
+                          className={`min-h-[40px] px-3 py-2 rounded-lg text-xs font-semibold transition whitespace-nowrap ${
+                            active
+                              ? 'bg-emerald-600 text-white dark:bg-emerald-400 dark:text-slate-950 shadow-xs'
+                              : 'text-emerald-800 hover:bg-emerald-100 dark:text-emerald-200 dark:hover:bg-emerald-900'
+                          }`}
+                        >
+                          {opt.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* 3. Reduced Motion Accessibility Toggle */}
+                <div className="flex items-center justify-between gap-3 pt-4 border-t border-emerald-200 dark:border-emerald-800">
+                  <div className="min-w-0">
+                    <div className="text-xs font-semibold text-emerald-950 dark:text-white">
+                      Reduce Motion
+                    </div>
+                    <div className="text-[11px] text-emerald-700 dark:text-emerald-300">
+                      Minimize interface animations and transitions for faster, calmer navigation.
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={reducedMotion}
+                    aria-label="Toggle reduced motion"
+                    onClick={() => setReducedMotion(!reducedMotion)}
+                    className={`relative inline-flex h-7 w-12 shrink-0 items-center rounded-full border transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 ${
+                      reducedMotion
+                        ? 'bg-emerald-600 dark:bg-emerald-400 border-emerald-500 dark:border-emerald-300'
+                        : 'bg-emerald-200 dark:bg-emerald-950 border-emerald-300 dark:border-emerald-700'
+                    }`}
+                  >
+                    <span
+                      className={`inline-block h-5 w-5 rounded-full bg-white shadow transition-transform ${
+                        reducedMotion ? 'translate-x-6' : 'translate-x-1'
+                      }`}
+                    />
+                  </button>
+                </div>
+
+                {/* 4. Live Surface Preview */}
+                <div className="pt-4 border-t border-emerald-200 dark:border-emerald-800 space-y-2">
+                  <div className="text-[11px] font-semibold text-emerald-700 dark:text-emerald-300">
+                    Live Preview
+                  </div>
+                  <div className="p-3.5 rounded-xl bg-emerald-50 dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-800 flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="text-xs font-bold text-emerald-950 dark:text-white truncate">
+                        Choy Chat · {resolvedTheme === 'dark' ? 'Night Royal Emerald' : 'Daylight Emerald Ivory'}
+                      </div>
+                      <div className="text-[11px] text-emerald-700 dark:text-emerald-300 truncate">
+                        Saved automatically on this device · Syncs PWA status bar color
+                      </div>
+                    </div>
+                    <span className="px-2.5 py-1 rounded-lg bg-emerald-600 text-white dark:bg-emerald-400 dark:text-slate-950 text-[11px] font-bold whitespace-nowrap shrink-0">
+                      Active
+                    </span>
+                  </div>
+                </div>
+              </section>
             </div>
           )}
 
           {/* MESSAGES WITH REAL-TIME SYNC & REACTIONS */}
           {activeTab === 'messages' && (
             <div className="max-w-4xl mx-auto flex flex-col md:grid md:grid-cols-3 gap-3 md:gap-4 md:h-[580px]">
-              <div className="bg-emerald-900/60 border border-emerald-700/50 rounded-2xl p-3 flex flex-col space-y-2 shrink-0">
-                <div className="text-xs font-bold text-emerald-300 uppercase">Chats</div>
+              <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-3 flex flex-col space-y-2 shrink-0">
+                <div className="text-xs font-bold text-emerald-700 dark:text-emerald-300 uppercase">Chats</div>
                 <div className="flex md:flex-col gap-2 overflow-x-auto touch-pan-x overscroll-x-contain [-webkit-overflow-scrolling:touch] md:overflow-visible pb-1.5 md:pb-0">
                   {CHAT_ROOMS.map((room) => {
                     const isActive = activeChat === room;
@@ -2411,7 +2673,7 @@ export default function App() {
                       >
                         <span>{room}</span>
                         <span
-                          className={`w-2.5 h-2.5 rounded-full shrink-0 ${isActive ? 'bg-slate-950' : 'bg-emerald-400'}`}
+                          className={`w-2.5 h-2.5 rounded-full shrink-0${isActive ? 'bg-white dark:bg-slate-950' : 'bg-emerald-400'}`}
                           title={isActive ? 'Active' : 'Online'}
                         ></span>
                       </button>
@@ -2420,11 +2682,11 @@ export default function App() {
                 </div>
               </div>
 
-              <div className="md:col-span-2 bg-emerald-900/60 border border-emerald-700/50 rounded-2xl flex flex-col min-h-[430px] md:min-h-0 md:h-full overflow-hidden">
+              <div className="md:col-span-2 bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl flex flex-col min-h-[430px] md:min-h-0 md:h-full overflow-hidden">
                 {/* Responsive Swipeable Chat Header */}
-                <div className="p-3 border-b border-emerald-800 space-y-2 text-xs font-bold text-white shrink-0">
+                <div className="p-3 border-b border-emerald-200 dark:border-emerald-800 space-y-2 text-xs font-bold text-emerald-950 dark:text-white shrink-0">
                   <div className="flex items-center justify-between gap-2">
-                    <span className="text-sm font-black text-white truncate">{activeChat}</span>
+                    <span className="text-sm font-black text-emerald-950 dark:text-white truncate">{activeChat}</span>
                     <div className="flex items-center gap-1.5 overflow-x-auto touch-pan-x overscroll-x-contain [-webkit-overflow-scrolling:touch] max-w-[68%] sm:max-w-none pb-0.5">
                       <button
                         type="button"
@@ -2451,7 +2713,7 @@ export default function App() {
                           setSelectedGalleryVideo(null);
                           setIsMediaGalleryOpen(true);
                         }}
-                        className="px-2.5 py-1.5 bg-cyan-500/20 border border-cyan-400/50 text-cyan-200 rounded-lg flex items-center gap-1 shadow shrink-0 whitespace-nowrap hover:bg-cyan-400 hover:text-slate-950 text-[11px] transition"
+                        className="px-2.5 py-1.5 bg-cyan-500/20 border border-cyan-400/50 text-cyan-800 dark:text-cyan-200 rounded-lg flex items-center gap-1 shadow shrink-0 whitespace-nowrap hover:bg-cyan-400 hover:text-slate-950 text-[11px] transition"
                         title="Shared Chat Videos (with Sound)"
                       >
                         <Video className="w-3.5 h-3.5" /> Videos
@@ -2464,7 +2726,7 @@ export default function App() {
                           setSelectedGalleryVideo(null);
                           setIsMediaGalleryOpen(true);
                         }}
-                        className="px-2.5 py-1.5 bg-emerald-900 border border-emerald-700 text-emerald-200 rounded-lg flex items-center gap-1 shadow shrink-0 whitespace-nowrap hover:text-white text-[11px]"
+                        className="px-2.5 py-1.5 bg-emerald-100/80 dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 text-emerald-800 dark:text-emerald-200 rounded-lg flex items-center gap-1 shadow shrink-0 whitespace-nowrap hover:text-emerald-950 dark:hover:text-white text-[11px]"
                         title="Shared Media Gallery"
                       >
                         <ImageIcon className="w-3.5 h-3.5" /> Gallery
@@ -2479,13 +2741,13 @@ export default function App() {
                     </div>
                   </div>
                   <div className="relative w-full">
-                    <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-emerald-300" />
+                    <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-emerald-700 dark:text-emerald-300" />
                     <input
                       type="text"
                       placeholder={`Search messages in ${activeChat}...`}
                       value={msgSearchQuery}
                       onChange={(e) => setMsgSearchQuery(e.target.value)}
-                      className="w-full pl-8 pr-3 py-1.5 bg-emerald-950 border border-emerald-700 rounded-lg text-[11px] font-normal text-white placeholder-emerald-400 focus:outline-none"
+                      className="w-full pl-8 pr-3 py-1.5 bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 rounded-lg text-[11px] font-normal text-emerald-950 dark:text-white placeholder-emerald-600/60 dark:placeholder-emerald-400 focus:outline-none"
                     />
                   </div>
                 </div>
@@ -2496,11 +2758,11 @@ export default function App() {
                     .filter((m) => !blockedUsers.includes(m.sender))
                     .filter((m) => (m.text || '').toLowerCase().includes(msgSearchQuery.toLowerCase()))
                     .map((m) => (
-                      <div key={m.id} className={`flex flex-col ${m.isMe ? 'items-end' : 'items-start'}`}>
-                        <div className="text-[10px] text-emerald-300 px-1 mb-0.5">
+                      <div key={m.id} className={`flex flex-col${m.isMe ? 'items-end' : 'items-start'}`}>
+                        <div className="text-[10px] text-emerald-700 dark:text-emerald-300 px-1 mb-0.5">
                           {m.sender} • {m.time}
                         </div>
-                        <div className="p-3 rounded-2xl text-xs bg-emerald-950 text-slate-100 space-y-2 max-w-[85%]">
+                        <div className="p-3 rounded-2xl text-xs bg-emerald-50 dark:bg-emerald-950 text-emerald-950 dark:text-slate-100 space-y-2 max-w-[85%]">
                           {m.mediaType === 'image' && m.mediaUrl && (
                             <button
                               type="button"
@@ -2521,7 +2783,7 @@ export default function App() {
                             <audio src={m.mediaUrl} controls className="w-full h-8" />
                           )}
                           {m.mediaType === 'file' && (
-                            <div className="text-amber-300 text-[10px]">📎 File Attachment</div>
+                            <div className="text-amber-700 dark:text-amber-300 text-[10px]">📎 File Attachment</div>
                           )}
                           {m.text && <div className="break-words">{m.text}</div>}
 
@@ -2530,7 +2792,7 @@ export default function App() {
                               {m.reactions.map((emoji, rIdx) => (
                                 <span
                                   key={rIdx}
-                                  className="px-1.5 py-0.5 rounded-full bg-emerald-900/80 text-[10px] border border-emerald-700"
+                                  className="px-1.5 py-0.5 rounded-full bg-white dark:bg-emerald-900/80 text-[10px] border border-emerald-300 dark:border-emerald-700"
                                 >
                                   {emoji}
                                 </span>
@@ -2545,7 +2807,7 @@ export default function App() {
                               key={emoji}
                               type="button"
                               onClick={() => addReactionToMessage(m, emoji)}
-                              className="text-[11px] px-1.5 py-0.5 rounded bg-emerald-950 hover:bg-emerald-800 text-slate-300"
+                              className="text-[11px] px-1.5 py-0.5 rounded bg-emerald-50 dark:bg-emerald-950 hover:bg-emerald-100 dark:hover:bg-emerald-800 text-emerald-800 dark:text-slate-300"
                             >
                               {emoji}
                             </button>
@@ -2555,7 +2817,7 @@ export default function App() {
                     ))}
                 </div>
 
-                <div className="p-3 border-t border-emerald-800 bg-emerald-950 space-y-2">
+                <div className="p-3 border-t border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950 space-y-2">
                   <input
                     type="file"
                     ref={msgFileInputRef}
@@ -2565,11 +2827,11 @@ export default function App() {
                   />
 
                   {showMsgLinkInput && (
-                    <div className="flex flex-wrap items-center gap-2 p-2 bg-emerald-900/80 rounded-xl border border-emerald-700 text-xs">
+                    <div className="flex flex-wrap items-center gap-2 p-2 bg-white dark:bg-emerald-900/80 rounded-xl border border-emerald-300 dark:border-emerald-700 text-xs">
                       <select
                         value={msgLinkType}
                         onChange={(e) => setMsgLinkType(e.target.value as 'video' | 'image' | 'audio')}
-                        className="p-1.5 bg-emerald-950 border border-emerald-700 rounded-lg text-emerald-200 text-[11px]"
+                        className="p-1.5 bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 rounded-lg text-emerald-800 dark:text-emerald-200 text-[11px]"
                       >
                         <option value="video">Video URL</option>
                         <option value="image">Image URL</option>
@@ -2580,7 +2842,7 @@ export default function App() {
                         placeholder="https://... (syncs to all devices)"
                         value={msgLinkDraft}
                         onChange={(e) => setMsgLinkDraft(e.target.value)}
-                        className="flex-1 min-w-[140px] p-1.5 bg-emerald-950 border border-emerald-700 rounded-lg text-white text-[11px]"
+                        className="flex-1 min-w-[140px] p-1.5 bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 rounded-lg text-emerald-950 dark:text-white text-[11px]"
                       />
                       <button
                         type="button"
@@ -2599,10 +2861,10 @@ export default function App() {
                   )}
 
                   {msgMediaUrl && msgMediaType === 'image' && (
-                    <div className="flex items-center justify-between p-2 bg-emerald-900/80 rounded-xl text-xs border border-emerald-700">
+                    <div className="flex items-center justify-between p-2 bg-white dark:bg-emerald-900/80 rounded-xl text-xs border border-emerald-300 dark:border-emerald-700">
                       <div className="flex items-center gap-2">
                         <img src={msgMediaUrl} alt="" className="w-8 h-8 rounded object-cover" />
-                        <span className="text-emerald-200">Attached Image</span>
+                        <span className="text-emerald-800 dark:text-emerald-200">Attached Image</span>
                       </div>
                       <div className="flex items-center gap-2">
                         <button
@@ -2618,7 +2880,7 @@ export default function App() {
                             setMsgMediaUrl('');
                             setMsgMediaType('text');
                           }}
-                          className="text-red-300 hover:text-red-100 font-bold px-1.5"
+                          className="text-red-700 dark:text-red-300 hover:text-red-100 font-bold px-1.5"
                         >
                           ✕
                         </button>
@@ -2627,9 +2889,9 @@ export default function App() {
                   )}
 
                   {msgMediaUrl && msgMediaType === 'audio' && (
-                    <div className="flex items-center gap-2 p-2 bg-emerald-900/80 rounded-xl text-xs border border-emerald-700">
-                      <span className="text-emerald-300 font-bold text-[11px] shrink-0 flex items-center gap-1">
-                        <Mic className="w-3.5 h-3.5 text-emerald-400" /> Voice
+                    <div className="flex items-center gap-2 p-2 bg-white dark:bg-emerald-900/80 rounded-xl text-xs border border-emerald-300 dark:border-emerald-700">
+                      <span className="text-emerald-700 dark:text-emerald-300 font-bold text-[11px] shrink-0 flex items-center gap-1">
+                        <Mic className="w-3.5 h-3.5 text-emerald-700 dark:text-emerald-400" /> Voice
                       </span>
                       <audio src={msgMediaUrl} controls className="h-8 flex-1 min-w-0" />
                       <button
@@ -2638,7 +2900,7 @@ export default function App() {
                           setMsgMediaUrl('');
                           setMsgMediaType('text');
                         }}
-                        className="text-red-300 hover:text-red-100 font-bold px-1.5 shrink-0"
+                        className="text-red-700 dark:text-red-300 hover:text-red-100 font-bold px-1.5 shrink-0"
                         title="Discard voice snippet"
                       >
                         ✕
@@ -2647,15 +2909,15 @@ export default function App() {
                   )}
 
                   {msgMediaUrl && msgMediaType !== 'image' && msgMediaType !== 'audio' && (
-                    <div className="flex items-center justify-between p-2 bg-emerald-900/80 rounded-xl text-xs border border-emerald-700">
-                      <span className="text-emerald-200 truncate">📎 Attached {msgMediaType.toUpperCase()}</span>
+                    <div className="flex items-center justify-between p-2 bg-white dark:bg-emerald-900/80 rounded-xl text-xs border border-emerald-300 dark:border-emerald-700">
+                      <span className="text-emerald-800 dark:text-emerald-200 truncate">📎 Attached {msgMediaType.toUpperCase()}</span>
                       <button
                         type="button"
                         onClick={() => {
                           setMsgMediaUrl('');
                           setMsgMediaType('text');
                         }}
-                        className="text-red-300 hover:text-red-100 font-bold px-1.5"
+                        className="text-red-700 dark:text-red-300 hover:text-red-100 font-bold px-1.5"
                       >
                         ✕
                       </button>
@@ -2666,8 +2928,8 @@ export default function App() {
                     <div className="flex flex-wrap items-center justify-between gap-2 p-2.5 bg-red-950/70 border border-red-500/60 rounded-xl text-xs">
                       <div className="flex items-center gap-2 min-w-0">
                         <span className="w-2.5 h-2.5 rounded-full bg-red-500 animate-pulse shrink-0"></span>
-                        <span className="font-bold text-red-100 whitespace-nowrap">Recording Voice</span>
-                        <span className="font-mono text-red-200 bg-red-900/80 px-2 py-0.5 rounded-md">
+                        <span className="font-bold text-red-800 dark:text-red-100 whitespace-nowrap">Recording Voice</span>
+                        <span className="font-mono text-red-700 dark:text-red-200 bg-red-900/80 px-2 py-0.5 rounded-md">
                           {formatRecordingTime(recordingSeconds)}
                         </span>
                       </div>
@@ -2675,7 +2937,7 @@ export default function App() {
                         <button
                           type="button"
                           onClick={() => stopAudioRecording('cancel')}
-                          className="px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-700 text-slate-300 hover:text-white font-semibold flex items-center gap-1"
+                          className="px-2.5 py-1.5 rounded-lg bg-white dark:bg-slate-900 border border-emerald-300 dark:border-slate-700 text-emerald-800 dark:text-slate-300 hover:text-emerald-950 dark:hover:text-white font-semibold flex items-center gap-1"
                           title="Cancel recording"
                         >
                           <Trash2 className="w-3.5 h-3.5" /> Cancel
@@ -2704,7 +2966,7 @@ export default function App() {
                         type="button"
                         disabled={isUploadingMsgMedia}
                         onClick={() => msgFileInputRef.current?.click()}
-                        className="p-2.5 rounded-xl bg-emerald-900 border border-emerald-700 text-emerald-300 hover:text-white hover:bg-emerald-800 transition shrink-0 disabled:opacity-50"
+                        className="p-2.5 rounded-xl bg-emerald-100/80 dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 text-emerald-700 dark:text-emerald-300 hover:text-emerald-950 dark:hover:text-white hover:bg-emerald-100 dark:hover:bg-emerald-800 transition shrink-0 disabled:opacity-50"
                         title="Upload picture, video, audio or file to cloud storage"
                       >
                         <Plus className="w-4 h-4" />
@@ -2713,7 +2975,7 @@ export default function App() {
                         type="button"
                         disabled={isProcessingAudio || isUploadingMsgMedia}
                         onClick={startAudioRecording}
-                        className="p-2.5 rounded-xl bg-emerald-900 border border-emerald-700 text-emerald-300 hover:text-white hover:bg-emerald-800 transition shrink-0 disabled:opacity-50"
+                        className="p-2.5 rounded-xl bg-emerald-100/80 dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 text-emerald-700 dark:text-emerald-300 hover:text-emerald-950 dark:hover:text-white hover:bg-emerald-100 dark:hover:bg-emerald-800 transition shrink-0 disabled:opacity-50"
                         title="Record voice message"
                       >
                         <Mic className="w-4 h-4" />
@@ -2741,7 +3003,7 @@ export default function App() {
                         }
                         value={msgInput}
                         onChange={(e) => setMsgInput(e.target.value)}
-                        className="flex-1 min-w-0 p-2.5 bg-emerald-900 border border-emerald-700 rounded-xl text-xs text-white placeholder-emerald-400 focus:outline-none"
+                        className="flex-1 min-w-0 p-2.5 bg-emerald-100/80 dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 rounded-xl text-xs text-emerald-950 dark:text-white placeholder-emerald-600/60 dark:placeholder-emerald-400 focus:outline-none"
                       />
                       <button
                         type="submit"
@@ -2760,10 +3022,10 @@ export default function App() {
           {/* MILESTONE SPREADSHEET LEDGER (ADMIN ONLY) */}
           {activeTab === 'ledger' && isAdmin && (
             <div className="max-w-6xl mx-auto space-y-4">
-              <div className="flex flex-wrap justify-between items-center gap-2 bg-emerald-900/60 border border-emerald-700/50 rounded-2xl p-4 shadow">
+              <div className="flex flex-wrap justify-between items-center gap-2 bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-4 shadow">
                 <div>
-                  <h3 className="text-sm font-bold text-white uppercase">Milestone Spreadsheet Ledger</h3>
-                  <p className="text-[10px] text-emerald-300">
+                  <h3 className="text-sm font-bold text-emerald-950 dark:text-white uppercase">Milestone Spreadsheet Ledger</h3>
+                  <p className="text-[10px] text-emerald-700 dark:text-emerald-300">
                     Live quantities, automatic calculations & real-time cloud sync
                   </p>
                 </div>
@@ -2776,15 +3038,15 @@ export default function App() {
                 </button>
               </div>
 
-              <div className="bg-emerald-900/60 border border-emerald-700/50 rounded-2xl p-4 shadow space-y-3">
-                <h3 className="text-xs font-bold text-white uppercase">Add Quantity Record</h3>
+              <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-4 shadow space-y-3">
+                <h3 className="text-xs font-bold text-emerald-950 dark:text-white uppercase">Add Quantity Record</h3>
                 <form onSubmit={handleAddLedgerRow} className="flex gap-2">
                   <input
                     type="text"
                     placeholder="Name..."
                     value={newLedgerName}
                     onChange={(e) => setNewLedgerName(e.target.value)}
-                    className="p-2 bg-emerald-950 border border-emerald-700 rounded-xl text-xs text-white flex-1"
+                    className="p-2 bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 rounded-xl text-xs text-emerald-950 dark:text-white flex-1"
                   />
                   <button
                     type="submit"
@@ -2795,12 +3057,12 @@ export default function App() {
                 </form>
               </div>
 
-              <div className="bg-emerald-900/60 border border-emerald-700/50 rounded-2xl overflow-hidden shadow">
+              <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl overflow-hidden shadow">
                 <div className="max-h-[60vh] overflow-auto">
                   <table className="w-full text-left border-collapse text-xs whitespace-nowrap">
-                    <thead className="bg-emerald-950 text-emerald-300 sticky top-0 z-10 text-[10px] uppercase">
+                    <thead className="bg-emerald-50 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300 sticky top-0 z-10 text-[10px] uppercase">
                       <tr>
-                        <th className="p-3 sticky left-0 bg-emerald-950 z-20">Name</th>
+                        <th className="p-3 sticky left-0 bg-emerald-50 dark:bg-emerald-950 z-20">Name</th>
                         <th className="p-3">5H</th>
                         <th className="p-3">Bulig</th>
                         <th className="p-3">Point 5</th>
@@ -2815,8 +3077,8 @@ export default function App() {
                       {ledgerRows.map((row) => {
                         const total = calculateRowTotal(row);
                         return (
-                          <tr key={row.id} className="hover:bg-emerald-850">
-                            <td className="p-3 sticky left-0 bg-emerald-900 font-bold text-white font-sans max-w-[120px] truncate">
+                          <tr key={row.id} className="hover:bg-emerald-50 dark:hover:bg-emerald-800/40">
+                            <td className="p-3 sticky left-0 bg-emerald-100/90 dark:bg-emerald-900 font-bold text-emerald-950 dark:text-white font-sans max-w-[120px] truncate">
                               {row.name}
                             </td>
                             <td className="p-3">
@@ -2825,7 +3087,7 @@ export default function App() {
                                   type="number"
                                   value={row.fiveH}
                                   onChange={(e) => handleUpdateLedgerField(row, { fiveH: Number(e.target.value) })}
-                                  className={`w-12 p-1 bg-emerald-950 border-2 rounded text-center text-white font-bold ${
+                                  className={`w-12 p-1 bg-white dark:bg-emerald-950 border-2 rounded text-center text-emerald-950 dark:text-white font-bold ${
                                     row.fiveHType === 'blue' ? 'border-blue-500' : 'border-red-500'
                                   }`}
                                 />
@@ -2850,7 +3112,7 @@ export default function App() {
                                 type="number"
                                 value={row.bulig}
                                 onChange={(e) => handleUpdateLedgerField(row, { bulig: Number(e.target.value) })}
-                                className="w-12 p-1 bg-emerald-950 border border-emerald-700 rounded text-center text-white"
+                                className="w-12 p-1 bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 rounded text-center text-emerald-950 dark:text-white"
                               />
                             </td>
                             <td className="p-3">
@@ -2858,7 +3120,7 @@ export default function App() {
                                 type="number"
                                 value={row.point5}
                                 onChange={(e) => handleUpdateLedgerField(row, { point5: Number(e.target.value) })}
-                                className="w-12 p-1 bg-emerald-950 border border-emerald-700 rounded text-center text-white"
+                                className="w-12 p-1 bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 rounded text-center text-emerald-950 dark:text-white"
                               />
                             </td>
                             <td className="p-3">
@@ -2866,7 +3128,7 @@ export default function App() {
                                 type="number"
                                 value={row.halfSack}
                                 onChange={(e) => handleUpdateLedgerField(row, { halfSack: Number(e.target.value) })}
-                                className="w-12 p-1 bg-emerald-950 border border-emerald-700 rounded text-center text-white"
+                                className="w-12 p-1 bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 rounded text-center text-emerald-950 dark:text-white"
                               />
                             </td>
                             <td className="p-3">
@@ -2874,7 +3136,7 @@ export default function App() {
                                 type="number"
                                 value={row.oneSack}
                                 onChange={(e) => handleUpdateLedgerField(row, { oneSack: Number(e.target.value) })}
-                                className="w-12 p-1 bg-emerald-950 border border-emerald-700 rounded text-center text-white"
+                                className="w-12 p-1 bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 rounded text-center text-emerald-950 dark:text-white"
                               />
                             </td>
                             <td className="p-3">
@@ -2882,15 +3144,15 @@ export default function App() {
                                 type="number"
                                 value={row.bal}
                                 onChange={(e) => handleUpdateLedgerField(row, { bal: Number(e.target.value) })}
-                                className="w-16 p-1 bg-emerald-950 border border-emerald-700 rounded text-center text-white"
+                                className="w-16 p-1 bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 rounded text-center text-emerald-950 dark:text-white"
                               />
                             </td>
-                            <td className="p-3 text-right font-bold text-emerald-300">₱{total}</td>
+                            <td className="p-3 text-right font-bold text-emerald-700 dark:text-emerald-300">₱{total}</td>
                             <td className="p-3 text-center">
                               <button
                                 type="button"
                                 onClick={() => handleDeleteLedgerRow(row.id)}
-                                className="text-red-300 hover:text-red-100"
+                                className="text-red-700 dark:text-red-300 hover:text-red-100"
                               >
                                 <Trash2 className="w-3.5 h-3.5" />
                               </button>
@@ -2904,23 +3166,23 @@ export default function App() {
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div className="p-4 rounded-2xl bg-blue-600/25 border-2 border-blue-500 shadow-lg shadow-blue-950/50 flex items-center justify-between">
+                <div className="p-4 rounded-2xl bg-blue-50 dark:bg-blue-600/25 border-2 border-blue-500 shadow-lg shadow-blue-900/10 dark:shadow-blue-950/50 flex items-center justify-between">
                   <div className="space-y-1">
                     <div className="flex items-center gap-2">
                       <span className="w-4 h-4 rounded-md bg-blue-500 border border-blue-200 inline-block shadow"></span>
-                      <span className="text-[10px] font-bold text-blue-200 uppercase">Total</span>
+                      <span className="text-[10px] font-bold text-blue-700 dark:text-blue-200 uppercase">Total</span>
                     </div>
-                    <div className="text-2xl font-black text-white font-mono">₱{totalBlue.toLocaleString()}</div>
+                    <div className="text-2xl font-black text-emerald-950 dark:text-white font-mono">₱{totalBlue.toLocaleString()}</div>
                   </div>
                   <div className="w-2.5 h-12 rounded-full bg-blue-500"></div>
                 </div>
-                <div className="p-4 rounded-2xl bg-red-600/25 border-2 border-red-500 shadow-lg shadow-red-950/50 flex items-center justify-between">
+                <div className="p-4 rounded-2xl bg-red-50 dark:bg-red-600/25 border-2 border-red-500 shadow-lg shadow-red-900/10 dark:shadow-red-950/50 flex items-center justify-between">
                   <div className="space-y-1">
                     <div className="flex items-center gap-2">
                       <span className="w-4 h-4 rounded-md bg-red-500 border border-red-200 inline-block shadow"></span>
-                      <span className="text-[10px] font-bold text-red-200 uppercase">Total</span>
+                      <span className="text-[10px] font-bold text-red-700 dark:text-red-200 uppercase">Total</span>
                     </div>
-                    <div className="text-2xl font-black text-white font-mono">₱{totalRed.toLocaleString()}</div>
+                    <div className="text-2xl font-black text-emerald-950 dark:text-white font-mono">₱{totalRed.toLocaleString()}</div>
                   </div>
                   <div className="w-2.5 h-12 rounded-full bg-red-500"></div>
                 </div>
@@ -2930,13 +3192,13 @@ export default function App() {
 
           {/* CHOY AI */}
           {activeTab === 'choyai' && (
-            <div className="max-w-2xl mx-auto bg-emerald-900/60 border border-emerald-700/50 rounded-2xl p-5 flex flex-col h-[500px]">
-              <div className="flex items-center gap-2 pb-3 border-b border-emerald-800 text-xs font-bold text-cyan-300">
+            <div className="max-w-2xl mx-auto bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-5 flex flex-col h-[500px]">
+              <div className="flex items-center gap-2 pb-3 border-b border-emerald-200 dark:border-emerald-800 text-xs font-bold text-cyan-700 dark:text-cyan-300">
                 <Bot className="w-4 h-4" /> Choy AI
               </div>
               <div className="flex-1 overflow-y-auto p-3 space-y-3 text-xs">
                 {aiChatMessages.map((m, idx) => (
-                  <div key={idx} className={`flex ${m.sender === 'user' ? 'justify-end' : 'justify-start'}`}>
+                  <div key={idx} className={`flex${m.sender === 'user' ? 'justify-end' : 'justify-start'}`}>
                     <div
                       className={`p-3 rounded-xl max-w-[80%] ${
                         m.sender === 'user' ? 'bg-emerald-400 text-slate-950 font-bold' : 'bg-emerald-950 text-cyan-200'
@@ -2967,14 +3229,14 @@ export default function App() {
                     setAiChatMessages((prev) => [...prev, { sender: 'ai', text: aiAns }]);
                   }, 400);
                 }}
-                className="p-2 border-t border-emerald-800 flex gap-2"
+                className="p-2 border-t border-emerald-200 dark:border-emerald-800 flex gap-2"
               >
                 <input
                   type="text"
                   placeholder="Ask Choy AI..."
                   value={aiChatInput}
                   onChange={(e) => setAiChatInput(e.target.value)}
-                  className="flex-1 p-2 bg-emerald-950 border border-emerald-700 rounded-xl text-xs text-white"
+                  className="flex-1 p-2 bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 rounded-xl text-xs text-emerald-950 dark:text-white"
                 />
                 <button type="submit" className="px-4 py-2 bg-cyan-400 text-slate-950 font-bold text-xs rounded-xl">
                   Ask
@@ -2986,19 +3248,19 @@ export default function App() {
           {/* ADMIN TABS */}
           {activeTab === 'admin_approvals' && isAdmin && (
             <div className="max-w-4xl mx-auto space-y-4">
-              <div className="bg-emerald-900/60 border border-emerald-700/50 rounded-2xl p-5 space-y-4">
-                <h3 className="text-sm font-bold text-white">User Accounts Approval & Sync Monitor</h3>
+              <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-5 space-y-4">
+                <h3 className="text-sm font-bold text-emerald-950 dark:text-white">User Accounts Approval & Sync Monitor</h3>
                 <div className="space-y-2">
                   {usersList.map((u) => (
                     <div
                       key={u.id}
-                      className="p-3 bg-emerald-950 border border-emerald-800 rounded-xl flex items-center justify-between text-xs gap-2"
+                      className="p-3 bg-emerald-50 dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-800 rounded-xl flex items-center justify-between text-xs gap-2"
                     >
                       <div className="min-w-0">
-                        <div className="font-bold text-white truncate">
+                        <div className="font-bold text-emerald-950 dark:text-white truncate">
                           {u.name} ({u.phone})
                         </div>
-                        <div className="text-[10px] text-emerald-300">Last Synced: {u.loginDate}</div>
+                        <div className="text-[10px] text-emerald-700 dark:text-emerald-300">Last Synced: {u.loginDate}</div>
                       </div>
                       <div className="flex items-center gap-2 shrink-0">
                         <span
@@ -3027,22 +3289,22 @@ export default function App() {
 
           {activeTab === 'admin_knowledge' && isAdmin && (
             <div className="max-w-4xl mx-auto space-y-4">
-              <div className="bg-emerald-900/60 border border-emerald-700/50 rounded-2xl p-5 space-y-4">
-                <h3 className="text-sm font-bold text-white">Choy AI Brain Knowledge Box (Synced Q & A)</h3>
+              <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-5 space-y-4">
+                <h3 className="text-sm font-bold text-emerald-950 dark:text-white">Choy AI Brain Knowledge Box (Synced Q & A)</h3>
                 <form onSubmit={handleAddKnowledge} className="space-y-2 text-xs">
                   <input
                     type="text"
                     placeholder="Question..."
                     value={newQ}
                     onChange={(e) => setNewQ(e.target.value)}
-                    className="w-full p-2 bg-emerald-950 border border-emerald-700 rounded-xl text-white"
+                    className="w-full p-2 bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 rounded-xl text-emerald-950 dark:text-white"
                   />
                   <input
                     type="text"
                     placeholder="Answer..."
                     value={newA}
                     onChange={(e) => setNewA(e.target.value)}
-                    className="w-full p-2 bg-emerald-950 border border-emerald-700 rounded-xl text-white"
+                    className="w-full p-2 bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 rounded-xl text-emerald-950 dark:text-white"
                   />
                   <button type="submit" className="px-4 py-2 bg-indigo-600 text-white font-bold rounded-xl">
                     Add Knowledge
@@ -3053,16 +3315,16 @@ export default function App() {
                   {knowledgeBase.map((k) => (
                     <div
                       key={k.id}
-                      className="p-2.5 bg-emerald-950 rounded-xl text-xs flex items-start justify-between gap-2"
+                      className="p-2.5 bg-emerald-50 dark:bg-emerald-950 rounded-xl text-xs flex items-start justify-between gap-2"
                     >
                       <div className="space-y-1 min-w-0">
-                        <div className="font-bold text-cyan-300">Q: {k.question}</div>
-                        <div className="text-slate-200">A: {k.answer}</div>
+                        <div className="font-bold text-cyan-700 dark:text-cyan-300">Q: {k.question}</div>
+                        <div className="text-emerald-900 dark:text-slate-200">A: {k.answer}</div>
                       </div>
                       <button
                         type="button"
                         onClick={() => handleDeleteKnowledge(k.id)}
-                        className="text-red-300 hover:text-red-100 p-1 shrink-0"
+                        className="text-red-700 dark:text-red-300 hover:text-red-100 p-1 shrink-0"
                         title="Delete Q&A"
                       >
                         <Trash2 className="w-3.5 h-3.5" />
@@ -3076,52 +3338,52 @@ export default function App() {
 
           {activeTab === 'admin_prices' && isAdmin && (
             <div className="max-w-xl mx-auto space-y-4">
-              <div className="bg-emerald-900/60 border border-emerald-700/50 rounded-2xl p-5 space-y-4 text-xs">
-                <h3 className="text-sm font-bold text-white">Set Unit Prices (Synced)</h3>
+              <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-5 space-y-4 text-xs">
+                <h3 className="text-sm font-bold text-emerald-950 dark:text-white">Set Unit Prices (Synced)</h3>
                 <div className="space-y-3">
                   <div>
-                    <label className="block text-emerald-300 mb-1">5H Unit Price</label>
+                    <label className="block text-emerald-700 dark:text-emerald-300 mb-1">5H Unit Price</label>
                     <input
                       type="number"
                       value={unitPrices.fiveH}
                       onChange={(e) => setUnitPrices({ ...unitPrices, fiveH: Number(e.target.value) })}
-                      className="w-full p-2 bg-emerald-950 border border-emerald-700 rounded-xl text-white"
+                      className="w-full p-2 bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 rounded-xl text-emerald-950 dark:text-white"
                     />
                   </div>
                   <div>
-                    <label className="block text-emerald-300 mb-1">Bulig Unit Price</label>
+                    <label className="block text-emerald-700 dark:text-emerald-300 mb-1">Bulig Unit Price</label>
                     <input
                       type="number"
                       value={unitPrices.bulig}
                       onChange={(e) => setUnitPrices({ ...unitPrices, bulig: Number(e.target.value) })}
-                      className="w-full p-2 bg-emerald-950 border border-emerald-700 rounded-xl text-white"
+                      className="w-full p-2 bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 rounded-xl text-emerald-950 dark:text-white"
                     />
                   </div>
                   <div>
-                    <label className="block text-emerald-300 mb-1">Point 5 Unit Price</label>
+                    <label className="block text-emerald-700 dark:text-emerald-300 mb-1">Point 5 Unit Price</label>
                     <input
                       type="number"
                       value={unitPrices.point5}
                       onChange={(e) => setUnitPrices({ ...unitPrices, point5: Number(e.target.value) })}
-                      className="w-full p-2 bg-emerald-950 border border-emerald-700 rounded-xl text-white"
+                      className="w-full p-2 bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 rounded-xl text-emerald-950 dark:text-white"
                     />
                   </div>
                   <div>
-                    <label className="block text-emerald-300 mb-1">Half Sack Unit Price</label>
+                    <label className="block text-emerald-700 dark:text-emerald-300 mb-1">Half Sack Unit Price</label>
                     <input
                       type="number"
                       value={unitPrices.halfSack}
                       onChange={(e) => setUnitPrices({ ...unitPrices, halfSack: Number(e.target.value) })}
-                      className="w-full p-2 bg-emerald-950 border border-emerald-700 rounded-xl text-white"
+                      className="w-full p-2 bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 rounded-xl text-emerald-950 dark:text-white"
                     />
                   </div>
                   <div>
-                    <label className="block text-emerald-300 mb-1">One Sack Unit Price</label>
+                    <label className="block text-emerald-700 dark:text-emerald-300 mb-1">One Sack Unit Price</label>
                     <input
                       type="number"
                       value={unitPrices.oneSack}
                       onChange={(e) => setUnitPrices({ ...unitPrices, oneSack: Number(e.target.value) })}
-                      className="w-full p-2 bg-emerald-950 border border-emerald-700 rounded-xl text-white"
+                      className="w-full p-2 bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 rounded-xl text-emerald-950 dark:text-white"
                     />
                   </div>
                   <button
@@ -3134,58 +3396,58 @@ export default function App() {
                 </div>
               </div>
 
-              <div className="bg-emerald-900/60 border border-emerald-700/50 rounded-2xl p-5 space-y-4 text-xs">
-                <h3 className="text-sm font-bold text-white">
+              <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-5 space-y-4 text-xs">
+                <h3 className="text-sm font-bold text-emerald-950 dark:text-white">
                   Add Quantity / Default Quantities (Apply & Sync to All Milestones)
                 </h3>
                 <form onSubmit={handleSaveDefaultQuantities} className="space-y-3">
                   <div>
-                    <label className="block text-emerald-300 mb-1">5H Default Quantity</label>
+                    <label className="block text-emerald-700 dark:text-emerald-300 mb-1">5H Default Quantity</label>
                     <input
                       type="number"
                       value={defaultQuantities.fiveH}
                       onChange={(e) => setDefaultQuantities({ ...defaultQuantities, fiveH: Number(e.target.value) })}
-                      className="w-full p-2 bg-emerald-950 border border-emerald-700 rounded-xl text-white"
+                      className="w-full p-2 bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 rounded-xl text-emerald-950 dark:text-white"
                     />
                   </div>
                   <div>
-                    <label className="block text-emerald-300 mb-1">Bulig Default Quantity</label>
+                    <label className="block text-emerald-700 dark:text-emerald-300 mb-1">Bulig Default Quantity</label>
                     <input
                       type="number"
                       value={defaultQuantities.bulig}
                       onChange={(e) => setDefaultQuantities({ ...defaultQuantities, bulig: Number(e.target.value) })}
-                      className="w-full p-2 bg-emerald-950 border border-emerald-700 rounded-xl text-white"
+                      className="w-full p-2 bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 rounded-xl text-emerald-950 dark:text-white"
                     />
                   </div>
                   <div>
-                    <label className="block text-emerald-300 mb-1">Point 5 Default Quantity</label>
+                    <label className="block text-emerald-700 dark:text-emerald-300 mb-1">Point 5 Default Quantity</label>
                     <input
                       type="number"
                       value={defaultQuantities.point5}
                       onChange={(e) => setDefaultQuantities({ ...defaultQuantities, point5: Number(e.target.value) })}
-                      className="w-full p-2 bg-emerald-950 border border-emerald-700 rounded-xl text-white"
+                      className="w-full p-2 bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 rounded-xl text-emerald-950 dark:text-white"
                     />
                   </div>
                   <div>
-                    <label className="block text-emerald-300 mb-1">Half Sack Default Quantity</label>
+                    <label className="block text-emerald-700 dark:text-emerald-300 mb-1">Half Sack Default Quantity</label>
                     <input
                       type="number"
                       value={defaultQuantities.halfSack}
                       onChange={(e) =>
                         setDefaultQuantities({ ...defaultQuantities, halfSack: Number(e.target.value) })
                       }
-                      className="w-full p-2 bg-emerald-950 border border-emerald-700 rounded-xl text-white"
+                      className="w-full p-2 bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 rounded-xl text-emerald-950 dark:text-white"
                     />
                   </div>
                   <div>
-                    <label className="block text-emerald-300 mb-1">One Sack Default Quantity</label>
+                    <label className="block text-emerald-700 dark:text-emerald-300 mb-1">One Sack Default Quantity</label>
                     <input
                       type="number"
                       value={defaultQuantities.oneSack}
                       onChange={(e) =>
                         setDefaultQuantities({ ...defaultQuantities, oneSack: Number(e.target.value) })
                       }
-                      className="w-full p-2 bg-emerald-950 border border-emerald-700 rounded-xl text-white"
+                      className="w-full p-2 bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 rounded-xl text-emerald-950 dark:text-white"
                     />
                   </div>
                   <button
@@ -3226,14 +3488,14 @@ export default function App() {
           {/* ANALYTICS */}
           {activeTab === 'analytics' && (
             <div className="max-w-3xl mx-auto space-y-4">
-              <div className="bg-emerald-900/60 border border-emerald-700/50 rounded-2xl p-5 space-y-4">
-                <h3 className="text-sm font-bold text-white flex items-center gap-2">
+              <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-5 space-y-4">
+                <h3 className="text-sm font-bold text-emerald-950 dark:text-white flex items-center gap-2">
                   <Award className="w-4 h-4 text-amber-400" />
                   <span className="w-3 h-3 rounded bg-blue-500 border border-blue-200 inline-block"></span>
                   Top 3 Earners
                 </h3>
                 {topLeaderboard.length === 0 ? (
-                  <div className="text-xs text-emerald-300 text-center py-6">
+                  <div className="text-xs text-emerald-700 dark:text-emerald-300 text-center py-6">
                     No leaderboard records synced yet.
                   </div>
                 ) : (
@@ -3241,11 +3503,11 @@ export default function App() {
                     {topLeaderboard.slice(0, 3).map((u, i) => (
                       <div
                         key={u.id}
-                        className="p-4 rounded-xl bg-emerald-950 border border-emerald-800 text-center space-y-1 text-xs"
+                        className="p-4 rounded-xl bg-emerald-50 dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-800 text-center space-y-1 text-xs"
                       >
                         <div className="text-amber-400 font-bold">#{i + 1}</div>
-                        <div className="font-bold text-white">{u.name}</div>
-                        <div className="font-mono text-emerald-300">₱{u.total.toLocaleString()}</div>
+                        <div className="font-bold text-emerald-950 dark:text-white">{u.name}</div>
+                        <div className="font-mono text-emerald-700 dark:text-emerald-300">₱{u.total.toLocaleString()}</div>
                       </div>
                     ))}
                   </div>
@@ -3253,9 +3515,12 @@ export default function App() {
               </div>
             </div>
           )}
+
+          {/* GITHUB INTELLIGENCE */}
+          {activeTab === 'github' && <GitHubIntelligence authToken={authToken} />}
         </div>
 
-        <footer className="border-t border-emerald-800 bg-emerald-950 py-3 px-4 text-center text-[10px] text-emerald-300 shrink-0">
+        <footer className="border-t border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950 py-3 px-4 text-center text-[10px] text-emerald-700 dark:text-emerald-300 shrink-0">
           CHOYCHAT 2026: All Rights Reserved
         </footer>
       </div>
@@ -3266,7 +3531,7 @@ export default function App() {
           <button
             type="button"
             onClick={() => setIsChoyAIPopupOpen(true)}
-            className="w-12 h-14 md:w-14 md:h-16 bg-emerald-950 border-2 border-cyan-400 rounded-2xl shadow-2xl flex items-center justify-center font-bold hover:scale-105 overflow-hidden p-0.5 transition"
+            className="w-12 h-14 md:w-14 md:h-16 bg-emerald-50 dark:bg-emerald-950 border-2 border-cyan-400 rounded-2xl shadow-2xl flex items-center justify-center font-bold hover:scale-105 overflow-hidden p-0.5 transition"
             title="Ask Choy AI"
           >
             <img src={DEFAULT_AVATAR} alt="" className="w-full h-full object-contain rounded-xl" />
@@ -3274,20 +3539,20 @@ export default function App() {
         )}
 
         {isChoyAIPopupOpen && (
-          <div className="w-80 h-96 bg-emerald-950 border border-cyan-500/50 rounded-2xl shadow-2xl flex flex-col overflow-hidden">
-            <div className="p-3 bg-emerald-900 border-b border-cyan-500/40 text-cyan-200 font-bold text-xs flex items-center justify-between">
+          <div className="w-80 h-96 bg-emerald-50 dark:bg-emerald-950 border border-cyan-500/50 rounded-2xl shadow-2xl flex flex-col overflow-hidden">
+            <div className="p-3 bg-emerald-100/80 dark:bg-emerald-900 border-b border-cyan-500/40 text-cyan-800 dark:text-cyan-200 font-bold text-xs flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <img
                   src={DEFAULT_AVATAR}
                   alt=""
-                  className="w-5 h-6 rounded bg-emerald-950 object-contain border border-cyan-400"
+                  className="w-5 h-6 rounded bg-emerald-50 dark:bg-emerald-950 object-contain border border-cyan-400"
                 />{' '}
                 Choy AI Assistant
               </div>
               <button
                 type="button"
                 onClick={() => setIsChoyAIPopupOpen(false)}
-                className="text-slate-300 hover:text-white font-bold"
+                className="text-emerald-800 dark:text-slate-300 hover:text-emerald-950 dark:hover:text-white font-bold"
               >
                 ✕
               </button>
@@ -3295,7 +3560,7 @@ export default function App() {
 
             <div className="flex-1 overflow-y-auto p-3 space-y-2 text-xs">
               {aiChatMessages.map((m, idx) => (
-                <div key={idx} className={`flex ${m.sender === 'user' ? 'justify-end' : 'justify-start'}`}>
+                <div key={idx} className={`flex${m.sender === 'user' ? 'justify-end' : 'justify-start'}`}>
                   <div
                     className={`p-2.5 rounded-xl max-w-[85%] ${
                       m.sender === 'user' ? 'bg-cyan-400 text-slate-950 font-bold' : 'bg-emerald-900 text-cyan-200'
@@ -3327,14 +3592,14 @@ export default function App() {
                   setAiChatMessages((prev) => [...prev, { sender: 'ai', text: aiAns }]);
                 }, 400);
               }}
-              className="p-2 border-t border-emerald-800 bg-emerald-950 flex gap-2"
+              className="p-2 border-t border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950 flex gap-2"
             >
               <input
                 type="text"
                 placeholder="Ask Choy AI anything..."
                 value={aiChatInput}
                 onChange={(e) => setAiChatInput(e.target.value)}
-                className="flex-1 p-2 bg-emerald-900 border border-emerald-700 rounded-xl text-xs text-white placeholder-emerald-300 focus:outline-none"
+                className="flex-1 p-2 bg-emerald-100/80 dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 rounded-xl text-xs text-emerald-950 dark:text-white placeholder-emerald-300 focus:outline-none"
               />
               <button type="submit" className="px-3 py-2 bg-cyan-400 text-slate-950 font-bold text-xs rounded-xl shadow">
                 Send

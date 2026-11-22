@@ -940,6 +940,546 @@ app.get('/api/github/repo/:owner/:repo', async (req, res) => {
   }
 });
 
+// 5b. GitHub Intelligence — Secure Repo Structure & Latest Commit Activity Proxy
+function parseGitHubRepoInput(rawInput: string): { owner: string; repo: string; branchFromUrl?: string } | null {
+  const trimmed = rawInput.trim();
+  if (!trimmed || trimmed.length > 300) return null;
+
+  let owner = '';
+  let repo = '';
+  let branchFromUrl: string | undefined;
+
+  if (/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(trimmed)) {
+    const parts = trimmed.split('/');
+    owner = parts[0];
+    repo = parts[1].replace(/\.git$/i, '');
+  } else {
+    let normalized = trimmed;
+    if (/^github\.com\//i.test(normalized)) {
+      normalized = `https://${normalized}`;
+    }
+    try {
+      const parsed = new URL(normalized);
+      if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return null;
+      const host = parsed.hostname.toLowerCase();
+      if (host !== 'github.com' && host !== 'www.github.com') return null;
+      const segments = parsed.pathname.split('/').filter(Boolean);
+      if (segments.length < 2) return null;
+      owner = segments[0];
+      repo = segments[1].replace(/\.git$/i, '');
+      if (segments[2] === 'tree' && segments[3]) {
+        branchFromUrl = decodeURIComponent(segments.slice(3).join('/'));
+      }
+    } catch {
+      return null;
+    }
+  }
+
+  const validOwner = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/.test(owner);
+  const validRepo = /^[A-Za-z0-9._-]{1,100}$/.test(repo) && repo !== '.' && repo !== '..';
+  if (!validOwner || !validRepo) return null;
+
+  if (branchFromUrl && (!/^[A-Za-z0-9._/-]{1,120}$/.test(branchFromUrl) || branchFromUrl.includes('..'))) {
+    branchFromUrl = undefined;
+  }
+
+  return { owner, repo, branchFromUrl };
+}
+
+function safeGitHubExternalUrl(url: unknown): string | null {
+  if (typeof url !== 'string') return null;
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol === 'https:' && (parsed.hostname === 'github.com' || parsed.hostname === 'avatars.githubusercontent.com')) {
+      return parsed.toString();
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+app.post('/api/github/intelligence', requireAuth, async (req: AuthedRequest, res: Response) => {
+  try {
+    // CSRF guard when authenticated via session cookie
+    const hasBearer = Boolean(req.headers.authorization?.startsWith('Bearer '));
+    if (!hasBearer) {
+      const origin = req.headers.origin;
+      const expectedHost = (req.headers['x-forwarded-host'] || req.headers.host || '').toString().split(',')[0].trim();
+      const hasRequestedWith = req.headers['x-requested-with'] === 'XMLHttpRequest';
+      let originMatches = false;
+      if (typeof origin === 'string' && expectedHost) {
+        try {
+          originMatches = new URL(origin).host === expectedHost;
+        } catch {
+          originMatches = false;
+        }
+      }
+      if (!originMatches && !hasRequestedWith) {
+        return res.status(403).json({ error: 'Cross-origin request blocked' });
+      }
+    }
+
+    const repoUrl = typeof req.body?.repoUrl === 'string' ? req.body.repoUrl : '';
+    const userPat = typeof req.body?.token === 'string' ? req.body.token.trim() : '';
+    const requestedBranch = typeof req.body?.branch === 'string' ? req.body.branch.trim() : '';
+    const rawCommitLimit = Number(req.body?.commitLimit);
+    const commitLimit =
+      Number.isInteger(rawCommitLimit) && rawCommitLimit >= 1 && rawCommitLimit <= 20 ? rawCommitLimit : 5;
+
+    const parsedRepo = parseGitHubRepoInput(repoUrl);
+    if (!parsedRepo) {
+      return res.status(400).json({
+        error: 'Please enter a valid GitHub repository URL (for example: https://github.com/owner/repo or owner/repo).',
+      });
+    }
+
+    if (requestedBranch && (!/^[A-Za-z0-9._/-]{1,120}$/.test(requestedBranch) || requestedBranch.includes('..'))) {
+      return res.status(400).json({ error: 'Invalid branch name.' });
+    }
+
+    const effectiveToken = userPat || (process.env.GITHUB_TOKEN || '').trim();
+    const ghHeaders: Record<string, string> = {
+      Accept: 'application/vnd.github+json',
+      'User-Agent': 'ChoyChat-GitHub-Intelligence',
+      'X-GitHub-Api-Version': '2022-11-28',
+    };
+    if (effectiveToken) {
+      ghHeaders.Authorization = `Bearer ${effectiveToken}`;
+    }
+
+    const baseApi = `https://api.github.com/repos/${encodeURIComponent(parsedRepo.owner)}/${encodeURIComponent(parsedRepo.repo)}`;
+    const repoRes = await fetch(baseApi, { headers: ghHeaders });
+    const repoJson: any = await repoRes.json().catch(() => ({}));
+
+    if (!repoRes.ok) {
+      const ghMsg = typeof repoJson?.message === 'string' ? repoJson.message : 'GitHub API error';
+      if (repoRes.status === 401) {
+        return res.status(401).json({ error: 'GitHub rejected the personal access token. Please verify the token and its scopes.' });
+      }
+      if (repoRes.status === 404) {
+        return res.status(404).json({
+          error: 'Repository not found. If it is private, provide a Personal Access Token with repo read access.',
+        });
+      }
+      if (repoRes.status === 403) {
+        return res.status(403).json({
+          error: ghMsg.toLowerCase().includes('rate limit')
+            ? 'GitHub API rate limit reached. Add a Personal Access Token to increase your limit.'
+            : `Access denied by GitHub: ${ghMsg}`,
+        });
+      }
+      return res.status(repoRes.status).json({ error: ghMsg });
+    }
+
+    const defaultBranch = typeof repoJson.default_branch === 'string' ? repoJson.default_branch : 'main';
+    const targetBranch = requestedBranch || parsedRepo.branchFromUrl || defaultBranch;
+
+    const [branchesRes, langsRes, treeRes, commitsRes, readmeRes] = await Promise.all([
+      fetch(`${baseApi}/branches?per_page=25`, { headers: ghHeaders }),
+      fetch(`${baseApi}/languages`, { headers: ghHeaders }),
+      fetch(`${baseApi}/git/trees/${encodeURIComponent(targetBranch)}?recursive=1`, { headers: ghHeaders }),
+      fetch(`${baseApi}/commits?sha=${encodeURIComponent(targetBranch)}&per_page=${commitLimit}`, { headers: ghHeaders }),
+      fetch(`${baseApi}/readme?ref=${encodeURIComponent(targetBranch)}`, { headers: ghHeaders }),
+    ]);
+
+    const branchesRaw: any = branchesRes.ok ? await branchesRes.json().catch(() => []) : [];
+    const langsRaw: any = langsRes.ok ? await langsRes.json().catch(() => ({})) : {};
+    const treeRaw: any = treeRes.ok ? await treeRes.json().catch(() => ({ tree: [] })) : { tree: [] };
+    const commitsRaw: any = commitsRes.ok ? await commitsRes.json().catch(() => []) : [];
+    const readmeRaw: any = readmeRes.ok ? await readmeRes.json().catch(() => null) : null;
+
+    let readme: {
+      name: string;
+      path: string;
+      size: number;
+      htmlUrl: string | null;
+      content: string;
+      truncated: boolean;
+    } | null = null;
+    if (readmeRaw && typeof readmeRaw.content === 'string') {
+      const MAX_README_CHARS = 120_000;
+      const decoded =
+        readmeRaw.encoding === 'base64'
+          ? Buffer.from(readmeRaw.content.replace(/\s+/g, ''), 'base64').toString('utf8')
+          : readmeRaw.content;
+      const truncated = decoded.length > MAX_README_CHARS;
+      readme = {
+        name: typeof readmeRaw.name === 'string' && readmeRaw.name ? readmeRaw.name : 'README.md',
+        path: typeof readmeRaw.path === 'string' && readmeRaw.path ? readmeRaw.path : 'README.md',
+        size: typeof readmeRaw.size === 'number' && readmeRaw.size >= 0 ? readmeRaw.size : Buffer.byteLength(decoded, 'utf8'),
+        htmlUrl: safeGitHubExternalUrl(readmeRaw.html_url),
+        content: truncated ? decoded.slice(0, MAX_README_CHARS) : decoded,
+        truncated,
+      };
+    }
+
+    const branches: string[] = Array.isArray(branchesRaw)
+      ? branchesRaw
+          .map((b: any) => (typeof b?.name === 'string' ? b.name : ''))
+          .filter(Boolean)
+      : [targetBranch];
+    if (!branches.includes(targetBranch)) {
+      branches.unshift(targetBranch);
+    }
+
+    // Language breakdown
+    const langEntries =
+      langsRaw && typeof langsRaw === 'object'
+        ? Object.entries(langsRaw).filter(([, val]) => typeof val === 'number' && val > 0)
+        : [];
+    const totalLangBytes = langEntries.reduce((sum, [, val]) => sum + Number(val), 0);
+    const languages = langEntries
+      .sort((a, b) => Number(b[1]) - Number(a[1]))
+      .map(([name, val]) => ({
+        name,
+        bytes: Number(val),
+        percent: totalLangBytes > 0 ? Number(((Number(val) / totalLangBytes) * 100).toFixed(1)) : 0,
+      }));
+
+    // Repository structure summary
+    const rawTreeItems: any[] = Array.isArray(treeRaw?.tree) ? treeRaw.tree : [];
+    let totalFiles = 0;
+    let totalDirectories = 0;
+    let totalBytes = 0;
+    const folderMap = new Map<string, { fileCount: number; totalBytes: number }>();
+    const extMap = new Map<string, number>();
+    const keyManifestNames = new Set([
+      'package.json',
+      'tsconfig.json',
+      'dockerfile',
+      'render.yaml',
+      'docker-compose.yml',
+      'docker-compose.yaml',
+      'readme.md',
+      'vite.config.ts',
+      'vite.config.js',
+      'next.config.js',
+      'next.config.mjs',
+      'next.config.ts',
+      'cargo.toml',
+      'go.mod',
+      'requirements.txt',
+      'pyproject.toml',
+      'prisma/schema.prisma',
+    ]);
+    const keyFiles: string[] = [];
+    const tree: Array<{ path: string; type: 'blob' | 'tree'; size: number }> = [];
+
+    for (const item of rawTreeItems) {
+      const itemPath = typeof item?.path === 'string' ? item.path : '';
+      const itemType = item?.type === 'tree' ? 'tree' : item?.type === 'blob' ? 'blob' : null;
+      if (!itemPath || !itemType) continue;
+      const size = typeof item?.size === 'number' && item.size > 0 ? item.size : 0;
+
+      if (tree.length < 1500) {
+        tree.push({ path: itemPath, type: itemType, size });
+      }
+
+      if (itemType === 'tree') {
+        totalDirectories += 1;
+      } else {
+        totalFiles += 1;
+        totalBytes += size;
+        const slashIdx = itemPath.indexOf('/');
+        const topFolder = slashIdx === -1 ? '(root)' : itemPath.slice(0, slashIdx);
+        const existingFolder = folderMap.get(topFolder) || { fileCount: 0, totalBytes: 0 };
+        existingFolder.fileCount += 1;
+        existingFolder.totalBytes += size;
+        folderMap.set(topFolder, existingFolder);
+
+        const baseName = itemPath.slice(itemPath.lastIndexOf('/') + 1);
+        const dotIdx = baseName.lastIndexOf('.');
+        const ext = dotIdx > 0 ? baseName.slice(dotIdx).toLowerCase() : '(no ext)';
+        extMap.set(ext, (extMap.get(ext) || 0) + 1);
+
+        if (keyManifestNames.has(itemPath.toLowerCase()) || (!itemPath.includes('/') && keyManifestNames.has(baseName.toLowerCase()))) {
+          keyFiles.push(itemPath);
+        }
+      }
+    }
+
+    const topLevelFolders = Array.from(folderMap.entries())
+      .map(([name, info]) => ({ name, fileCount: info.fileCount, totalBytes: info.totalBytes }))
+      .sort((a, b) => b.fileCount - a.fileCount);
+
+    const extensions = Array.from(extMap.entries())
+      .map(([ext, count]) => ({ ext, count }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 10);
+
+    // Commits & active contributor summary
+    const contributorMap = new Map<
+      string,
+      { name: string; login: string | null; avatar: string | null; commitCount: number; latestDate: string | null }
+    >();
+
+    const commits = (Array.isArray(commitsRaw) ? commitsRaw : []).slice(0, commitLimit).map((c: any) => {
+      const fullMessage = typeof c?.commit?.message === 'string' ? c.commit.message : '';
+      const [firstLine, ...restLines] = fullMessage.split('\n');
+      const authorName =
+        (typeof c?.commit?.author?.name === 'string' && c.commit.author.name) ||
+        (typeof c?.author?.login === 'string' && c.author.login) ||
+        'Unknown Author';
+      const authorLogin = typeof c?.author?.login === 'string' ? c.author.login : null;
+      const authorAvatar = safeGitHubExternalUrl(c?.author?.avatar_url);
+      const date = typeof c?.commit?.author?.date === 'string' ? c.commit.author.date : null;
+      const sha = typeof c?.sha === 'string' ? c.sha : '';
+
+      const contribKey = authorLogin || authorName;
+      const existingContrib = contributorMap.get(contribKey);
+      if (existingContrib) {
+        existingContrib.commitCount += 1;
+      } else {
+        contributorMap.set(contribKey, {
+          name: authorName,
+          login: authorLogin,
+          avatar: authorAvatar,
+          commitCount: 1,
+          latestDate: date,
+        });
+      }
+
+      return {
+        sha,
+        shortSha: sha.slice(0, 7),
+        message: fullMessage.trim() || '(no commit message)',
+        title: firstLine.trim() || '(no commit message)',
+        body: restLines.join('\n').trim(),
+        authorName,
+        authorLogin,
+        authorAvatar,
+        date,
+        htmlUrl: safeGitHubExternalUrl(c?.html_url),
+        verified: Boolean(c?.commit?.verification?.verified),
+      };
+    });
+
+    const contributors = Array.from(contributorMap.values()).sort((a, b) => b.commitCount - a.commitCount);
+
+    return res.json({
+      repo: {
+        name: String(repoJson.name || parsedRepo.repo),
+        fullName: String(repoJson.full_name || `${parsedRepo.owner}/${parsedRepo.repo}`),
+        description: typeof repoJson.description === 'string' ? repoJson.description : '',
+        visibility: typeof repoJson.visibility === 'string' ? repoJson.visibility : repoJson.private ? 'private' : 'public',
+        isPrivate: Boolean(repoJson.private),
+        defaultBranch,
+        selectedBranch: targetBranch,
+        htmlUrl: safeGitHubExternalUrl(repoJson.html_url) || '',
+        stars: Number(repoJson.stargazers_count) || 0,
+        forks: Number(repoJson.forks_count) || 0,
+        openIssues: Number(repoJson.open_issues_count) || 0,
+        watchers: Number(repoJson.subscribers_count ?? repoJson.watchers_count) || 0,
+        sizeKb: Number(repoJson.size) || 0,
+        license: typeof repoJson?.license?.name === 'string' ? repoJson.license.name : null,
+        pushedAt: typeof repoJson.pushed_at === 'string' ? repoJson.pushed_at : null,
+        updatedAt: typeof repoJson.updated_at === 'string' ? repoJson.updated_at : null,
+        ownerLogin: typeof repoJson?.owner?.login === 'string' ? repoJson.owner.login : parsedRepo.owner,
+        ownerAvatar: safeGitHubExternalUrl(repoJson?.owner?.avatar_url),
+      },
+      branches,
+      languages,
+      structure: {
+        totalFiles,
+        totalDirectories,
+        totalBytes,
+        truncated: Boolean(treeRaw?.truncated),
+        topLevelFolders,
+        keyFiles,
+        extensions,
+        tree,
+      },
+      commits,
+      contributors,
+      readme,
+      authenticatedWithToken: Boolean(effectiveToken),
+    });
+  } catch (err: unknown) {
+    return res.status(500).json({
+      error: err instanceof Error ? err.message : 'Failed to inspect GitHub repository',
+    });
+  }
+});
+
+app.post('/api/github/file', requireAuth, async (req: AuthedRequest, res: Response) => {
+  try {
+    // CSRF guard when authenticated via session cookie
+    const hasBearer = Boolean(req.headers.authorization?.startsWith('Bearer '));
+    if (!hasBearer) {
+      const origin = req.headers.origin;
+      const expectedHost = (req.headers['x-forwarded-host'] || req.headers.host || '').toString().split(',')[0].trim();
+      const hasRequestedWith = req.headers['x-requested-with'] === 'XMLHttpRequest';
+      let originMatches = false;
+      if (typeof origin === 'string' && expectedHost) {
+        try {
+          originMatches = new URL(origin).host === expectedHost;
+        } catch {
+          originMatches = false;
+        }
+      }
+      if (!originMatches && !hasRequestedWith) {
+        return res.status(403).json({ error: 'Cross-origin request blocked' });
+      }
+    }
+
+    const repoUrl = typeof req.body?.repoUrl === 'string' ? req.body.repoUrl : '';
+    const userPat = typeof req.body?.token === 'string' ? req.body.token.trim() : '';
+    const requestedBranch = typeof req.body?.branch === 'string' ? req.body.branch.trim() : '';
+    const rawFilePath = typeof req.body?.path === 'string' ? req.body.path.trim().replace(/^\/+/, '') : '';
+
+    const parsedRepo = parseGitHubRepoInput(repoUrl);
+    if (!parsedRepo) {
+      return res.status(400).json({ error: 'Invalid GitHub repository URL.' });
+    }
+
+    if (requestedBranch && (!/^[A-Za-z0-9._/-]{1,120}$/.test(requestedBranch) || requestedBranch.includes('..'))) {
+      return res.status(400).json({ error: 'Invalid branch name.' });
+    }
+
+    if (
+      !rawFilePath ||
+      rawFilePath.length > 500 ||
+      rawFilePath.includes('\0') ||
+      rawFilePath.includes('\\') ||
+      rawFilePath.split('/').some((seg: string) => seg === '' || seg === '.' || seg === '..')
+    ) {
+      return res.status(400).json({ error: 'Invalid repository file path.' });
+    }
+
+    const effectiveToken = userPat || (process.env.GITHUB_TOKEN || '').trim();
+    const ghHeaders: Record<string, string> = {
+      Accept: 'application/vnd.github+json',
+      'User-Agent': 'ChoyChat-GitHub-Intelligence',
+      'X-GitHub-Api-Version': '2022-11-28',
+    };
+    if (effectiveToken) {
+      ghHeaders.Authorization = `Bearer ${effectiveToken}`;
+    }
+
+    const encodedFilePath = rawFilePath
+      .split('/')
+      .map((segment: string) => encodeURIComponent(segment))
+      .join('/');
+    const baseApi = `https://api.github.com/repos/${encodeURIComponent(parsedRepo.owner)}/${encodeURIComponent(parsedRepo.repo)}`;
+    const queryRef = requestedBranch ? `?ref=${encodeURIComponent(requestedBranch)}` : '';
+    const fileRes = await fetch(`${baseApi}/contents/${encodedFilePath}${queryRef}`, { headers: ghHeaders });
+    const fileJson: any = await fileRes.json().catch(() => ({}));
+
+    if (!fileRes.ok) {
+      const ghMsg = typeof fileJson?.message === 'string' ? fileJson.message : 'GitHub API error';
+      if (fileRes.status === 401) {
+        return res.status(401).json({ error: 'GitHub rejected the personal access token.' });
+      }
+      if (fileRes.status === 404) {
+        return res.status(404).json({ error: 'File not found on this branch.' });
+      }
+      if (fileRes.status === 403 && ghMsg.toLowerCase().includes('rate limit')) {
+        return res.status(403).json({
+          error: 'GitHub API rate limit reached. Add a Personal Access Token to preview more files.',
+        });
+      }
+      return res.status(fileRes.status).json({ error: ghMsg });
+    }
+
+    if (Array.isArray(fileJson) || fileJson?.type !== 'file') {
+      return res.status(400).json({ error: 'Selected path is not a previewable file.' });
+    }
+
+    const fileName = typeof fileJson.name === 'string' ? fileJson.name : rawFilePath.split('/').pop() || rawFilePath;
+    const filePath = typeof fileJson.path === 'string' ? fileJson.path : rawFilePath;
+    const fileSize = typeof fileJson.size === 'number' && fileJson.size >= 0 ? fileJson.size : 0;
+    const htmlUrl = safeGitHubExternalUrl(fileJson.html_url);
+    const sha = typeof fileJson.sha === 'string' ? fileJson.sha : '';
+
+    const BINARY_EXTENSIONS = new Set([
+      '.png', '.jpg', '.jpeg', '.gif', '.webp', '.ico', '.bmp', '.tiff',
+      '.pdf', '.zip', '.tar', '.gz', '.7z', '.rar',
+      '.woff', '.woff2', '.ttf', '.otf', '.eot',
+      '.mp4', '.webm', '.mov', '.mp3', '.wav', '.ogg',
+      '.exe', '.dll', '.so', '.dylib', '.bin', '.wasm', '.pyc', '.class', '.jar',
+    ]);
+    const dotIdx = fileName.lastIndexOf('.');
+    const ext = dotIdx > 0 ? fileName.slice(dotIdx).toLowerCase() : '';
+
+    if (BINARY_EXTENSIONS.has(ext)) {
+      return res.json({
+        name: fileName,
+        path: filePath,
+        size: fileSize,
+        sha,
+        htmlUrl,
+        content: '',
+        lineCount: 0,
+        truncated: false,
+        isBinary: true,
+        tooLarge: false,
+      });
+    }
+
+    const MAX_PREVIEW_BYTES = 512 * 1024;
+    if (fileSize > MAX_PREVIEW_BYTES || typeof fileJson.content !== 'string') {
+      return res.json({
+        name: fileName,
+        path: filePath,
+        size: fileSize,
+        sha,
+        htmlUrl,
+        content: '',
+        lineCount: 0,
+        truncated: false,
+        isBinary: false,
+        tooLarge: true,
+      });
+    }
+
+    const rawBuffer =
+      fileJson.encoding === 'base64'
+        ? Buffer.from(fileJson.content.replace(/\s+/g, ''), 'base64')
+        : Buffer.from(fileJson.content, 'utf8');
+
+    // Detect binary content via NUL byte check in the first 8KB
+    const sampleSlice = rawBuffer.subarray(0, Math.min(rawBuffer.length, 8192));
+    if (sampleSlice.includes(0)) {
+      return res.json({
+        name: fileName,
+        path: filePath,
+        size: fileSize,
+        sha,
+        htmlUrl,
+        content: '',
+        lineCount: 0,
+        truncated: false,
+        isBinary: true,
+        tooLarge: false,
+      });
+    }
+
+    const MAX_PREVIEW_CHARS = 150_000;
+    const decodedText = rawBuffer.toString('utf8');
+    const truncated = decodedText.length > MAX_PREVIEW_CHARS;
+    const finalContent = truncated ? decodedText.slice(0, MAX_PREVIEW_CHARS) : decodedText;
+    const lineCount = finalContent === '' ? 0 : finalContent.split(/\r?\n/).length;
+
+    return res.json({
+      name: fileName,
+      path: filePath,
+      size: fileSize,
+      sha,
+      htmlUrl,
+      content: finalContent,
+      lineCount,
+      truncated,
+      isBinary: false,
+      tooLarge: false,
+    });
+  } catch (err: unknown) {
+    return res.status(500).json({
+      error: err instanceof Error ? err.message : 'Failed to fetch repository file contents',
+    });
+  }
+});
+
 // 6. Gemini AI Code Review on PR or Code
 app.post('/api/github/ai-review', async (req, res) => {
   const { owner, repo, prNumber, codeSnippet, title } = req.body;

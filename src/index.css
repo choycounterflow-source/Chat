@@ -1,2 +1,50 @@
 @import "tailwindcss";
 @custom-variant dark (&:where(.dark, .dark *));
+
+@layer base {
+  :root {
+    color-scheme: light;
+    --surface-canvas: #ecfdf5;
+    --surface-card: #ffffff;
+    --surface-inset: #f0fdf4;
+    --surface-border: #a7f3d0;
+    --text-primary: #022c22;
+    --text-secondary: #065f46;
+  }
+
+  .dark {
+    color-scheme: dark;
+    --surface-canvas: #022c22;
+    --surface-card: rgba(6, 78, 59, 0.6);
+    --surface-inset: #022c22;
+    --surface-border: #065f46;
+    --text-primary: #f8fafc;
+    --text-secondary: #a7f3d0;
+  }
+
+  html[data-font-scale="compact"] {
+    font-size: 14.5px;
+  }
+
+  html[data-font-scale="standard"] {
+    font-size: 16px;
+  }
+
+  html[data-font-scale="large"] {
+    font-size: 17.5px;
+  }
+
+  body {
+    background-color: var(--surface-canvas);
+    color: var(--text-primary);
+  }
+}
+
+html[data-reduced-motion="true"] *,
+html[data-reduced-motion="true"] *::before,
+html[data-reduced-motion="true"] *::after {
+  animation-duration: 0.01ms;
+  animation-iteration-count: 1;
+  transition-duration: 0.01ms;
+  scroll-behavior: auto;
+}
