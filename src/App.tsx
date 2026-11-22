@@ -50,7 +50,10 @@ import {
   Ban,
   Phone,
   Clock,
-  MoreVertical
+  MoreVertical,
+  MicOff,
+  VideoOff,
+  RefreshCw
 } from 'lucide-react';
 import { PWAInstallButton } from './components/PWAInstallButton';
 import { OfflineIndicator } from './components/OfflineIndicator';
@@ -107,6 +110,7 @@ interface Message {
   text?: string;
   mediaUrl?: string;
   mediaType?: 'text' | 'image' | 'video' | 'audio' | 'file';
+  transcript?: string;
   time: string;
   createdAtMs: number;
   isMe?: boolean;
@@ -138,8 +142,49 @@ interface KnowledgeQA {
   answer: string;
 }
 
+interface IncomingCallPayload {
+  callId: string;
+  roomId: string;
+  fromUserId: string;
+  fromUserName: string;
+  sdp: RTCSessionDescriptionInit;
+}
+
+interface RtcSignalPayload {
+  type: 'offer' | 'answer' | 'ice' | 'hangup' | 'decline';
+  callId: string;
+  roomId?: string;
+  targetName?: string;
+  fromUserId?: string;
+  fromUserName?: string;
+  sdp?: RTCSessionDescriptionInit;
+  candidate?: RTCIceCandidateInit;
+}
+
 const DEFAULT_AVATAR = '/assets/aistudio/image_20261121_145253_f477cbfa.webp';
 const CHAT_ROOMS = ['VIP Group', 'Choy Admin', 'Maria Santos'] as const;
+
+const RTC_ICE_CONFIG: RTCConfiguration = {
+  iceServers: [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' }
+  ]
+};
+
+function messageBelongsToRoom(m: Message, room: string, myName: string): boolean {
+  const r = room.trim().toLowerCase();
+  const me = myName.trim().toLowerCase();
+  const sender = (m.sender || '').trim().toLowerCase();
+  const receiver = (m.receiver || '').trim().toLowerCase();
+
+  if (r === 'vip group') {
+    return receiver === 'vip group';
+  }
+  if (!me) {
+    return receiver === r;
+  }
+  return (receiver === r && sender === me) || (sender === r && receiver === me);
+}
 
 function formatIsoTime(iso?: string): string {
   if (!iso) return 'Just now';
@@ -203,10 +248,28 @@ export default function App() {
   const [isMenuDrawerOpen, setIsMenuDrawerOpen] = useState(false);
   const searchContainerRef = useRef<HTMLDivElement>(null);
 
-  // Video Call Modal State
+  // Real Live WebRTC Video Call State & Refs
   const [isInVideoCall, setIsInVideoCall] = useState(false);
+  const [callStatus, setCallStatus] = useState<'idle' | 'calling' | 'ringing' | 'connected' | 'error'>('idle');
+  const [callError, setCallError] = useState('');
+  const [callPartnerName, setCallPartnerName] = useState('');
+  const [callElapsedSec, setCallElapsedSec] = useState(0);
   const [isVideoMuted, setIsVideoMuted] = useState(false);
   const [isAudioMuted, setIsAudioMuted] = useState(false);
+  const [cameraFacing, setCameraFacing] = useState<'user' | 'environment'>('user');
+  const [hasRemoteStream, setHasRemoteStream] = useState(false);
+  const [callPeerOfflineHint, setCallPeerOfflineHint] = useState(false);
+  const [incomingCall, setIncomingCall] = useState<IncomingCallPayload | null>(null);
+  const localVideoRef = useRef<HTMLVideoElement>(null);
+  const remoteVideoRef = useRef<HTMLVideoElement>(null);
+  const localStreamRef = useRef<MediaStream | null>(null);
+  const remoteStreamRef = useRef<MediaStream | null>(null);
+  const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
+  const pendingIceCandidatesRef = useRef<RTCIceCandidateInit[]>([]);
+  const activeCallIdRef = useRef<string | null>(null);
+  const callTargetNameRef = useRef<string>('');
+  const callRoomIdRef = useRef<string>('VIP Group');
+  const handleRtcSignalRef = useRef<(payload: RtcSignalPayload) => void>(() => {});
 
   const [usersList, setUsersList] = useState<UserAccount[]>([]);
   const [knowledgeBase, setKnowledgeBase] = useState<KnowledgeQA[]>([]);
@@ -258,16 +321,19 @@ export default function App() {
   const [localMessages, setLocalMessages] = useState<Message[]>([]);
   const [msgInput, setMsgInput] = useState('');
   const [msgMediaType, setMsgMediaType] = useState<'text' | 'image' | 'video' | 'audio' | 'file'>('text');
+  const [msgTranscript, setMsgTranscript] = useState('');
   const [msgMediaUrl, setMsgMediaUrl] = useState('');
   const [showMsgLinkInput, setShowMsgLinkInput] = useState(false);
   const [msgLinkDraft, setMsgLinkDraft] = useState('');
   const [msgLinkType, setMsgLinkType] = useState<'video' | 'image' | 'audio'>('video');
   const [msgSearchQuery, setMsgSearchQuery] = useState('');
   const msgFileInputRef = useRef<HTMLInputElement>(null);
+  const msgImageInputRef = useRef<HTMLInputElement>(null);
   const [isRecordingAudio, setIsRecordingAudio] = useState(false);
   const [recordingSeconds, setRecordingSeconds] = useState(0);
   const [isProcessingAudio, setIsProcessingAudio] = useState(false);
   const [isUploadingMsgMedia, setIsUploadingMsgMedia] = useState(false);
+  const [isSendingMsg, setIsSendingMsg] = useState(false);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const recordingStreamRef = useRef<MediaStream | null>(null);
@@ -496,6 +562,7 @@ export default function App() {
             text: String(m.text || ''),
             mediaUrl: typeof m.mediaUrl === 'string' ? m.mediaUrl : undefined,
             mediaType: (m.mediaType as Message['mediaType']) || 'text',
+            transcript: typeof m.transcript === 'string' ? m.transcript : undefined,
             time: formatIsoTime(typeof m.createdAt === 'string' ? m.createdAt : undefined),
             createdAtMs: typeof m.createdAt === 'string' ? new Date(m.createdAt).getTime() : Date.now(),
             isMe: m.senderId === myId,
@@ -558,9 +625,29 @@ export default function App() {
           const { value, done } = await reader.read();
           if (done) break;
           buffer += decoder.decode(value, { stream: true });
-          if (buffer.includes('event: sync')) {
-            buffer = '';
-            fetchSyncedState();
+          const frames = buffer.split('\n\n');
+          buffer = frames.pop() || '';
+          for (const frame of frames) {
+            const lines = frame.split('\n');
+            let eventName = 'message';
+            const dataLines: string[] = [];
+            for (const line of lines) {
+              if (line.startsWith('event:')) {
+                eventName = line.slice(6).trim();
+              } else if (line.startsWith('data:')) {
+                dataLines.push(line.slice(5).trim());
+              }
+            }
+            if (eventName === 'sync') {
+              fetchSyncedState();
+            } else if (eventName === 'rtc' && dataLines.length > 0) {
+              try {
+                const payload = JSON.parse(dataLines.join('\n')) as RtcSignalPayload;
+                handleRtcSignalRef.current(payload);
+              } catch {
+                // Ignore malformed RTC frame
+              }
+            }
           }
         }
       } catch {
@@ -586,13 +673,470 @@ export default function App() {
   }, [authToken, fetchSyncedState]);
 
   const messages = [...cloudMessages, ...localMessages].sort((a, b) => a.createdAtMs - b.createdAtMs);
-  const chatRoomsList = Array.from(
-    new Set([
-      ...CHAT_ROOMS,
-      activeChat,
-      ...messages.map((m) => m.receiver).filter((room): room is string => Boolean(room && room.trim()))
-    ])
+  const chatRoomsList = (() => {
+    const seen = new Set<string>();
+    const rooms: string[] = [];
+    const meLower = (currentUser?.name || '').trim().toLowerCase();
+    const addRoom = (name?: string, allowSelf = false) => {
+      const clean = (name || '').trim();
+      if (!clean) return;
+      const lower = clean.toLowerCase();
+      if (!allowSelf && meLower && lower === meLower) return;
+      if (seen.has(lower)) return;
+      seen.add(lower);
+      rooms.push(clean);
+    };
+
+    addRoom('VIP Group', true);
+    if (activeChat) addRoom(activeChat, true);
+    usersList.forEach((u) => addRoom(u.name));
+    CHAT_ROOMS.forEach((r) => addRoom(r));
+    messages.forEach((m) => {
+      const recv = (m.receiver || '').trim();
+      const snd = (m.sender || '').trim();
+      if (recv.toLowerCase() === 'vip group') return;
+      if (meLower && snd.toLowerCase() === meLower) {
+        addRoom(recv);
+      } else if (meLower && recv.toLowerCase() === meLower) {
+        addRoom(snd);
+      }
+    });
+    return rooms;
+  })();
+
+  // ---- REAL LIVE WEBRTC VIDEO CALL ENGINE ----
+  const sendRtcSignalToServer = useCallback(
+    async (payload: {
+      type: 'offer' | 'answer' | 'ice' | 'hangup' | 'decline';
+      callId: string;
+      roomId: string;
+      targetName: string;
+      sdp?: RTCSessionDescriptionInit;
+      candidate?: RTCIceCandidateInit;
+    }): Promise<{ ok: boolean; delivered: number }> => {
+      try {
+        const res = await apiFetch('/api/choy/rtc/signal', {
+          method: 'POST',
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json().catch(() => ({}));
+        return { ok: true, delivered: Number(data.delivered) || 0 };
+      } catch {
+        return { ok: false, delivered: 0 };
+      }
+    },
+    [apiFetch]
   );
+
+  const cleanupVideoCallResources = useCallback(() => {
+    if (peerConnectionRef.current) {
+      try {
+        peerConnectionRef.current.onicecandidate = null;
+        peerConnectionRef.current.ontrack = null;
+        peerConnectionRef.current.onconnectionstatechange = null;
+        peerConnectionRef.current.close();
+      } catch {
+        // ignore
+      }
+      peerConnectionRef.current = null;
+    }
+    if (localStreamRef.current) {
+      localStreamRef.current.getTracks().forEach((t) => t.stop());
+      localStreamRef.current = null;
+    }
+    if (remoteStreamRef.current) {
+      remoteStreamRef.current.getTracks().forEach((t) => t.stop());
+      remoteStreamRef.current = null;
+    }
+    if (localVideoRef.current) {
+      localVideoRef.current.srcObject = null;
+    }
+    if (remoteVideoRef.current) {
+      remoteVideoRef.current.srcObject = null;
+    }
+    pendingIceCandidatesRef.current = [];
+    activeCallIdRef.current = null;
+    callTargetNameRef.current = '';
+    setHasRemoteStream(false);
+    setCallPeerOfflineHint(false);
+    setIsAudioMuted(false);
+    setIsVideoMuted(false);
+    setCallElapsedSec(0);
+  }, []);
+
+  const endVideoCall = useCallback(
+    (notifyRemote = true) => {
+      const currentCallId = activeCallIdRef.current;
+      const currentTarget = callTargetNameRef.current;
+      const currentRoom = callRoomIdRef.current;
+      if (notifyRemote && currentCallId && currentTarget) {
+        void sendRtcSignalToServer({
+          type: 'hangup',
+          callId: currentCallId,
+          roomId: currentRoom,
+          targetName: currentTarget
+        });
+      }
+      cleanupVideoCallResources();
+      setIsInVideoCall(false);
+      setCallStatus('idle');
+      setCallError('');
+    },
+    [cleanupVideoCallResources, sendRtcSignalToServer]
+  );
+
+  const acquireCallMedia = useCallback(async (facing: 'user' | 'environment'): Promise<MediaStream> => {
+    if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
+      throw new Error('Camera & microphone require HTTPS or a supported browser.');
+    }
+    try {
+      return await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: facing }, width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: { echoCancellation: true, noiseSuppression: true }
+      });
+    } catch (firstErr) {
+      if (firstErr instanceof Error && firstErr.name === 'NotAllowedError') {
+        throw new Error('Camera/microphone permission denied. Please allow access in your browser settings.');
+      }
+      try {
+        return await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      } catch {
+        const audioOnly = await navigator.mediaDevices.getUserMedia({ audio: true });
+        showNotice('Camera not detected — connected with microphone audio only.');
+        return audioOnly;
+      }
+    }
+  }, []);
+
+  const createPeerConnection = useCallback(
+    (callId: string, targetName: string, roomId: string) => {
+      const pc = new RTCPeerConnection(RTC_ICE_CONFIG);
+      peerConnectionRef.current = pc;
+
+      pc.onicecandidate = (event) => {
+        if (event.candidate) {
+          void sendRtcSignalToServer({
+            type: 'ice',
+            callId,
+            roomId,
+            targetName,
+            candidate: event.candidate.toJSON()
+          });
+        }
+      };
+
+      pc.ontrack = (event) => {
+        const stream = event.streams[0] || remoteStreamRef.current || new MediaStream();
+        if (!event.streams[0]) {
+          stream.addTrack(event.track);
+        }
+        remoteStreamRef.current = stream;
+        if (remoteVideoRef.current) {
+          remoteVideoRef.current.srcObject = stream;
+          remoteVideoRef.current.play().catch(() => {});
+        }
+        setHasRemoteStream(true);
+        setCallPeerOfflineHint(false);
+        setCallStatus('connected');
+      };
+
+      pc.onconnectionstatechange = () => {
+        if (pc.connectionState === 'connected') {
+          setCallStatus('connected');
+          setCallPeerOfflineHint(false);
+        } else if (pc.connectionState === 'failed') {
+          setCallError('Connection lost. Tap Retry Call to reconnect.');
+          setCallStatus('error');
+        }
+      };
+
+      return pc;
+    },
+    [sendRtcSignalToServer]
+  );
+
+  const startVideoCall = useCallback(
+    async (explicitTarget?: string) => {
+      const targetName = (explicitTarget || activeChat || 'VIP Group').trim();
+      cleanupVideoCallResources();
+      setIncomingCall(null);
+      setIsInVideoCall(true);
+      setCallPartnerName(targetName);
+      setCallStatus('calling');
+      setCallError('');
+      setCameraFacing('user');
+
+      try {
+        const stream = await acquireCallMedia('user');
+        localStreamRef.current = stream;
+        if (localVideoRef.current) {
+          localVideoRef.current.srcObject = stream;
+          localVideoRef.current.play().catch(() => {});
+        }
+        const hasVideoTrack = stream.getVideoTracks().length > 0;
+        setIsVideoMuted(!hasVideoTrack);
+
+        const callId = `call_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+        activeCallIdRef.current = callId;
+        callTargetNameRef.current = targetName;
+        callRoomIdRef.current = targetName;
+
+        const pc = createPeerConnection(callId, targetName, targetName);
+        stream.getTracks().forEach((track) => pc.addTrack(track, stream));
+
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+
+        const signalRes = await sendRtcSignalToServer({
+          type: 'offer',
+          callId,
+          roomId: targetName,
+          targetName,
+          sdp: offer
+        });
+
+        if (signalRes.delivered === 0) {
+          setCallPeerOfflineHint(true);
+        }
+      } catch (err) {
+        setCallStatus('error');
+        setCallError(err instanceof Error ? err.message : 'Unable to start video call.');
+      }
+    },
+    [activeChat, acquireCallMedia, cleanupVideoCallResources, createPeerConnection, sendRtcSignalToServer]
+  );
+
+  const acceptIncomingCall = useCallback(async () => {
+    if (!incomingCall) return;
+    const callData = incomingCall;
+    setIncomingCall(null);
+    cleanupVideoCallResources();
+    setIsInVideoCall(true);
+    setCallPartnerName(callData.fromUserName);
+    setCallStatus('ringing');
+    setCallError('');
+    setCameraFacing('user');
+
+    try {
+      const stream = await acquireCallMedia('user');
+      localStreamRef.current = stream;
+      if (localVideoRef.current) {
+        localVideoRef.current.srcObject = stream;
+        localVideoRef.current.play().catch(() => {});
+      }
+      const hasVideoTrack = stream.getVideoTracks().length > 0;
+      setIsVideoMuted(!hasVideoTrack);
+
+      activeCallIdRef.current = callData.callId;
+      callTargetNameRef.current = callData.fromUserName;
+      callRoomIdRef.current = callData.roomId;
+
+      const pc = createPeerConnection(callData.callId, callData.fromUserName, callData.roomId);
+      stream.getTracks().forEach((track) => pc.addTrack(track, stream));
+
+      await pc.setRemoteDescription(new RTCSessionDescription(callData.sdp));
+      for (const candidate of pendingIceCandidatesRef.current) {
+        await pc.addIceCandidate(new RTCIceCandidate(candidate)).catch(() => {});
+      }
+      pendingIceCandidatesRef.current = [];
+
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+
+      await sendRtcSignalToServer({
+        type: 'answer',
+        callId: callData.callId,
+        roomId: callData.roomId,
+        targetName: callData.fromUserName,
+        sdp: answer
+      });
+      setCallStatus('connected');
+    } catch (err) {
+      setCallStatus('error');
+      setCallError(err instanceof Error ? err.message : 'Failed to accept video call.');
+    }
+  }, [incomingCall, acquireCallMedia, cleanupVideoCallResources, createPeerConnection, sendRtcSignalToServer]);
+
+  const declineIncomingCall = useCallback(() => {
+    if (!incomingCall) return;
+    void sendRtcSignalToServer({
+      type: 'decline',
+      callId: incomingCall.callId,
+      roomId: incomingCall.roomId,
+      targetName: incomingCall.fromUserName
+    });
+    setIncomingCall(null);
+  }, [incomingCall, sendRtcSignalToServer]);
+
+  const toggleCallAudio = useCallback(() => {
+    const stream = localStreamRef.current;
+    if (!stream) return;
+    const nextMuted = !isAudioMuted;
+    stream.getAudioTracks().forEach((track) => {
+      track.enabled = !nextMuted;
+    });
+    setIsAudioMuted(nextMuted);
+  }, [isAudioMuted]);
+
+  const toggleCallVideo = useCallback(() => {
+    const stream = localStreamRef.current;
+    if (!stream) return;
+    const tracks = stream.getVideoTracks();
+    if (tracks.length === 0) {
+      showNotice('No camera track available on this device.');
+      return;
+    }
+    const nextMuted = !isVideoMuted;
+    tracks.forEach((track) => {
+      track.enabled = !nextMuted;
+    });
+    setIsVideoMuted(nextMuted);
+  }, [isVideoMuted]);
+
+  const flipCallCamera = useCallback(async () => {
+    if (!localStreamRef.current || !navigator.mediaDevices?.getUserMedia) return;
+    const nextFacing: 'user' | 'environment' = cameraFacing === 'user' ? 'environment' : 'user';
+    try {
+      const newVideoStream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: nextFacing } },
+        audio: false
+      });
+      const newTrack = newVideoStream.getVideoTracks()[0];
+      if (!newTrack) return;
+      newTrack.enabled = !isVideoMuted;
+
+      const oldStream = localStreamRef.current;
+      oldStream.getVideoTracks().forEach((oldTrack) => {
+        oldTrack.stop();
+        oldStream.removeTrack(oldTrack);
+      });
+      oldStream.addTrack(newTrack);
+
+      const sender = peerConnectionRef.current
+        ?.getSenders()
+        .find((s) => s.track && s.track.kind === 'video');
+      if (sender) {
+        await sender.replaceTrack(newTrack);
+      }
+
+      if (localVideoRef.current) {
+        localVideoRef.current.srcObject = oldStream;
+        localVideoRef.current.play().catch(() => {});
+      }
+      setCameraFacing(nextFacing);
+    } catch {
+      showNotice('Only one camera is available on this device.');
+    }
+  }, [cameraFacing, isVideoMuted]);
+
+  // Keep SSE RTC signal handler always up-to-date without restarting SSE
+  useEffect(() => {
+    handleRtcSignalRef.current = async (payload: RtcSignalPayload) => {
+      if (!payload || !payload.type || !payload.callId) return;
+
+      if (payload.type === 'offer' && payload.sdp) {
+        if (activeCallIdRef.current && activeCallIdRef.current !== payload.callId) {
+          void sendRtcSignalToServer({
+            type: 'decline',
+            callId: payload.callId,
+            roomId: payload.roomId || 'VIP Group',
+            targetName: payload.fromUserName || 'Member'
+          });
+          return;
+        }
+        pendingIceCandidatesRef.current = [];
+        setIncomingCall({
+          callId: payload.callId,
+          roomId: payload.roomId || 'VIP Group',
+          fromUserId: payload.fromUserId || '',
+          fromUserName: payload.fromUserName || 'Member',
+          sdp: payload.sdp
+        });
+        return;
+      }
+
+      if (payload.type === 'answer' && payload.sdp) {
+        if (activeCallIdRef.current !== payload.callId || !peerConnectionRef.current) return;
+        try {
+          if (payload.fromUserName) {
+            callTargetNameRef.current = payload.fromUserName;
+            setCallPartnerName(payload.fromUserName);
+          }
+          await peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(payload.sdp));
+          for (const candidate of pendingIceCandidatesRef.current) {
+            await peerConnectionRef.current.addIceCandidate(new RTCIceCandidate(candidate)).catch(() => {});
+          }
+          pendingIceCandidatesRef.current = [];
+          setCallPeerOfflineHint(false);
+          setCallStatus('connected');
+        } catch {
+          // Ignore stale answer
+        }
+        return;
+      }
+
+      if (payload.type === 'ice' && payload.candidate) {
+        const pc = peerConnectionRef.current;
+        if (pc && activeCallIdRef.current === payload.callId && pc.remoteDescription) {
+          await pc.addIceCandidate(new RTCIceCandidate(payload.candidate)).catch(() => {});
+        } else {
+          pendingIceCandidatesRef.current.push(payload.candidate);
+        }
+        return;
+      }
+
+      if (payload.type === 'decline') {
+        if (activeCallIdRef.current === payload.callId) {
+          showNotice(`${payload.fromUserName || 'User'} declined the video call.`);
+          endVideoCall(false);
+        }
+        return;
+      }
+
+      if (payload.type === 'hangup') {
+        if (incomingCall?.callId === payload.callId) {
+          setIncomingCall(null);
+        }
+        if (activeCallIdRef.current === payload.callId) {
+          showNotice(`${payload.fromUserName || 'User'} ended the video call.`);
+          endVideoCall(false);
+        }
+      }
+    };
+  }, [endVideoCall, incomingCall, sendRtcSignalToServer]);
+
+  // Bind live MediaStreams whenever the Video Call modal mounts/updates
+  useEffect(() => {
+    if (!isInVideoCall) return;
+    if (localVideoRef.current && localStreamRef.current) {
+      if (localVideoRef.current.srcObject !== localStreamRef.current) {
+        localVideoRef.current.srcObject = localStreamRef.current;
+      }
+      localVideoRef.current.play().catch(() => {});
+    }
+    if (remoteVideoRef.current && remoteStreamRef.current) {
+      if (remoteVideoRef.current.srcObject !== remoteStreamRef.current) {
+        remoteVideoRef.current.srcObject = remoteStreamRef.current;
+      }
+      remoteVideoRef.current.play().catch(() => {});
+    }
+  }, [isInVideoCall, hasRemoteStream, callStatus]);
+
+  // Live call duration timer
+  useEffect(() => {
+    if (!isInVideoCall || callStatus !== 'connected') return;
+    const timer = window.setInterval(() => {
+      setCallElapsedSec((prev) => prev + 1);
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [isInVideoCall, callStatus]);
+
+  // Stop media tracks cleanly on unmount
+  useEffect(() => {
+    return () => {
+      cleanupVideoCallResources();
+    };
+  }, [cleanupVideoCallResources]);
 
   // Photo Editor Canvas Loader
   useEffect(() => {
@@ -699,44 +1243,75 @@ export default function App() {
     }
   };
 
+  const isImageFile = (file: File) =>
+    file.type.startsWith('image/') || /\.(jpe?g|png|webp|gif|bmp|avif|heic|heif)$/i.test(file.name || '');
+
+  const isVideoFile = (file: File) =>
+    file.type.startsWith('video/') || /\.(mp4|webm|mov|m4v|ogv|3gp|mkv)$/i.test(file.name || '');
+
+  const isAudioFile = (file: File) =>
+    file.type.startsWith('audio/') || /\.(mp3|wav|ogg|webm|m4a|aac|flac)$/i.test(file.name || '');
+
   const compressImageToBlob = (file: File): Promise<{ blob: Blob; dataUrl: string }> =>
     new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.onerror = () => reject(new Error('Failed to read image file'));
       reader.onload = () => {
+        const rawDataUrl = String(reader.result || '');
         const img = new Image();
-        img.onerror = () => reject(new Error('Invalid image file'));
-        img.onload = () => {
-          const maxDim = 1280;
-          let { width, height } = img;
-          if (width > maxDim || height > maxDim) {
-            if (width >= height) {
-              height = Math.round((height * maxDim) / width);
-              width = maxDim;
-            } else {
-              width = Math.round((width * maxDim) / height);
-              height = maxDim;
-            }
+        img.onerror = () => {
+          if (rawDataUrl.startsWith('data:image/') && rawDataUrl.length <= 2_500_000) {
+            resolve({ blob: file, dataUrl: rawDataUrl });
+          } else {
+            reject(new Error('Unsupported or corrupted image file. Please try JPG, PNG, or WebP.'));
           }
-          const canvas = document.createElement('canvas');
-          canvas.width = width;
-          canvas.height = height;
-          const ctx = canvas.getContext('2d');
-          if (!ctx) {
-            resolve({ blob: file, dataUrl: String(reader.result || '') });
+        };
+        img.onload = () => {
+          let maxDim = 1280;
+          let quality = 0.82;
+          let dataUrl = '';
+          let finalCanvas: HTMLCanvasElement | null = null;
+
+          for (let attempt = 0; attempt < 4; attempt++) {
+            let { width, height } = img;
+            if (width > maxDim || height > maxDim) {
+              if (width >= height) {
+                height = Math.max(1, Math.round((height * maxDim) / width));
+                width = maxDim;
+              } else {
+                width = Math.max(1, Math.round((width * maxDim) / height));
+                height = maxDim;
+              }
+            }
+            const canvas = document.createElement('canvas');
+            canvas.width = width;
+            canvas.height = height;
+            const ctx = canvas.getContext('2d');
+            if (!ctx) {
+              resolve({ blob: file, dataUrl: rawDataUrl });
+              return;
+            }
+            ctx.drawImage(img, 0, 0, width, height);
+            dataUrl = canvas.toDataURL('image/jpeg', quality);
+            finalCanvas = canvas;
+            if (dataUrl.length <= 1_600_000) break;
+            maxDim = Math.round(maxDim * 0.72);
+            quality = Math.max(0.5, quality - 0.12);
+          }
+
+          if (!finalCanvas) {
+            resolve({ blob: file, dataUrl: rawDataUrl });
             return;
           }
-          ctx.drawImage(img, 0, 0, width, height);
-          const dataUrl = canvas.toDataURL('image/jpeg', 0.82);
-          canvas.toBlob(
+          finalCanvas.toBlob(
             (blob) => {
               resolve({ blob: blob || file, dataUrl });
             },
             'image/jpeg',
-            0.82
+            quality
           );
         };
-        img.src = String(reader.result || '');
+        img.src = rawDataUrl;
       };
       reader.readAsDataURL(file);
     });
@@ -780,23 +1355,34 @@ export default function App() {
     return null;
   };
 
+  const tryUploadMediaToCloud = async (
+    blob: Blob,
+    folder: 'posts' | 'messages' | 'voice'
+  ): Promise<{ url: string; mediaType: 'image' | 'video' | 'audio' } | null> => {
+    try {
+      return await uploadMediaToCloud(blob, folder);
+    } catch {
+      return null;
+    }
+  };
+
   const handlePostFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     setIsProcessingPostMedia(true);
     try {
-      if (file.type.startsWith('image/')) {
+      if (isImageFile(file)) {
         const { blob, dataUrl } = await compressImageToBlob(file);
-        const cloud = await uploadMediaToCloud(blob, 'posts');
+        const cloud = await tryUploadMediaToCloud(blob, 'posts');
         setNewPostMedia(cloud ? cloud.url : dataUrl);
         setNewPostType('image');
         setNewPostMediaName(file.name);
-      } else if (file.type.startsWith('video/')) {
+      } else if (isVideoFile(file)) {
         if (file.size > 25 * 1024 * 1024) {
           showNotice('Video must be 25 MB or smaller.');
           return;
         }
-        const cloud = await uploadMediaToCloud(file, 'posts');
+        const cloud = await tryUploadMediaToCloud(file, 'posts');
         if (cloud) {
           setNewPostMedia(cloud.url);
           setNewPostType('video');
@@ -898,6 +1484,9 @@ export default function App() {
     }
   };
 
+  const speechRecognitionRef = useRef<any>(null);
+  const voiceTranscriptRef = useRef<string>('');
+
   const startAudioRecording = async () => {
     if (isRecordingAudio || isProcessingAudio) return;
     if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
@@ -905,6 +1494,38 @@ export default function App() {
       return;
     }
     try {
+      voiceTranscriptRef.current = '';
+      const SpeechRecognitionAPI =
+        typeof window !== 'undefined'
+          ? (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
+          : null;
+      if (SpeechRecognitionAPI) {
+        try {
+          const recognition = new SpeechRecognitionAPI();
+          recognition.continuous = true;
+          recognition.interimResults = true;
+          recognition.lang = navigator.language || 'en-US';
+          let finalWords = '';
+          recognition.onresult = (event: any) => {
+            let interim = '';
+            for (let i = event.resultIndex; i < event.results.length; ++i) {
+              if (event.results[i].isFinal) {
+                finalWords += event.results[i][0].transcript + ' ';
+              } else {
+                interim += event.results[i][0].transcript;
+              }
+            }
+            voiceTranscriptRef.current = (finalWords + interim).trim();
+          };
+          recognition.onerror = () => {};
+          recognition.onend = () => {};
+          recognition.start();
+          speechRecognitionRef.current = recognition;
+        } catch {
+          // Speech recognition not supported or blocked
+        }
+      }
+
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       recordingStreamRef.current = stream;
 
@@ -937,6 +1558,14 @@ export default function App() {
         const finalMime = recorder.mimeType || mimeType || 'audio/webm';
         cleanupAudioRecording();
 
+        if (speechRecognitionRef.current) {
+          try {
+            speechRecognitionRef.current.stop();
+          } catch {}
+          speechRecognitionRef.current = null;
+        }
+        const transcript = voiceTranscriptRef.current.trim();
+
         if (action === 'cancel' || chunks.length === 0) {
           return;
         }
@@ -949,7 +1578,7 @@ export default function App() {
 
         setIsProcessingAudio(true);
         try {
-          const cloud = await uploadMediaToCloud(audioBlob, 'voice');
+          const cloud = await tryUploadMediaToCloud(audioBlob, 'voice');
           let mediaUrl = cloud ? cloud.url : '';
           if (!mediaUrl) {
             if (audioBlob.size > 3.5 * 1024 * 1024) {
@@ -971,16 +1600,19 @@ export default function App() {
                 roomId: activeChat,
                 text: msgInput.trim() || 'Voice message',
                 mediaUrl,
-                mediaType: 'audio'
+                mediaType: 'audio',
+                transcript: transcript || 'Voice message transcription'
               })
             });
             setMsgInput('');
             setMsgMediaUrl('');
+            setMsgTranscript('');
             setMsgMediaType('text');
             await fetchSyncedState();
           } else {
             setMsgMediaType('audio');
             setMsgMediaUrl(mediaUrl);
+            setMsgTranscript(transcript);
           }
         } catch (err) {
           showNotice(err instanceof Error ? err.message : 'Failed to process voice recording');
@@ -1016,14 +1648,14 @@ export default function App() {
     if (!file) return;
     setIsUploadingMsgMedia(true);
     try {
-      if (file.type.startsWith('image/')) {
+      if (isImageFile(file)) {
         const { blob, dataUrl } = await compressImageToBlob(file);
-        const cloud = await uploadMediaToCloud(blob, 'messages');
+        const cloud = await tryUploadMediaToCloud(blob, 'messages');
         setMsgMediaType('image');
         setMsgMediaUrl(cloud ? cloud.url : dataUrl);
-      } else if (file.type.startsWith('video/')) {
+      } else if (isVideoFile(file)) {
         if (file.size <= 25 * 1024 * 1024) {
-          const cloud = await uploadMediaToCloud(file, 'messages');
+          const cloud = await tryUploadMediaToCloud(file, 'messages');
           if (cloud) {
             setMsgMediaType('video');
             setMsgMediaUrl(cloud.url);
@@ -1040,9 +1672,9 @@ export default function App() {
           setMsgMediaUrl(url);
           showNotice('Video preview is local-only until Supabase Storage keys are active (max 25 MB).');
         }
-      } else if (file.type.startsWith('audio/')) {
+      } else if (isAudioFile(file)) {
         if (file.size <= 15 * 1024 * 1024) {
-          const cloud = await uploadMediaToCloud(file, 'messages');
+          const cloud = await tryUploadMediaToCloud(file, 'messages');
           if (cloud) {
             setMsgMediaType('audio');
             setMsgMediaUrl(cloud.url);
@@ -1064,7 +1696,7 @@ export default function App() {
         setMsgMediaUrl(url);
       }
     } catch (err) {
-      showNotice(err instanceof Error ? err.message : 'Failed to upload selected attachment');
+      showNotice(err instanceof Error ? err.message : 'Failed to prepare selected image/file');
     } finally {
       setIsUploadingMsgMedia(false);
       e.target.value = '';
@@ -1073,7 +1705,7 @@ export default function App() {
 
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!currentUser || (!msgInput.trim() && !msgMediaUrl)) return;
+    if (!currentUser || isSendingMsg || (!msgInput.trim() && !msgMediaUrl)) return;
 
     const isLocalBlob = Boolean(msgMediaUrl) && msgMediaUrl.startsWith('blob:');
 
@@ -1100,6 +1732,7 @@ export default function App() {
       return;
     }
 
+    setIsSendingMsg(true);
     try {
       await apiFetch('/api/choy/messages', {
         method: 'POST',
@@ -1107,15 +1740,19 @@ export default function App() {
           roomId: activeChat,
           text: msgInput.trim(),
           mediaUrl: msgMediaUrl || undefined,
-          mediaType: msgMediaUrl ? msgMediaType : 'text'
+          mediaType: msgMediaUrl ? msgMediaType : 'text',
+          transcript: msgMediaType === 'audio' ? msgTranscript || 'Voice message transcription' : undefined
         })
       });
       setMsgInput('');
       setMsgMediaUrl('');
+      setMsgTranscript('');
       setMsgMediaType('text');
       await fetchSyncedState();
     } catch (err) {
       showNotice(err instanceof Error ? err.message : 'Failed to send message');
+    } finally {
+      setIsSendingMsg(false);
     }
   };
 
@@ -1719,46 +2356,171 @@ export default function App() {
 
   return (
     <div className="fixed inset-0 bg-emerald-50 dark:bg-emerald-950/95 text-emerald-950 dark:text-slate-100 flex flex-col md:flex-row overflow-hidden text-sm">
-      {/* VIDEO CALL MODAL */}
-      {isInVideoCall && (
-        <div className="fixed inset-0 z-50 bg-slate-950 flex flex-col items-center justify-center p-4">
-          <div className="relative w-full max-w-3xl h-[70vh] bg-slate-900 rounded-3xl overflow-hidden border border-emerald-500/40 flex items-center justify-center shadow-2xl">
-            <div className="absolute inset-0 bg-slate-900 flex items-center justify-center text-slate-400">
-              <div className="text-center space-y-2">
-                <div className="w-20 h-20 rounded-full bg-emerald-500/20 border border-emerald-500 flex items-center justify-center mx-auto text-emerald-400">
-                  <Video className="w-8 h-8" />
+      {/* INCOMING LIVE VIDEO CALL BANNER */}
+      {incomingCall && !isInVideoCall && (
+        <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[60] w-[92%] max-w-md bg-emerald-950/95 border-2 border-emerald-400 rounded-2xl p-4 shadow-2xl text-white backdrop-blur-md">
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-3 min-w-0">
+              <div className="w-11 h-11 rounded-full bg-emerald-500/20 border border-emerald-400 flex items-center justify-center shrink-0 animate-pulse">
+                <Video className="w-5 h-5 text-emerald-300" />
+              </div>
+              <div className="min-w-0">
+                <div className="text-[11px] uppercase tracking-wider font-bold text-emerald-300">
+                  Incoming Video Call
                 </div>
-                <div className="text-sm font-bold text-white">Video Call Active (HD Stream)</div>
+                <div className="text-sm font-black truncate">{incomingCall.fromUserName}</div>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={declineIncomingCall}
+                className="px-3 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-bold flex items-center gap-1 shadow"
+              >
+                <PhoneOff className="w-4 h-4" /> Decline
+              </button>
+              <button
+                type="button"
+                onClick={acceptIncomingCall}
+                className="px-3.5 py-2 rounded-xl bg-emerald-400 hover:bg-emerald-300 text-slate-950 text-xs font-black flex items-center gap-1 shadow"
+              >
+                <PhoneCall className="w-4 h-4" /> Accept
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* REAL LIVE WEBRTC VIDEO CALL MODAL */}
+      {isInVideoCall && (
+        <div className="fixed inset-0 z-50 bg-slate-950 flex flex-col items-center justify-center p-3 sm:p-5">
+          <div className="relative w-full max-w-4xl h-[74dvh] bg-slate-900 rounded-3xl overflow-hidden border border-emerald-500/40 flex items-center justify-center shadow-2xl">
+            {/* Remote Peer Live Video */}
+            <video
+              ref={remoteVideoRef}
+              autoPlay
+              playsInline
+              className={`w-full h-full object-cover ${hasRemoteStream ? 'block' : 'hidden'}`}
+            />
+
+            {/* Waiting / Calling / Error Overlay when remote video isn't connected yet */}
+            {!hasRemoteStream && (
+              <div className="absolute inset-0 bg-gradient-to-b from-emerald-950/90 via-slate-950/95 to-slate-950 flex flex-col items-center justify-center p-6 text-center space-y-3">
+                <div className="w-20 h-20 rounded-full bg-emerald-500/20 border-2 border-emerald-400 flex items-center justify-center text-emerald-300 shadow-lg">
+                  {callStatus === 'error' ? (
+                    <VideoOff className="w-8 h-8 text-red-400" />
+                  ) : (
+                    <Video className="w-8 h-8 animate-pulse" />
+                  )}
+                </div>
+                <div className="text-lg font-black text-white">{callPartnerName || activeChat}</div>
+                {callStatus === 'error' ? (
+                  <div className="space-y-3 max-w-sm">
+                    <p className="text-xs text-red-300 font-medium">{callError}</p>
+                    <button
+                      type="button"
+                      onClick={() => startVideoCall(callPartnerName || activeChat)}
+                      className="px-4 py-2 rounded-xl bg-emerald-400 text-slate-950 text-xs font-black hover:bg-emerald-300 transition"
+                    >
+                      Retry Camera & Call
+                    </button>
+                  </div>
+                ) : (
+                  <div className="space-y-1 max-w-sm">
+                    <div className="text-xs font-bold text-emerald-300">
+                      {callStatus === 'connected'
+                        ? 'Connected (Audio Live)'
+                        : callPeerOfflineHint
+                        ? `Camera live — waiting for ${callPartnerName || activeChat} to open Choy Chat...`
+                        : `Calling ${callPartnerName || activeChat}...`}
+                    </div>
+                    <p className="text-[11px] text-slate-400">
+                      Your live camera & microphone are active. When {callPartnerName || activeChat} accepts on their device, their video appears here.
+                    </p>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Top Call Status Pill */}
+            <div className="absolute top-4 left-4 right-4 flex items-center justify-between pointer-events-none">
+              <div className="px-3 py-1.5 rounded-xl bg-slate-950/75 border border-emerald-500/40 backdrop-blur text-white text-xs font-bold flex items-center gap-2">
+                <span
+                  className={`w-2 h-2 rounded-full ${
+                    callStatus === 'connected'
+                      ? 'bg-emerald-400'
+                      : callStatus === 'error'
+                      ? 'bg-red-500'
+                      : 'bg-amber-400 animate-pulse'
+                  }`}
+                />
+                <span className="truncate max-w-[160px] sm:max-w-[260px]">{callPartnerName || activeChat}</span>
+                {callStatus === 'connected' && (
+                  <span className="font-mono text-emerald-300">{formatRecordingTime(callElapsedSec)}</span>
+                )}
               </div>
             </div>
 
-            <div className="absolute bottom-6 right-6 w-32 h-24 bg-slate-950 rounded-xl border border-emerald-500/50 flex items-center justify-center text-[10px] text-slate-300">
-              Your Camera
+            {/* Local Self Camera Live Preview (PiP) */}
+            <div className="absolute bottom-4 right-4 w-28 h-40 sm:w-40 sm:h-28 bg-slate-950 rounded-2xl overflow-hidden border-2 border-emerald-400/80 shadow-xl flex items-center justify-center">
+              <video
+                ref={localVideoRef}
+                autoPlay
+                muted
+                playsInline
+                className={`w-full h-full object-cover ${cameraFacing === 'user' ? 'scale-x-[-1]' : ''} ${
+                  isVideoMuted ? 'hidden' : 'block'
+                }`}
+              />
+              {isVideoMuted && (
+                <div className="flex flex-col items-center gap-1 text-[10px] text-slate-300 p-2 text-center">
+                  <VideoOff className="w-5 h-5 text-red-400" />
+                  <span>Camera Off</span>
+                </div>
+              )}
+              <span className="absolute bottom-1 left-1.5 px-1.5 py-0.5 rounded bg-slate-950/75 text-[9px] font-bold text-emerald-200">
+                You
+              </span>
             </div>
           </div>
 
-          <div className="flex items-center gap-4 mt-6">
+          {/* Live Call Controls */}
+          <div className="flex items-center gap-3 sm:gap-4 mt-5">
             <button
               type="button"
-              onClick={() => setIsAudioMuted(!isAudioMuted)}
-              className={`p-4 rounded-full ${isAudioMuted ? 'bg-red-500 text-white' : 'bg-slate-800 text-white'}`}
+              onClick={toggleCallAudio}
+              className={`p-3.5 sm:p-4 rounded-full transition shadow-lg ${
+                isAudioMuted ? 'bg-red-500 text-white' : 'bg-slate-800 hover:bg-slate-700 text-white'
+              }`}
+              title={isAudioMuted ? 'Unmute Microphone' : 'Mute Microphone'}
             >
-              <Mic className="w-5 h-5" />
+              {isAudioMuted ? <MicOff className="w-5 h-5" /> : <Mic className="w-5 h-5" />}
             </button>
             <button
               type="button"
-              onClick={() => setIsInVideoCall(false)}
-              className="p-4 rounded-full bg-red-600 text-white hover:bg-red-700 shadow-lg"
+              onClick={toggleCallVideo}
+              className={`p-3.5 sm:p-4 rounded-full transition shadow-lg ${
+                isVideoMuted ? 'bg-red-500 text-white' : 'bg-slate-800 hover:bg-slate-700 text-white'
+              }`}
+              title={isVideoMuted ? 'Turn Camera On' : 'Turn Camera Off'}
+            >
+              {isVideoMuted ? <VideoOff className="w-5 h-5" /> : <Camera className="w-5 h-5" />}
+            </button>
+            <button
+              type="button"
+              onClick={flipCallCamera}
+              className="p-3.5 sm:p-4 rounded-full bg-slate-800 hover:bg-slate-700 text-white transition shadow-lg"
+              title="Switch Front / Back Camera"
+            >
+              <RefreshCw className="w-5 h-5" />
+            </button>
+            <button
+              type="button"
+              onClick={() => endVideoCall(true)}
+              className="p-4 rounded-full bg-red-600 text-white hover:bg-red-700 shadow-lg transition"
               title="End Call"
             >
               <PhoneOff className="w-6 h-6" />
-            </button>
-            <button
-              type="button"
-              onClick={() => setIsVideoMuted(!isVideoMuted)}
-              className={`p-4 rounded-full ${isVideoMuted ? 'bg-red-500 text-white' : 'bg-slate-800 text-white'}`}
-            >
-              <Camera className="w-5 h-5" />
             </button>
           </div>
         </div>
@@ -1836,7 +2598,7 @@ export default function App() {
             (m) =>
               Boolean(m.mediaUrl) &&
               !blockedUsers.includes(m.sender) &&
-              (galleryScope === 'all' || m.receiver === activeChat)
+              (galleryScope === 'all' || messageBelongsToRoom(m, activeChat, currentUser?.name || ''))
           );
           const counts = {
             all: scopedMedia.length,
@@ -2141,18 +2903,7 @@ export default function App() {
                   Admin Panel
                 </div>
 
-                <button
-                  type="button"
-                  onClick={() => setActiveTab('admin_approvals')}
-                  className={`px-3 py-2 rounded-xl flex items-center gap-2 shrink-0 whitespace-nowrap ${
-                    activeTab === 'admin_approvals'
-                      ? 'bg-indigo-600 text-white font-bold'
-                      : 'text-indigo-800 dark:text-indigo-200 hover:bg-emerald-100 dark:hover:bg-emerald-800'
-                  }`}
-                >
-                  <Users className="w-4 h-4 shrink-0" />
-                  <span>Accounts</span>
-                </button>
+
                 <button
                   type="button"
                   onClick={() => setActiveTab('admin_knowledge')}
@@ -3005,8 +3756,8 @@ export default function App() {
                       </button>
                       <button
                         type="button"
-                        onClick={() => setIsInVideoCall(true)}
-                        className="px-2.5 py-1.5 bg-emerald-400 text-slate-950 rounded-lg flex items-center gap-1 shadow shrink-0 whitespace-nowrap text-[11px]"
+                        onClick={() => startVideoCall(activeChat)}
+                        className="px-2.5 py-1.5 bg-emerald-400 text-slate-950 rounded-lg flex items-center gap-1 shadow shrink-0 whitespace-nowrap text-[11px] font-bold hover:bg-emerald-300 transition"
                       >
                         <PhoneCall className="w-3.5 h-3.5" /> Call
                       </button>
@@ -3026,7 +3777,7 @@ export default function App() {
 
                 <div className="flex-1 overflow-y-auto overscroll-y-auto touch-pan-y [-webkit-overflow-scrolling:touch] p-3 space-y-3 min-h-[240px] max-h-[55dvh] md:max-h-none">
                   {messages
-                    .filter((m) => m.receiver === activeChat)
+                    .filter((m) => messageBelongsToRoom(m, activeChat, currentUser?.name || ''))
                     .filter((m) => !blockedUsers.includes(m.sender))
                     .filter((m) => (m.text || '').toLowerCase().includes(msgSearchQuery.toLowerCase()))
                     .map((m) => (
@@ -3060,7 +3811,18 @@ export default function App() {
                           )}
                           {m.mediaType === 'video' && m.mediaUrl && <ChatVideoPlayer src={m.mediaUrl} compact />}
                           {m.mediaType === 'audio' && m.mediaUrl && (
-                            <audio src={m.mediaUrl} controls className="w-full h-8" />
+                            <div className="space-y-1.5 w-full">
+                              <audio src={m.mediaUrl} controls className="w-full h-8" />
+                              <div className="text-[11px] bg-white/80 dark:bg-emerald-900/70 p-2.5 rounded-xl border border-emerald-300/70 dark:border-emerald-700/70 text-emerald-950 dark:text-emerald-100 flex flex-col gap-1 shadow-xs">
+                                <div className="flex items-center gap-1.5 font-bold text-emerald-700 dark:text-emerald-300">
+                                  <Mic className="w-3.5 h-3.5 shrink-0" />
+                                  <span>Voice Transcription:</span>
+                                </div>
+                                <p className="italic text-emerald-950 dark:text-slate-100 break-words leading-relaxed">
+                                  {m.transcript || m.text || 'Voice message transcription'}
+                                </p>
+                              </div>
+                            </div>
                           )}
                           {m.mediaType === 'file' && (
                             <div className="text-amber-700 dark:text-amber-300 text-[10px]">📎 File Attachment</div>
@@ -3100,9 +3862,16 @@ export default function App() {
                 <div className="p-3 border-t border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950 space-y-2">
                   <input
                     type="file"
+                    ref={msgImageInputRef}
+                    className="hidden"
+                    accept="image/*"
+                    onChange={handleMsgFileSelect}
+                  />
+                  <input
+                    type="file"
                     ref={msgFileInputRef}
                     className="hidden"
-                    accept="image/*,video/*,audio/*,*"
+                    accept="image/*,video/*,audio/*"
                     onChange={handleMsgFileSelect}
                   />
 
@@ -3244,16 +4013,25 @@ export default function App() {
                     <form onSubmit={handleSendMessage} className="flex items-center gap-1.5 sm:gap-2">
                       <button
                         type="button"
-                        disabled={isUploadingMsgMedia}
+                        disabled={isUploadingMsgMedia || isSendingMsg}
+                        onClick={() => msgImageInputRef.current?.click()}
+                        className="p-2.5 rounded-xl bg-emerald-100/80 dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 text-emerald-700 dark:text-emerald-300 hover:text-emerald-950 dark:hover:text-white hover:bg-emerald-100 dark:hover:bg-emerald-800 transition shrink-0 disabled:opacity-50"
+                        title="Send Photo / Image"
+                      >
+                        {isUploadingMsgMedia ? <Loader2 className="w-4 h-4 animate-spin" /> : <ImageIcon className="w-4 h-4" />}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={isUploadingMsgMedia || isSendingMsg}
                         onClick={() => msgFileInputRef.current?.click()}
                         className="p-2.5 rounded-xl bg-emerald-100/80 dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 text-emerald-700 dark:text-emerald-300 hover:text-emerald-950 dark:hover:text-white hover:bg-emerald-100 dark:hover:bg-emerald-800 transition shrink-0 disabled:opacity-50"
-                        title="Upload picture, video, audio or file to cloud storage"
+                        title="Attach Video, Audio, or File"
                       >
                         <Plus className="w-4 h-4" />
                       </button>
                       <button
                         type="button"
-                        disabled={isProcessingAudio || isUploadingMsgMedia}
+                        disabled={isProcessingAudio || isUploadingMsgMedia || isSendingMsg}
                         onClick={startAudioRecording}
                         className="p-2.5 rounded-xl bg-emerald-100/80 dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 text-emerald-700 dark:text-emerald-300 hover:text-emerald-950 dark:hover:text-white hover:bg-emerald-100 dark:hover:bg-emerald-800 transition shrink-0 disabled:opacity-50"
                         title="Record voice message"
@@ -3266,7 +4044,7 @@ export default function App() {
                         className={`p-2.5 rounded-xl border transition shrink-0 ${
                           showMsgLinkInput
                             ? 'bg-cyan-400 text-slate-950 border-cyan-300'
-                            : 'bg-emerald-900 border-emerald-700 text-cyan-300 hover:text-white hover:bg-emerald-800'
+                            : 'bg-emerald-100/80 dark:bg-emerald-900 border-emerald-300 dark:border-emerald-700 text-cyan-700 dark:text-cyan-300 hover:text-emerald-950 dark:hover:text-white hover:bg-emerald-100 dark:hover:bg-emerald-800'
                         }`}
                         title="Attach synced Video/Image URL"
                       >
@@ -3276,7 +4054,9 @@ export default function App() {
                         type="text"
                         placeholder={
                           isUploadingMsgMedia
-                            ? 'Uploading media...'
+                            ? 'Preparing photo/media...'
+                            : isSendingMsg
+                            ? 'Sending...'
                             : isProcessingAudio
                             ? 'Uploading voice clip...'
                             : `Message ${activeChat}...`
@@ -3287,10 +4067,10 @@ export default function App() {
                       />
                       <button
                         type="submit"
-                        disabled={isProcessingAudio || isUploadingMsgMedia}
+                        disabled={isProcessingAudio || isUploadingMsgMedia || isSendingMsg || (!msgInput.trim() && !msgMediaUrl)}
                         className="px-3.5 sm:px-4 py-2.5 bg-emerald-400 text-slate-950 font-bold text-xs rounded-xl shadow hover:bg-emerald-300 transition shrink-0 disabled:opacity-50"
                       >
-                        Send
+                        {isSendingMsg ? 'Sending...' : 'Send'}
                       </button>
                     </form>
                   )}
@@ -4115,6 +4895,18 @@ export default function App() {
                       </button>
                       <button
                         type="button"
+                        onClick={() => {
+                          setSelectedProfileUser(null);
+                          setActiveChat(viewed.name);
+                          setActiveTab('messages');
+                          void startVideoCall(viewed.name);
+                        }}
+                        className="min-h-[38px] px-3.5 py-2 rounded-xl bg-cyan-400 hover:bg-cyan-300 text-slate-950 font-bold text-xs inline-flex items-center justify-center gap-1.5 shadow-sm transition"
+                      >
+                        <PhoneCall className="w-3.5 h-3.5" /> Video Call
+                      </button>
+                      <button
+                        type="button"
                         onClick={() => handleToggleBlockUser(viewed.name)}
                         className={`min-h-[38px] px-3.5 py-2 rounded-xl font-bold text-xs inline-flex items-center justify-center gap-1.5 transition ${
                           isViewedBlocked
@@ -4282,6 +5074,19 @@ export default function App() {
                 <div>
                   <PWAInstallButton fullWidth />
                 </div>
+
+                {isAdmin && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActiveTab('admin_approvals');
+                      setIsMenuDrawerOpen(false);
+                    }}
+                    className="w-full px-3.5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold inline-flex items-center justify-center gap-1.5 transition shadow-xs"
+                  >
+                    <Users className="w-4 h-4" /> User Accounts Management
+                  </button>
+                )}
               </div>
 
               {/* Appearance & Theme Controls */}

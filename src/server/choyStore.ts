@@ -43,6 +43,7 @@ export interface StoredMessage {
   text: string;
   mediaUrl?: string;
   mediaType: 'text' | 'image' | 'video' | 'audio' | 'file';
+  transcript?: string;
   reactions: string[];
   createdAt: string;
 }
@@ -186,8 +187,8 @@ export function sanitizeMediaUrl(url: unknown): string | undefined {
   if (!trimmed) return undefined;
   if (trimmed.startsWith('/assets/') && trimmed.length <= 500) return trimmed;
   if (
-    trimmed.length <= 1800000 &&
-    /^data:image\/(png|jpeg|jpg|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(trimmed)
+    trimmed.length <= 4000000 &&
+    /^data:image\/(png|jpeg|jpg|webp|gif|avif|heic);base64,[A-Za-z0-9+/=]+$/.test(trimmed)
   ) {
     return trimmed;
   }
@@ -337,9 +338,11 @@ export class ChoyStore {
         text TEXT NOT NULL DEFAULT '',
         media_url TEXT,
         media_type TEXT NOT NULL DEFAULT 'text',
+        transcript TEXT,
         reactions JSONB NOT NULL DEFAULT '[]'::jsonb,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
+      ALTER TABLE app_messages ADD COLUMN IF NOT EXISTS transcript TEXT;
       CREATE TABLE IF NOT EXISTS app_ledger (
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL,
@@ -799,6 +802,7 @@ export class ChoyStore {
         text: r.text || '',
         mediaUrl: r.media_url || undefined,
         mediaType: r.media_type,
+        transcript: r.transcript || undefined,
         reactions: Array.isArray(r.reactions) ? r.reactions : [],
         createdAt: new Date(r.created_at).toISOString(),
       }));
@@ -816,8 +820,8 @@ export class ChoyStore {
     };
     if (this.usePostgres && this.pool) {
       await this.pool.query(
-        `INSERT INTO app_messages (id, sender_id, sender_name, room_id, text, media_url, media_type, reactions)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)`,
+        `INSERT INTO app_messages (id, sender_id, sender_name, room_id, text, media_url, media_type, transcript, reactions)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)`,
         [
           item.id,
           item.senderId,
@@ -826,6 +830,7 @@ export class ChoyStore {
           item.text,
           item.mediaUrl || null,
           item.mediaType,
+          item.transcript || null,
           JSON.stringify(item.reactions),
         ]
       );

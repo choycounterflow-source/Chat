@@ -29,17 +29,47 @@ if (fs.existsSync('/etc/secrets/.env')) {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const store = new ChoyStore();
-const sseClients = new Set<Response>();
+interface SseClient {
+  res: Response;
+  userId: string;
+  userName: string;
+}
+
+const sseClients = new Set<SseClient>();
 
 function broadcastSync(topic: string) {
   const payload = `event: sync\ndata: ${JSON.stringify({ topic, ts: Date.now() })}\n\n`;
   for (const client of sseClients) {
     try {
-      client.write(payload);
+      client.res.write(payload);
     } catch {
       sseClients.delete(client);
     }
   }
+}
+
+function sendRtcSignal(
+  targetName: string,
+  senderUserId: string,
+  eventPayload: Record<string, unknown>
+): number {
+  const payload = `event: rtc\ndata: ${JSON.stringify(eventPayload)}\n\n`;
+  const normalizedTarget = targetName.trim().toLowerCase();
+  const isGroup = normalizedTarget === 'vip group' || normalizedTarget === '';
+  let delivered = 0;
+
+  for (const client of sseClients) {
+    if (client.userId === senderUserId) continue;
+    const isMatch = isGroup || client.userName.trim().toLowerCase() === normalizedTarget;
+    if (!isMatch) continue;
+    try {
+      client.res.write(payload);
+      delivered += 1;
+    } catch {
+      sseClients.delete(client);
+    }
+  }
+  return delivered;
 }
 
 const SESSION_COOKIE_NAME = 'choy_session';
@@ -122,7 +152,7 @@ function requireAdmin(req: AuthedRequest, res: Response, next: NextFunction) {
 
 const app = express();
 app.set('trust proxy', 1);
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: '15mb' }));
 
 // Health check endpoint for Render hosting
 app.get('/api/health', async (_req, res) => {
@@ -482,26 +512,65 @@ app.post('/api/auth/delete-account', requireAuth, handleSelfDeleteAccount);
 app.delete('/api/auth/account', requireAuth, handleSelfDeleteAccount);
 
 app.get('/api/choy/stream', requireAuth, (req: AuthedRequest, res: Response) => {
+  const user = req.choyUser!;
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('Connection', 'keep-alive');
   res.flushHeaders?.();
-  res.write(`event: connected\ndata: ${JSON.stringify({ ok: true })}\n\n`);
-  sseClients.add(res);
+  res.write(`event: connected\ndata: ${JSON.stringify({ ok: true, uid: user.id })}\n\n`);
+  const client: SseClient = { res, userId: user.id, userName: user.name };
+  sseClients.add(client);
 
   const keepAlive = setInterval(() => {
     try {
       res.write(': ping\n\n');
     } catch {
       clearInterval(keepAlive);
-      sseClients.delete(res);
+      sseClients.delete(client);
     }
   }, 25000);
 
   req.on('close', () => {
     clearInterval(keepAlive);
-    sseClients.delete(res);
+    sseClients.delete(client);
   });
+});
+
+// ---- REAL-TIME WEBRTC VIDEO CALL SIGNALING ----
+app.post('/api/choy/rtc/signal', requireAuth, async (req: AuthedRequest, res: Response) => {
+  try {
+    const user = req.choyUser!;
+    const type = typeof req.body?.type === 'string' ? req.body.type.trim() : '';
+    if (!['offer', 'answer', 'ice', 'hangup', 'decline'].includes(type)) {
+      return res.status(400).json({ error: 'Invalid signaling event type' });
+    }
+    const callId = typeof req.body?.callId === 'string' ? req.body.callId.trim().slice(0, 80) : '';
+    const roomId = typeof req.body?.roomId === 'string' ? req.body.roomId.trim().slice(0, 80) : 'VIP Group';
+    const targetName =
+      typeof req.body?.targetName === 'string' && req.body.targetName.trim()
+        ? req.body.targetName.trim().slice(0, 80)
+        : roomId;
+
+    if (!callId) {
+      return res.status(400).json({ error: 'callId is required' });
+    }
+
+    const delivered = sendRtcSignal(targetName, user.id, {
+      type,
+      callId,
+      roomId,
+      targetName,
+      fromUserId: user.id,
+      fromUserName: user.name,
+      sdp: req.body?.sdp ?? undefined,
+      candidate: req.body?.candidate ?? undefined,
+      ts: Date.now(),
+    });
+
+    return res.json({ ok: true, delivered });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Signaling failed' });
+  }
 });
 
 app.get('/api/choy/state', requireAuth, async (req: AuthedRequest, res: Response) => {
@@ -592,26 +661,43 @@ app.delete('/api/choy/posts/:id', requireAuth, async (req: AuthedRequest, res: R
 app.post('/api/choy/messages', requireAuth, async (req: AuthedRequest, res: Response) => {
   try {
     const user = req.choyUser!;
-    const roomId = typeof req.body?.roomId === 'string' ? req.body.roomId.trim() : '';
-    if (!(ALLOWED_CHAT_ROOMS as readonly string[]).includes(roomId)) {
+    const rawRoomId = typeof req.body?.roomId === 'string' ? req.body.roomId.trim() : '';
+    if (!rawRoomId || rawRoomId.length > 80 || /[\x00-\x1f\x7f]/.test(rawRoomId)) {
       return res.status(400).json({ error: 'Invalid chat room' });
     }
+
+    let resolvedRoomId = (ALLOWED_CHAT_ROOMS as readonly string[]).find(
+      (r) => r.toLowerCase() === rawRoomId.toLowerCase()
+    );
+    if (!resolvedRoomId) {
+      const allUsers = await store.listUsers(true);
+      const matchedUser = allUsers.find((u) => u.name.trim().toLowerCase() === rawRoomId.toLowerCase());
+      if (matchedUser) {
+        resolvedRoomId = matchedUser.name.trim();
+      }
+    }
+    if (!resolvedRoomId) {
+      return res.status(400).json({ error: 'Chat recipient not found' });
+    }
+
     const text = typeof req.body?.text === 'string' ? req.body.text.trim().slice(0, 2000) : '';
     const safeUrl = sanitizeMediaUrl(req.body?.mediaUrl);
     if (!text && !safeUrl) {
-      return res.status(400).json({ error: 'Message text or valid URL is required' });
+      return res.status(400).json({ error: 'Message text or valid media is required' });
     }
     const rawType = req.body?.mediaType;
     const mediaType: 'text' | 'image' | 'video' | 'audio' | 'file' =
       rawType === 'image' || rawType === 'video' || rawType === 'audio' || rawType === 'file' ? rawType : 'text';
+    const transcript = typeof req.body?.transcript === 'string' ? req.body.transcript.trim().slice(0, 2000) : undefined;
 
     const msg = await store.createMessage({
       senderId: user.id,
       senderName: user.name,
-      roomId,
+      roomId: resolvedRoomId,
       text,
       mediaUrl: safeUrl,
       mediaType: safeUrl ? mediaType : 'text',
+      transcript,
     });
     broadcastSync('messages');
     return res.status(201).json(msg);
