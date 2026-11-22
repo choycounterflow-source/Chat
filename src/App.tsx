@@ -43,6 +43,7 @@ import {
 import { PWAInstallButton } from './components/PWAInstallButton';
 import { OfflineIndicator } from './components/OfflineIndicator';
 import { SecurityStudio } from './components/SecurityStudio';
+import { ChatVideoPlayer } from './components/ChatVideoPlayer';
 
 interface UserAccount {
   id: string;
@@ -179,8 +180,16 @@ export default function App() {
   const [newPostType, setNewPostType] = useState<'text' | 'image' | 'video'>('image');
   const [newPostCategory, setNewPostCategory] = useState<'feed' | 'myday' | 'video'>('feed');
 
+  const chatRooms = ['VIP Group', 'Choy Admin', 'Maria Santos'];
+  const [activeChat, setActiveChat] = useState<string>('VIP Group');
+  const [galleryFilter, setGalleryFilter] = useState<'all' | 'image' | 'video' | 'audio'>('all');
+  const [galleryScope, setGalleryScope] = useState<'chat' | 'all'>('chat');
+  const [selectedGalleryVideo, setSelectedGalleryVideo] = useState<Message | null>(null);
   const [messages, setMessages] = useState<Message[]>([
-    { id: 'm1', sender: 'Admin', receiver: 'VIP Group', text: 'Welcome to group chat.', time: '10:00 AM', mediaType: 'text', reactions: ['❤️', '👍'] }
+    { id: 'm1', sender: 'Admin', receiver: 'VIP Group', text: 'Welcome to group chat.', time: '10:00 AM', mediaType: 'text', reactions: ['❤️', '👍'] },
+    { id: 'm1_vid', sender: 'Admin', receiver: 'VIP Group', text: 'Shared group video clip (tap Play with Sound).', mediaType: 'video', mediaUrl: 'https://www.w3schools.com/html/mov_bbb.mp4', time: '10:02 AM', reactions: ['🔥'] },
+    { id: 'm2', sender: 'Choy Admin', receiver: 'Choy Admin', text: 'Direct chat with Choy Admin is ready.', time: '10:05 AM', mediaType: 'text', reactions: ['👍'] },
+    { id: 'm3', sender: 'Maria Santos', receiver: 'Maria Santos', text: 'Hi! Kumusta na?', time: '10:12 AM', mediaType: 'text', reactions: ['❤️'] }
   ]);
   const [msgInput, setMsgInput] = useState('');
   const [msgMediaType, setMsgMediaType] = useState<'text' | 'image' | 'video' | 'audio' | 'file'>('text');
@@ -550,45 +559,167 @@ export default function App() {
       )}
 
       {/* SHARED MEDIA GALLERY MODAL */}
-      {isMediaGalleryOpen && (
-        <div className="fixed inset-0 z-50 bg-slate-950/90 flex flex-col items-center justify-center p-4">
-          <div className="bg-emerald-950 border border-emerald-500/50 rounded-3xl p-6 max-w-2xl w-full space-y-4 shadow-2xl max-h-[80vh] flex flex-col">
-            <div className="flex justify-between items-center border-b border-emerald-800 pb-3 shrink-0">
-              <h3 className="text-sm font-bold text-white uppercase flex items-center gap-2">
-                <ImageIcon className="w-4 h-4 text-emerald-400" /> Shared Media Gallery (VIP Group)
-              </h3>
-              <button onClick={() => setIsMediaGalleryOpen(false)} className="text-slate-400 hover:text-white">✕</button>
-            </div>
-
-            <div className="flex-1 overflow-y-auto grid grid-cols-2 sm:grid-cols-3 gap-3 p-1">
-              {messages.filter(m => m.mediaUrl).length === 0 ? (
-                <div className="col-span-full py-12 text-center text-emerald-400 text-xs">
-                  No shared media files in this chat yet.
-                </div>
-              ) : (
-                messages.filter(m => m.mediaUrl).map(m => (
-                  <div key={m.id} className="bg-emerald-900/60 border border-emerald-700/50 rounded-2xl p-2 space-y-2 flex flex-col items-center justify-center text-center">
-                    {m.mediaType === 'image' && <img src={m.mediaUrl} alt="" className="w-full h-28 object-cover rounded-xl" />}
-                    {m.mediaType === 'video' && <video src={m.mediaUrl} className="w-full h-28 object-cover rounded-xl bg-black" />}
-                    {m.mediaType === 'audio' && <audio src={m.mediaUrl} controls className="w-full h-8 my-auto" />}
-                    {m.mediaType === 'file' && <div className="text-amber-300 text-xs py-8">📎 Shared File</div>}
-                    <div className="text-[10px] text-emerald-300 truncate w-full">{m.sender} • {m.time}</div>
+      {isMediaGalleryOpen && (() => {
+        const scopedMedia = messages.filter(m =>
+          Boolean(m.mediaUrl) &&
+          !blockedUsers.includes(m.sender) &&
+          (galleryScope === 'all' || m.receiver === activeChat)
+        );
+        const counts = {
+          all: scopedMedia.length,
+          image: scopedMedia.filter(m => m.mediaType === 'image').length,
+          video: scopedMedia.filter(m => m.mediaType === 'video').length,
+          audio: scopedMedia.filter(m => m.mediaType === 'audio').length,
+        };
+        const filteredGallery = galleryFilter === 'all'
+          ? scopedMedia
+          : scopedMedia.filter(m => m.mediaType === galleryFilter);
+        return (
+          <div className="fixed inset-0 z-50 bg-slate-950/90 flex flex-col items-center justify-center p-4">
+            <div className="bg-emerald-950 border border-emerald-500/50 rounded-3xl p-5 max-w-2xl w-full space-y-4 shadow-2xl max-h-[88vh] flex flex-col">
+              <div className="flex flex-wrap justify-between items-center gap-2 border-b border-emerald-800 pb-3 shrink-0">
+                <h3 className="text-sm font-bold text-white uppercase flex items-center gap-2">
+                  {galleryFilter === 'video' ? (
+                    <Video className="w-4 h-4 text-emerald-400" />
+                  ) : (
+                    <ImageIcon className="w-4 h-4 text-emerald-400" />
+                  )}
+                  {galleryFilter === 'video' ? 'Shared Videos' : 'Media Gallery'} ({galleryScope === 'all' ? 'All Chats' : activeChat})
+                </h3>
+                <div className="flex items-center gap-2">
+                  <div className="flex rounded-lg bg-emerald-900/80 border border-emerald-700 p-0.5 text-[10px]">
+                    <button
+                      type="button"
+                      onClick={() => setGalleryScope('chat')}
+                      className={`px-2 py-1 rounded-md font-bold transition ${
+                        galleryScope === 'chat' ? 'bg-emerald-400 text-slate-950' : 'text-emerald-200'
+                      }`}
+                    >
+                      {activeChat}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setGalleryScope('all')}
+                      className={`px-2 py-1 rounded-md font-bold transition ${
+                        galleryScope === 'all' ? 'bg-emerald-400 text-slate-950' : 'text-emerald-200'
+                      }`}
+                    >
+                      All Chats
+                    </button>
                   </div>
-                ))
-              )}
-            </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedGalleryVideo(null);
+                      setIsMediaGalleryOpen(false);
+                    }}
+                    className="text-slate-300 hover:text-white px-2 py-1 font-bold"
+                  >
+                    ✕
+                  </button>
+                </div>
+              </div>
 
-            <div className="flex justify-end pt-2 border-t border-emerald-800 shrink-0">
-              <button
-                onClick={() => setIsMediaGalleryOpen(false)}
-                className="px-4 py-2 bg-emerald-400 text-slate-950 font-bold text-xs rounded-xl shadow"
-              >
-                Close Gallery
-              </button>
+              {/* Switchable Gallery Tabs */}
+              <div className="flex flex-wrap gap-2 shrink-0">
+                {(['all', 'video', 'image', 'audio'] as const).map((tab) => (
+                  <button
+                    key={tab}
+                    type="button"
+                    onClick={() => {
+                      setGalleryFilter(tab);
+                      setSelectedGalleryVideo(null);
+                    }}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-bold capitalize transition flex items-center gap-1.5 ${
+                      galleryFilter === tab
+                        ? 'bg-emerald-400 text-slate-950 shadow'
+                        : 'bg-emerald-900/70 text-emerald-200 border border-emerald-700 hover:bg-emerald-800'
+                    }`}
+                  >
+                    {tab === 'video' && <Video className="w-3.5 h-3.5" />}
+                    <span>
+                      {tab === 'all' ? `All (${counts.all})` : `${tab}s (${counts[tab]})`}
+                    </span>
+                  </button>
+                ))}
+              </div>
+
+              {/* Expanded Video Player with Sound Enabled */}
+              {selectedGalleryVideo && selectedGalleryVideo.mediaUrl && (
+                <div className="p-3 rounded-2xl bg-emerald-900/70 border border-emerald-500/50 space-y-2 shrink-0">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="font-bold text-white truncate">
+                      Playing Video from {selectedGalleryVideo.sender} ({selectedGalleryVideo.receiver})
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedGalleryVideo(null)}
+                      className="text-emerald-300 hover:text-white text-[11px] font-bold"
+                    >
+                      Close Player
+                    </button>
+                  </div>
+                  <ChatVideoPlayer
+                    src={selectedGalleryVideo.mediaUrl}
+                    title={selectedGalleryVideo.text || 'Shared Chat Video'}
+                    subtitle={`${selectedGalleryVideo.sender} • ${selectedGalleryVideo.time}`}
+                    autoPlayWithSound
+                  />
+                </div>
+              )}
+
+              <div className={`flex-1 overflow-y-auto grid gap-3 p-1 ${galleryFilter === 'video' ? 'grid-cols-1 sm:grid-cols-2' : 'grid-cols-2 sm:grid-cols-3'}`}>
+                {filteredGallery.length === 0 ? (
+                  <div className="col-span-full py-12 text-center text-emerald-400 text-xs">
+                    No shared {galleryFilter === 'all' ? 'media' : galleryFilter} files in {galleryScope === 'all' ? 'any chat' : activeChat} yet.
+                  </div>
+                ) : (
+                  filteredGallery.map(m => (
+                    <div key={m.id} className="bg-emerald-900/60 border border-emerald-700/50 rounded-2xl p-2.5 space-y-2 flex flex-col justify-between">
+                      {m.mediaType === 'image' && <img src={m.mediaUrl} alt="" className="w-full h-28 object-cover rounded-xl" />}
+                      {m.mediaType === 'video' && m.mediaUrl && (
+                        <div className="space-y-1.5">
+                          <ChatVideoPlayer
+                            src={m.mediaUrl}
+                            title={m.text || 'Shared Video'}
+                            subtitle={`${m.receiver} • ${m.time}`}
+                            compact
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setSelectedGalleryVideo(m)}
+                            className="w-full py-1.5 rounded-lg bg-emerald-400/20 border border-emerald-400/50 text-emerald-200 hover:bg-emerald-400 hover:text-slate-950 font-bold text-[11px] transition"
+                          >
+                            Expand Video with Sound
+                          </button>
+                        </div>
+                      )}
+                      {m.mediaType === 'audio' && <audio src={m.mediaUrl} controls className="w-full h-8 my-auto" />}
+                      {m.mediaType === 'file' && <div className="text-amber-300 text-xs py-8 text-center">📎 Shared File</div>}
+                      {m.mediaType !== 'video' && (
+                        <div className="text-[10px] text-emerald-300 truncate w-full text-center">{m.sender} • {m.time}</div>
+                      )}
+                    </div>
+                  ))
+                )}
+              </div>
+
+              <div className="flex justify-end pt-2 border-t border-emerald-800 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedGalleryVideo(null);
+                    setIsMediaGalleryOpen(false);
+                  }}
+                  className="px-4 py-2 bg-emerald-400 text-slate-950 font-bold text-xs rounded-xl shadow"
+                >
+                  Close Gallery
+                </button>
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* SIDEBAR */}
       <aside className="w-full md:w-60 bg-emerald-900/90 border-r border-emerald-800 p-3 flex flex-row md:flex-col justify-between shrink-0 overflow-x-auto md:overflow-y-auto">
@@ -823,14 +954,50 @@ export default function App() {
           )}
 
           {/* VIDEOS TAB */}
-          {activeTab === 'videos' && (
-            <div className="max-w-xl mx-auto space-y-3">
-              <div className="bg-emerald-900/60 border border-emerald-700/50 rounded-2xl p-4 space-y-2">
-                <div className="text-xs font-bold text-white">Video Streams & Entertainment</div>
-                <video controls preload="auto" className="w-full rounded-xl bg-black max-h-72 object-cover" src="https://www.w3schools.com/html/mov_bbb.mp4" />
+          {activeTab === 'videos' && (() => {
+            const sharedChatVideos = messages.filter(
+              m => m.mediaType === 'video' && Boolean(m.mediaUrl) && !blockedUsers.includes(m.sender)
+            );
+            return (
+              <div className="max-w-2xl mx-auto space-y-4">
+                <div className="bg-emerald-900/60 border border-emerald-700/50 rounded-2xl p-4 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div className="text-xs font-bold text-white flex items-center gap-2">
+                      <Video className="w-4 h-4 text-emerald-400" /> Shared Chat Videos ({sharedChatVideos.length})
+                    </div>
+                    <span className="text-[10px] text-emerald-300">Sound Enabled</span>
+                  </div>
+                  {sharedChatVideos.length === 0 ? (
+                    <div className="py-6 text-center text-xs text-emerald-300">
+                      No shared videos from chats yet. Upload a video in Messages to see it here.
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      {sharedChatVideos.map((vid) => (
+                        <div key={vid.id} className="p-2.5 rounded-xl bg-emerald-950 border border-emerald-800">
+                          <ChatVideoPlayer
+                            src={vid.mediaUrl!}
+                            title={vid.text || `Video from ${vid.sender}`}
+                            subtitle={`${vid.receiver} • ${vid.time}`}
+                            compact
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                <div className="bg-emerald-900/60 border border-emerald-700/50 rounded-2xl p-4 space-y-2">
+                  <div className="text-xs font-bold text-white">Video Streams & Entertainment</div>
+                  <ChatVideoPlayer
+                    src="https://www.w3schools.com/html/mov_bbb.mp4"
+                    title="Featured Stream"
+                    subtitle="HD Audio"
+                  />
+                </div>
               </div>
-            </div>
-          )}
+            );
+          })()}
 
           {/* PROFILE */}
           {activeTab === 'profile' && (
@@ -850,75 +1017,120 @@ export default function App() {
 
           {/* MESSAGES WITH REACTION BUTTONS */}
           {activeTab === 'messages' && (
-            <div className="max-w-4xl mx-auto grid grid-cols-1 md:grid-cols-3 gap-4 h-[500px]">
+            <div className="max-w-4xl mx-auto grid grid-cols-1 md:grid-cols-3 gap-4 md:h-[540px]">
               <div className="bg-emerald-900/60 border border-emerald-700/50 rounded-2xl p-3 flex flex-col space-y-2">
                 <div className="text-xs font-bold text-emerald-300 uppercase mb-1">Chats</div>
-                <div className="p-2.5 rounded-xl text-xs bg-emerald-400 text-slate-950 font-bold flex items-center justify-between">
-                  <span>VIP Group</span>
-                  <span className="w-2.5 h-2.5 bg-slate-950 rounded-full" title="Active"></span>
-                </div>
-                <div className="p-2 rounded-xl text-xs bg-emerald-950 text-emerald-200 flex items-center justify-between">
-                  <span>Choy Admin</span>
-                  <span className="w-2.5 h-2.5 bg-emerald-400 rounded-full" title="Online"></span>
-                </div>
-                <div className="p-2 rounded-xl text-xs bg-emerald-950 text-emerald-200 flex items-center justify-between">
-                  <span>Maria Santos</span>
-                  <span className="w-2.5 h-2.5 bg-emerald-400 rounded-full" title="Online"></span>
+                <div className="flex md:flex-col gap-2 overflow-x-auto md:overflow-visible pb-1 md:pb-0">
+                  {chatRooms.map((room) => {
+                    const isActive = activeChat === room;
+                    return (
+                      <button
+                        key={room}
+                        type="button"
+                        onClick={() => setActiveChat(room)}
+                        className={`px-3 py-2.5 rounded-xl text-xs flex items-center justify-between gap-2 transition whitespace-nowrap shrink-0 md:w-full text-left ${
+                          isActive
+                            ? 'bg-emerald-400 text-slate-950 font-bold shadow'
+                            : 'bg-emerald-950 text-emerald-200 hover:bg-emerald-800'
+                        }`}
+                      >
+                        <span>{room}</span>
+                        <span
+                          className={`w-2.5 h-2.5 rounded-full shrink-0 ${isActive ? 'bg-slate-950' : 'bg-emerald-400'}`}
+                          title={isActive ? 'Active' : 'Online'}
+                        ></span>
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
 
-              <div className="md:col-span-2 bg-emerald-900/60 border border-emerald-700/50 rounded-2xl flex flex-col overflow-hidden">
-                <div className="p-3 border-b border-emerald-800 flex items-center justify-between text-xs font-bold text-white gap-2">
-                  <span>VIP Group</span>
-                  <div className="relative flex-1 max-w-[200px]">
-                    <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 text-emerald-300" />
+              <div className="md:col-span-2 bg-emerald-900/60 border border-emerald-700/50 rounded-2xl flex flex-col overflow-hidden min-h-[380px]">
+                {/* Responsive Chat Header (No horizontal clipping on mobile!) */}
+                <div className="p-3 border-b border-emerald-800 space-y-2 text-xs font-bold text-white">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-sm font-black text-white truncate">{activeChat}</span>
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const targetUser = activeChat === 'VIP Group' ? 'Admin' : activeChat;
+                          const isBlocked = blockedUsers.includes(targetUser);
+                          if (isBlocked) {
+                            setBlockedUsers(blockedUsers.filter(n => n !== targetUser));
+                          } else {
+                            setBlockedUsers([...blockedUsers, targetUser]);
+                          }
+                        }}
+                        className={`px-2.5 py-1.5 rounded-lg text-[11px] font-bold shrink-0 ${
+                          blockedUsers.includes(activeChat === 'VIP Group' ? 'Admin' : activeChat)
+                            ? 'bg-red-500 text-white'
+                            : 'bg-red-950 text-red-300 border border-red-700'
+                        }`}
+                        title="Block / Unblock User"
+                      >
+                        {blockedUsers.includes(activeChat === 'VIP Group' ? 'Admin' : activeChat) ? 'Unblock' : 'Block'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setGalleryScope('chat');
+                          setGalleryFilter('video');
+                          setSelectedGalleryVideo(null);
+                          setIsMediaGalleryOpen(true);
+                        }}
+                        className="px-2.5 py-1.5 bg-cyan-500/20 border border-cyan-400/50 text-cyan-200 rounded-lg flex items-center gap-1 shadow shrink-0 hover:bg-cyan-400 hover:text-slate-950 text-[11px] transition"
+                        title="Shared Chat Videos (with Sound)"
+                      >
+                        <Video className="w-3.5 h-3.5" /> Videos
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setGalleryScope('chat');
+                          setGalleryFilter('all');
+                          setSelectedGalleryVideo(null);
+                          setIsMediaGalleryOpen(true);
+                        }}
+                        className="px-2.5 py-1.5 bg-emerald-900 border border-emerald-700 text-emerald-200 rounded-lg flex items-center gap-1 shadow shrink-0 hover:text-white text-[11px]"
+                        title="Shared Media Gallery"
+                      >
+                        <ImageIcon className="w-3.5 h-3.5" /> Gallery
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setIsInVideoCall(true)}
+                        className="px-2.5 py-1.5 bg-emerald-400 text-slate-950 rounded-lg flex items-center gap-1 shadow shrink-0 text-[11px]"
+                      >
+                        <PhoneCall className="w-3.5 h-3.5" /> Call
+                      </button>
+                    </div>
+                  </div>
+                  <div className="relative w-full">
+                    <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-emerald-300" />
                     <input
                       type="text"
-                      placeholder="Search messages..."
+                      placeholder={`Search messages in ${activeChat}...`}
                       value={msgSearchQuery}
                       onChange={(e) => setMsgSearchQuery(e.target.value)}
-                      className="w-full pl-7 pr-2 py-1 bg-emerald-950 border border-emerald-700 rounded-lg text-[11px] text-white placeholder-emerald-400 focus:outline-none"
+                      className="w-full pl-8 pr-3 py-1.5 bg-emerald-950 border border-emerald-700 rounded-lg text-[11px] font-normal text-white placeholder-emerald-400 focus:outline-none"
                     />
                   </div>
-                  <button
-                    onClick={() => {
-                      const targetUser = 'Admin';
-                      const isBlocked = blockedUsers.includes(targetUser);
-                      if (isBlocked) {
-                        setBlockedUsers(blockedUsers.filter(n => n !== targetUser));
-                      } else {
-                        setBlockedUsers([...blockedUsers, targetUser]);
-                      }
-                    }}
-                    className={`px-3 py-1 rounded-lg text-[11px] font-bold shrink-0 ${blockedUsers.includes('Admin') ? 'bg-red-500 text-white' : 'bg-red-950 text-red-300 border border-red-700'}`}
-                    title="Block / Unblock User"
-                  >
-                    {blockedUsers.includes('Admin') ? 'Unblock' : 'Block'}
-                  </button>
-                  <button
-                    onClick={() => setIsMediaGalleryOpen(true)}
-                    className="px-3 py-1 bg-emerald-900 border border-emerald-700 text-emerald-200 rounded-lg flex items-center gap-1.5 shadow shrink-0 hover:text-white"
-                    title="Shared Media Gallery"
-                  >
-                    <ImageIcon className="w-3.5 h-3.5" /> Media Gallery
-                  </button>
-                  <button
-                    onClick={() => setIsInVideoCall(true)}
-                    className="px-3 py-1 bg-emerald-400 text-slate-950 rounded-lg flex items-center gap-1.5 shadow shrink-0"
-                  >
-                    <PhoneCall className="w-3.5 h-3.5" /> Video Call
-                  </button>
                 </div>
                 
-                <div className="flex-1 overflow-y-auto p-3 space-y-3">
+                <div className="flex-1 overflow-y-auto p-3 space-y-3 min-h-[220px] max-h-[45vh] md:max-h-none">
                   {messages
+                    .filter(m => m.receiver === activeChat)
                     .filter(m => !blockedUsers.includes(m.sender))
                     .filter(m => (m.text || '').toLowerCase().includes(msgSearchQuery.toLowerCase()))
                     .map(m => (
                     <div key={m.id} className={`flex flex-col ${m.isMe ? 'items-end' : 'items-start'}`}>
-                      <div className={`p-3 rounded-2xl text-xs bg-emerald-950 text-slate-100 space-y-2 max-w-[80%]`}>
+                      <div className="text-[10px] text-emerald-300 px-1 mb-0.5">{m.sender} • {m.time}</div>
+                      <div className={`p-3 rounded-2xl text-xs bg-emerald-950 text-slate-100 space-y-2 max-w-[85%]`}>
                         {m.mediaType === 'image' && m.mediaUrl && <img src={m.mediaUrl} alt="" className="max-h-40 rounded" />}
-                        {m.mediaType === 'video' && m.mediaUrl && <video src={m.mediaUrl} controls className="max-h-48 w-full rounded" />}
+                        {m.mediaType === 'video' && m.mediaUrl && (
+                          <ChatVideoPlayer src={m.mediaUrl} compact />
+                        )}
                         {m.mediaType === 'audio' && m.mediaUrl && <audio src={m.mediaUrl} controls className="w-full h-8" />}
                         {m.mediaType === 'file' && <div className="text-amber-300 text-[10px]">📎 File Attachment</div>}
                         {m.text && <div>{m.text}</div>}
@@ -937,10 +1149,10 @@ export default function App() {
 
                       {/* Reaction Buttons Toolbar */}
                       <div className="flex items-center gap-1 mt-1 px-1">
-                        <button onClick={() => addReactionToMessage(m.id, '❤️')} className="text-[11px] px-1.5 py-0.5 rounded bg-emerald-950 hover:bg-emerald-800 text-slate-300" title="Heart">❤️</button>
-                        <button onClick={() => addReactionToMessage(m.id, '👍')} className="text-[11px] px-1.5 py-0.5 rounded bg-emerald-950 hover:bg-emerald-800 text-slate-300" title="Thumbs Up">👍</button>
-                        <button onClick={() => addReactionToMessage(m.id, '🔥')} className="text-[11px] px-1.5 py-0.5 rounded bg-emerald-950 hover:bg-emerald-800 text-slate-300" title="Fire">🔥</button>
-                        <button onClick={() => addReactionToMessage(m.id, '😄')} className="text-[11px] px-1.5 py-0.5 rounded bg-emerald-950 hover:bg-emerald-800 text-slate-300" title="Smile">😄</button>
+                        <button type="button" onClick={() => addReactionToMessage(m.id, '❤️')} className="text-[11px] px-1.5 py-0.5 rounded bg-emerald-950 hover:bg-emerald-800 text-slate-300" title="Heart">❤️</button>
+                        <button type="button" onClick={() => addReactionToMessage(m.id, '👍')} className="text-[11px] px-1.5 py-0.5 rounded bg-emerald-950 hover:bg-emerald-800 text-slate-300" title="Thumbs Up">👍</button>
+                        <button type="button" onClick={() => addReactionToMessage(m.id, '🔥')} className="text-[11px] px-1.5 py-0.5 rounded bg-emerald-950 hover:bg-emerald-800 text-slate-300" title="Fire">🔥</button>
+                        <button type="button" onClick={() => addReactionToMessage(m.id, '😄')} className="text-[11px] px-1.5 py-0.5 rounded bg-emerald-950 hover:bg-emerald-800 text-slate-300" title="Smile">😄</button>
                       </div>
                     </div>
                   ))}
@@ -1001,7 +1213,7 @@ export default function App() {
                     const newM: Message = {
                       id: 'm_' + Date.now(),
                       sender: profile.name,
-                      receiver: 'VIP Group',
+                      receiver: activeChat,
                       text: msgInput,
                       mediaType: msgMediaType,
                       mediaUrl: msgMediaUrl || undefined,
@@ -1017,19 +1229,19 @@ export default function App() {
                     <button
                       type="button"
                       onClick={() => msgFileInputRef.current?.click()}
-                      className="p-2.5 rounded-xl bg-emerald-900 border border-emerald-700 text-emerald-300 hover:text-white hover:bg-emerald-800 transition"
+                      className="p-2.5 rounded-xl bg-emerald-900 border border-emerald-700 text-emerald-300 hover:text-white hover:bg-emerald-800 transition shrink-0"
                       title="Add picture, video, audio or file"
                     >
                       <Plus className="w-4 h-4" />
                     </button>
                     <input
                       type="text"
-                      placeholder="Type a message..."
+                      placeholder={`Message ${activeChat}...`}
                       value={msgInput}
                       onChange={(e) => setMsgInput(e.target.value)}
-                      className="flex-1 p-2.5 bg-emerald-900 border border-emerald-700 rounded-xl text-xs text-white placeholder-emerald-400 focus:outline-none"
+                      className="flex-1 min-w-0 p-2.5 bg-emerald-900 border border-emerald-700 rounded-xl text-xs text-white placeholder-emerald-400 focus:outline-none"
                     />
-                    <button type="submit" className="px-4 py-2.5 bg-emerald-400 text-slate-950 font-bold text-xs rounded-xl shadow hover:bg-emerald-300 transition">
+                    <button type="submit" className="px-4 py-2.5 bg-emerald-400 text-slate-950 font-bold text-xs rounded-xl shadow hover:bg-emerald-300 transition shrink-0">
                       Send
                     </button>
                   </form>
@@ -1505,11 +1717,12 @@ export default function App() {
       </div>
 
       {/* FLOATING CHOY AI POPUP WIDGET */}
-      <div className="fixed bottom-6 right-6 z-40">
+      <div className="fixed bottom-24 right-4 md:bottom-6 md:right-6 z-40">
         {!isChoyAIPopupOpen && (
           <button
+            type="button"
             onClick={() => setIsChoyAIPopupOpen(true)}
-            className="w-14 h-14 bg-emerald-950 border-2 border-cyan-400 rounded-full shadow-2xl flex items-center justify-center font-bold hover:scale-105 overflow-hidden transition"
+            className="w-12 h-12 md:w-14 md:h-14 bg-emerald-950 border-2 border-cyan-400 rounded-full shadow-2xl flex items-center justify-center font-bold hover:scale-105 overflow-hidden transition"
             title="Ask Choy AI"
           >
             <img src="/assets/aistudio/image_20261121_145253_f477cbfa.webp" alt="" className="w-full h-full object-cover" />

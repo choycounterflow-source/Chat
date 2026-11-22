@@ -3,7 +3,7 @@ WORKDIR /app
 
 # Install dependencies (including devDependencies for Vite + PWA build)
 COPY package.json package-lock.json* .npmrc ./
-RUN npm install --include=dev --legacy-peer-deps --no-audit --no-fund
+RUN npm install --include=dev --legacy-peer-deps --no-audit --no-fund --loglevel=error
 
 # Copy app source and build production bundle (dist/ + PWA manifest & SW)
 COPY . .

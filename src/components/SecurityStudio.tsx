@@ -51,7 +51,7 @@ interface SecurityStudioProps {
 const DEFAULT_LINKS = {
   aiStudioChat: 'https://aistudio.google.com/apps',
   renderDashboard: 'https://dashboard.render.com',
-  renderLiveApp: 'https://choy-chat.onrender.com',
+  renderLiveApp: 'https://chat-1-5b9f.onrender.com',
   renderNewDeploy: 'https://dashboard.render.com/select-repo?type=web',
   googleOneStorage: 'https://one.google.com/storage',
 };
@@ -64,10 +64,12 @@ const STORAGE_KEYS = {
 };
 
 interface MainKeysConfig {
+  APP_URL: string;
   GEMINI_API_KEY: string;
   SUPABASE_URL: string;
   SUPABASE_ANON_KEY: string;
   SUPABASE_SERVICE_ROLE_KEY: string;
+  SUPABASE_BUCKET: string;
 }
 
 const AUTO_DOCKER_DEFAULTS = [
@@ -101,20 +103,23 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
   const [editingLinks, setEditingLinks] = useState(false);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
 
-  // 2. Simple Unified Keys (Only the 4 keys user might ever paste + optional custom keys)
+  // 2. Simple Unified Keys (Exact checklist of variables to fill up)
   const [mainKeys, setMainKeys] = useState<MainKeysConfig>(() => {
-    try {
-      const saved = localStorage.getItem(STORAGE_KEYS.mainKeys);
-      if (saved) return JSON.parse(saved);
-    } catch {
-      // ignore
-    }
-    return {
+    const defaults: MainKeysConfig = {
+      APP_URL: 'https://chat-1-5b9f.onrender.com',
       GEMINI_API_KEY: '',
       SUPABASE_URL: '',
       SUPABASE_ANON_KEY: '',
       SUPABASE_SERVICE_ROLE_KEY: '',
+      SUPABASE_BUCKET: 'choychat-media',
     };
+    try {
+      const saved = localStorage.getItem(STORAGE_KEYS.mainKeys);
+      if (saved) return { ...defaults, ...JSON.parse(saved) };
+    } catch {
+      // ignore
+    }
+    return defaults;
   });
   const [revealedFields, setRevealedFields] = useState<Record<string, boolean>>({});
   const [customPairs, setCustomPairs] = useState<KeyValueItem[]>(() => {
@@ -311,8 +316,15 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
     getLink?: { label: string; url: string };
   }[] = [
     {
+      id: 'APP_URL',
+      label: 'Live App URL',
+      hint: 'Naka-fill up na (imong Render link)',
+      secret: false,
+      placeholder: 'https://chat-1-5b9f.onrender.com',
+    },
+    {
       id: 'GEMINI_API_KEY',
-      label: 'Gemini API Key (Optional)',
+      label: 'Gemini API Key',
       hint: 'Para sa AI features — pindota ang "Get Key" para makuha libre sa AI Studio',
       secret: true,
       placeholder: 'AIza...',
@@ -320,7 +332,7 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
     },
     {
       id: 'SUPABASE_URL',
-      label: 'Supabase Project URL (Optional)',
+      label: 'Supabase Project URL',
       hint: 'Kuhaa sa Supabase -> Project Settings -> API',
       secret: false,
       placeholder: 'https://xxxx.supabase.co',
@@ -328,17 +340,24 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
     },
     {
       id: 'SUPABASE_ANON_KEY',
-      label: 'Supabase Anon Key (Optional)',
+      label: 'Supabase Anon Key',
       hint: 'Public anon key gikan sa Supabase -> API',
       secret: true,
       placeholder: 'eyJ...',
     },
     {
       id: 'SUPABASE_SERVICE_ROLE_KEY',
-      label: 'Supabase Secret Key (Optional)',
+      label: 'Supabase Secret Key',
       hint: 'Service role / secret key (Admin only)',
       secret: true,
       placeholder: 'sbp_... / eyJ...',
+    },
+    {
+      id: 'SUPABASE_BUCKET',
+      label: 'Supabase Storage Bucket',
+      hint: 'Naka-fill up na (bucket name para sa images/videos)',
+      secret: false,
+      placeholder: 'choychat-media',
     },
   ];
 
@@ -523,14 +542,17 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
             return (
               <div key={field.id} className="p-3 bg-emerald-950 border border-emerald-800 rounded-xl space-y-1.5">
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="px-2 py-0.5 rounded bg-indigo-500/25 text-indigo-200 font-mono font-bold text-[10px]">
+                      {field.id}
+                    </span>
                     <span className="font-bold text-white">{field.label}</span>
                     <span
                       className={`px-1.5 py-0.5 rounded text-[9px] font-bold uppercase ${
-                        hasVal ? 'bg-emerald-500/20 text-emerald-300' : 'bg-slate-800 text-slate-300'
+                        hasVal ? 'bg-emerald-500/20 text-emerald-300' : 'bg-amber-500/20 text-amber-300'
                       }`}
                     >
-                      {hasVal ? 'Set' : 'Optional'}
+                      {hasVal ? 'Ready' : 'To Fill'}
                     </span>
                   </div>
                   {field.getLink && (
