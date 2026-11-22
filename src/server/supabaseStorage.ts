@@ -1,7 +1,7 @@
 import crypto from 'crypto';
 
 export type MediaCategory = 'image' | 'video' | 'audio';
-export type UploadFolder = 'posts' | 'messages' | 'voice';
+export type UploadFolder = 'posts' | 'messages' | 'voice' | 'avatars';
 
 export interface SupabaseStorageStatus {
   configured: boolean;
@@ -44,7 +44,7 @@ const ALLOWED_MIME_MAP: Record<string, MimeSpec> = {
   'audio/x-m4a': { ext: '.m4a', category: 'audio', maxBytes: 15 * 1024 * 1024 },
 };
 
-const ALLOWED_FOLDERS = new Set<UploadFolder>(['posts', 'messages', 'voice']);
+const ALLOWED_FOLDERS = new Set<UploadFolder>(['posts', 'messages', 'voice', 'avatars']);
 
 let ensuredBucketKey = '';
 

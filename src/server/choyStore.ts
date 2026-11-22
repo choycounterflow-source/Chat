@@ -9,6 +9,7 @@ export interface StoredUser {
   role: 'admin' | 'member';
   status: 'pending' | 'approved';
   blockedUsers: string[];
+  avatar?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -19,6 +20,7 @@ export interface PublicUserDTO {
   phone: string;
   role: 'admin' | 'member';
   status: 'pending' | 'approved';
+  avatar?: string;
   loginDate: string;
 }
 
@@ -79,6 +81,22 @@ export interface StoredPricesSettings {
   defPoint5: number;
   defHalfSack: number;
   defOneSack: number;
+}
+
+export interface StoredPushSubscription {
+  endpoint: string;
+  userId: string;
+  userName: string;
+  keys: {
+    p256dh: string;
+    auth: string;
+  };
+  updatedAt: string;
+}
+
+export interface VapidKeyPair {
+  publicKey: string;
+  privateKey: string;
 }
 
 export interface SessionPayload {
@@ -246,6 +264,8 @@ export class ChoyStore {
   private memLedger: StoredLedgerRow[] = [];
   private memKnowledge: StoredKnowledgeQA[] = [];
   private memSettings: StoredPricesSettings = { ...DEFAULT_SETTINGS };
+  private memPushSubs: StoredPushSubscription[] = [];
+  private memVapidKeys: VapidKeyPair | null = null;
   private memSeeded = false;
 
   constructor() {
@@ -315,9 +335,11 @@ export class ChoyStore {
         role TEXT NOT NULL DEFAULT 'member',
         status TEXT NOT NULL DEFAULT 'approved',
         blocked_users JSONB NOT NULL DEFAULT '[]'::jsonb,
+        avatar_url TEXT,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
+      ALTER TABLE app_users ADD COLUMN IF NOT EXISTS avatar_url TEXT;
       CREATE TABLE IF NOT EXISTS app_posts (
         id TEXT PRIMARY KEY,
         author_id TEXT NOT NULL,
@@ -366,6 +388,15 @@ export class ChoyStore {
         data JSONB NOT NULL,
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
+      CREATE TABLE IF NOT EXISTS app_push_subscriptions (
+        endpoint TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        user_name TEXT NOT NULL,
+        p256dh TEXT NOT NULL,
+        auth TEXT NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_push_subs_user_name ON app_push_subscriptions (LOWER(user_name));
     `);
   }
 
@@ -645,8 +676,36 @@ export class ChoyStore {
       phone: includePhone ? u.phone : 'Member',
       role: u.role,
       status: u.status,
+      avatar: u.avatar,
       loginDate: u.updatedAt.slice(0, 16).replace('T', ' '),
     }));
+  }
+
+  public async updateUserAvatar(userId: string, avatarUrl?: string): Promise<StoredUser | null> {
+    await this.ready();
+    const cleanAvatar = typeof avatarUrl === 'string' && avatarUrl.trim() ? avatarUrl.trim() : undefined;
+    const postAvatar = cleanAvatar || '/assets/aistudio/image_20261121_145253_f477cbfa.webp';
+
+    if (this.usePostgres && this.pool) {
+      const res = await this.pool.query(
+        'UPDATE app_users SET avatar_url = $1, updated_at = NOW() WHERE id = $2 RETURNING *',
+        [cleanAvatar ?? null, userId]
+      );
+      if (res.rows.length === 0) return null;
+      await this.pool.query('UPDATE app_posts SET author_avatar = $1 WHERE author_id = $2', [postAvatar, userId]);
+      return this.mapUserRow(res.rows[0]);
+    }
+
+    const found = this.memUsers.find((u) => u.id === userId);
+    if (!found) return null;
+    found.avatar = cleanAvatar;
+    found.updatedAt = new Date().toISOString();
+    for (const p of this.memPosts) {
+      if (p.authorId === userId) {
+        p.authorAvatar = postAvatar;
+      }
+    }
+    return found;
   }
 
   public async updateUserStatus(userId: string, status: 'pending' | 'approved'): Promise<boolean> {
@@ -1093,7 +1152,136 @@ export class ChoyStore {
     return clean;
   }
 
+  // ---- WEB PUSH VAPID KEYS & SUBSCRIPTIONS ----
+  public async getOrCreateVapidKeys(generator: () => VapidKeyPair): Promise<VapidKeyPair> {
+    await this.ready();
+    const envPub = (process.env.VAPID_PUBLIC_KEY || '').trim();
+    const envPriv = (process.env.VAPID_PRIVATE_KEY || '').trim();
+    if (envPub && envPriv) {
+      return { publicKey: envPub, privateKey: envPriv };
+    }
+
+    if (this.usePostgres && this.pool) {
+      const existing = await this.pool.query('SELECT data FROM app_settings WHERE id = $1 LIMIT 1', ['vapid_keys']);
+      if (existing.rowCount && existing.rows[0]?.data?.publicKey && existing.rows[0]?.data?.privateKey) {
+        return {
+          publicKey: String(existing.rows[0].data.publicKey),
+          privateKey: String(existing.rows[0].data.privateKey),
+        };
+      }
+      const generated = generator();
+      await this.pool.query(
+        `INSERT INTO app_settings (id, data, updated_at)
+         VALUES ($1, $2::jsonb, NOW())
+         ON CONFLICT (id) DO NOTHING`,
+        ['vapid_keys', JSON.stringify(generated)]
+      );
+      const reread = await this.pool.query('SELECT data FROM app_settings WHERE id = $1 LIMIT 1', ['vapid_keys']);
+      if (reread.rowCount && reread.rows[0]?.data?.publicKey && reread.rows[0]?.data?.privateKey) {
+        return {
+          publicKey: String(reread.rows[0].data.publicKey),
+          privateKey: String(reread.rows[0].data.privateKey),
+        };
+      }
+      return generated;
+    }
+
+    if (!this.memVapidKeys) {
+      this.memVapidKeys = generator();
+    }
+    return this.memVapidKeys;
+  }
+
+  public async savePushSubscription(sub: {
+    endpoint: string;
+    userId: string;
+    userName: string;
+    keys: { p256dh: string; auth: string };
+  }): Promise<StoredPushSubscription> {
+    await this.ready();
+    const now = new Date().toISOString();
+    const clean: StoredPushSubscription = {
+      endpoint: sub.endpoint.trim(),
+      userId: sub.userId,
+      userName: sub.userName.trim(),
+      keys: {
+        p256dh: sub.keys.p256dh.trim(),
+        auth: sub.keys.auth.trim(),
+      },
+      updatedAt: now,
+    };
+
+    if (this.usePostgres && this.pool) {
+      await this.pool.query(
+        `INSERT INTO app_push_subscriptions (endpoint, user_id, user_name, p256dh, auth, updated_at)
+         VALUES ($1, $2, $3, $4, $5, NOW())
+         ON CONFLICT (endpoint) DO UPDATE
+           SET user_id = EXCLUDED.user_id,
+               user_name = EXCLUDED.user_name,
+               p256dh = EXCLUDED.p256dh,
+               auth = EXCLUDED.auth,
+               updated_at = NOW()`,
+        [clean.endpoint, clean.userId, clean.userName, clean.keys.p256dh, clean.keys.auth]
+      );
+      return clean;
+    }
+
+    this.memPushSubs = this.memPushSubs.filter((s) => s.endpoint !== clean.endpoint);
+    this.memPushSubs.push(clean);
+    return clean;
+  }
+
+  public async removePushSubscription(endpoint: string): Promise<void> {
+    await this.ready();
+    const cleanEndpoint = endpoint.trim();
+    if (!cleanEndpoint) return;
+    if (this.usePostgres && this.pool) {
+      await this.pool.query('DELETE FROM app_push_subscriptions WHERE endpoint = $1', [cleanEndpoint]);
+      return;
+    }
+    this.memPushSubs = this.memPushSubs.filter((s) => s.endpoint !== cleanEndpoint);
+  }
+
+  public async listPushSubscriptionsForTarget(
+    targetName: string,
+    excludeUserId: string
+  ): Promise<StoredPushSubscription[]> {
+    await this.ready();
+    const normalized = targetName.trim().toLowerCase();
+    const isGroup = normalized === 'vip group' || normalized === '';
+
+    if (this.usePostgres && this.pool) {
+      const res = isGroup
+        ? await this.pool.query(
+            `SELECT endpoint, user_id, user_name, p256dh, auth, updated_at
+             FROM app_push_subscriptions
+             WHERE user_id <> $1`,
+            [excludeUserId]
+          )
+        : await this.pool.query(
+            `SELECT endpoint, user_id, user_name, p256dh, auth, updated_at
+             FROM app_push_subscriptions
+             WHERE user_id <> $1 AND LOWER(TRIM(user_name)) = $2`,
+            [excludeUserId, normalized]
+          );
+      return res.rows.map((r) => ({
+        endpoint: String(r.endpoint),
+        userId: String(r.user_id),
+        userName: String(r.user_name),
+        keys: { p256dh: String(r.p256dh), auth: String(r.auth) },
+        updatedAt: new Date(String(r.updated_at)).toISOString(),
+      }));
+    }
+
+    return this.memPushSubs.filter((s) => {
+      if (s.userId === excludeUserId) return false;
+      if (isGroup) return true;
+      return s.userName.trim().toLowerCase() === normalized;
+    });
+  }
+
   private mapUserRow(r: Record<string, unknown>): StoredUser {
+    const rawAvatar = typeof r.avatar_url === 'string' ? r.avatar_url.trim() : '';
     return {
       id: String(r.id),
       name: String(r.name),
@@ -1102,6 +1290,7 @@ export class ChoyStore {
       role: r.role === 'admin' ? 'admin' : 'member',
       status: String(r.status || '').trim().toLowerCase() === 'approved' ? 'approved' : 'pending',
       blockedUsers: Array.isArray(r.blocked_users) ? (r.blocked_users as string[]) : [],
+      avatar: rawAvatar || undefined,
       createdAt: new Date(String(r.created_at)).toISOString(),
       updatedAt: new Date(String(r.updated_at)).toISOString(),
     };

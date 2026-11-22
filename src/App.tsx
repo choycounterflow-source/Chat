@@ -53,7 +53,9 @@ import {
   MoreVertical,
   MicOff,
   VideoOff,
-  RefreshCw
+  RefreshCw,
+  Bell,
+  BellOff
 } from 'lucide-react';
 import { PWAInstallButton } from './components/PWAInstallButton';
 import { OfflineIndicator } from './components/OfflineIndicator';
@@ -70,6 +72,7 @@ interface CurrentUser {
   role: 'admin' | 'member';
   status: 'pending' | 'approved';
   blockedUsers: string[];
+  avatar?: string;
 }
 
 interface UserAccount {
@@ -78,6 +81,7 @@ interface UserAccount {
   phone: string;
   role?: 'admin' | 'member';
   status: 'pending' | 'approved';
+  avatar?: string;
   loginDate: string;
 }
 
@@ -201,6 +205,18 @@ function formatIsoTime(iso?: string): string {
   }
 }
 
+function urlBase64ToUint8Array(base64String: string): Uint8Array<ArrayBuffer> {
+  const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const rawData = window.atob(base64);
+  const buffer = new ArrayBuffer(rawData.length);
+  const outputArray = new Uint8Array(buffer);
+  for (let i = 0; i < rawData.length; ++i) {
+    outputArray[i] = rawData.charCodeAt(i);
+  }
+  return outputArray;
+}
+
 export default function App() {
   // Appearance & Theme Preferences (Light / Dark / System, Text Size, Reduce Motion)
   const {
@@ -282,6 +298,17 @@ export default function App() {
   const seenMessageIdsRef = useRef<Set<string>>(new Set());
   const initialMsgSyncDoneRef = useRef<boolean>(false);
   const [liveMsgBanner, setLiveMsgBanner] = useState<{ sender: string; room: string; preview: string } | null>(null);
+  const [onlineUsers, setOnlineUsers] = useState<string[]>([]);
+  const [pushPermission, setPushPermission] = useState<'unsupported' | 'default' | 'granted' | 'denied'>(() => {
+    if (typeof window === 'undefined' || !('Notification' in window) || !('serviceWorker' in navigator) || !('PushManager' in window)) {
+      return 'unsupported';
+    }
+    return Notification.permission as 'default' | 'granted' | 'denied';
+  });
+  const [isPushSubscribed, setIsPushSubscribed] = useState(false);
+  const [isSubscribingPush, setIsSubscribingPush] = useState(false);
+  const [pushBannerDismissed, setPushBannerDismissed] = useState(false);
+  const pendingAutoAnswerCallIdRef = useRef<string | null>(null);
 
   const [usersList, setUsersList] = useState<UserAccount[]>([]);
   const [knowledgeBase, setKnowledgeBase] = useState<KnowledgeQA[]>([]);
@@ -374,12 +401,46 @@ export default function App() {
   const [deleteAccountError, setDeleteAccountError] = useState('');
   const [deletingMyAccount, setDeletingMyAccount] = useState(false);
   const [selectedProfileUser, setSelectedProfileUser] = useState<ViewedProfile | null>(null);
+  const [isUpdatingAvatar, setIsUpdatingAvatar] = useState(false);
+  const profileAvatarInputRef = useRef<HTMLInputElement | null>(null);
   const syncSeqRef = useRef(0);
 
   const showNotice = (msg: string) => {
     setSyncNotice(msg);
     setTimeout(() => setSyncNotice(''), 3500);
   };
+
+  const getUserAvatar = useCallback(
+    (target?: { id?: string; name?: string; avatar?: string } | null): string => {
+      if (!target) return DEFAULT_AVATAR;
+      const cleanName = (target.name || '').trim().toLowerCase();
+      if (
+        currentUser &&
+        ((target.id && target.id === currentUser.id) ||
+          (cleanName && cleanName === currentUser.name.trim().toLowerCase()))
+      ) {
+        if (currentUser.avatar && currentUser.avatar.trim()) {
+          return currentUser.avatar.trim();
+        }
+      }
+      const matched = usersList.find(
+        (u) =>
+          (target.id && u.id === target.id) ||
+          (cleanName && u.name.trim().toLowerCase() === cleanName)
+      );
+      if (matched?.avatar && matched.avatar.trim()) {
+        return matched.avatar.trim();
+      }
+      if (target.avatar && target.avatar.trim()) {
+        return target.avatar.trim();
+      }
+      return DEFAULT_AVATAR;
+    },
+    [currentUser, usersList]
+  );
+
+  const isCustomAvatar = (url?: string | null): boolean =>
+    Boolean(url && url.trim() && url.trim() !== DEFAULT_AVATAR);
 
   const openUserProfile = useCallback(
     (target: {
@@ -414,17 +475,23 @@ export default function App() {
       const safePhone =
         (isSelf || isAdmin) && rawPhone && rawPhone.toLowerCase() !== 'member' ? rawPhone : undefined;
 
+      const resolvedAvatar = getUserAvatar({
+        id: isSelf ? currentUser?.id : matched?.id || target.id,
+        name: isSelf ? currentUser!.name : matched?.name || cleanName,
+        avatar: target.avatar
+      });
+
       setSelectedProfileUser({
         id: isSelf ? currentUser?.id : matched?.id || target.id,
         name: isSelf ? currentUser!.name : matched?.name || cleanName,
         role: resolvedRole,
         phone: safePhone,
         loginDate: matched?.loginDate || target.loginDate || 'Active recently',
-        avatar: target.avatar || DEFAULT_AVATAR,
+        avatar: resolvedAvatar,
         isSelf
       });
     },
-    [currentUser, isAdmin, usersList]
+    [currentUser, getUserAvatar, isAdmin, usersList]
   );
 
   const handleMessageUser = useCallback((userName: string) => {
@@ -624,6 +691,9 @@ export default function App() {
       if (Array.isArray(data.leaderboard)) {
         setLeaderboard(data.leaderboard);
       }
+      if (Array.isArray(data.onlineUsers)) {
+        setOnlineUsers(data.onlineUsers.map((u: unknown) => String(u || '').trim().toLowerCase()));
+      }
       if (Array.isArray(data.ledger)) {
         setLedgerRows(data.ledger);
       }
@@ -772,6 +842,235 @@ export default function App() {
       window.clearInterval(rtcPollTimer);
     };
   }, [authToken, apiFetch, isInVideoCall, incomingCall]);
+
+  // ---- BACKGROUND WEB PUSH NOTIFICATIONS (HOME SCREEN MESSAGES & CALL ALERTS) ----
+  const subscribeToBackgroundPush = useCallback(
+    async (silent = false) => {
+      if (!authToken) return false;
+      if (
+        typeof window === 'undefined' ||
+        !('Notification' in window) ||
+        !('serviceWorker' in navigator) ||
+        !('PushManager' in window)
+      ) {
+        setPushPermission('unsupported');
+        if (!silent) {
+          showNotice('Background push requires Chrome/Edge on Android or installed Home Screen PWA on iPhone.');
+        }
+        return false;
+      }
+
+      setIsSubscribingPush(true);
+      try {
+        let perm: NotificationPermission = Notification.permission;
+        if (perm === 'default' && !silent) {
+          perm = await Notification.requestPermission();
+        }
+        setPushPermission(perm);
+
+        if (perm !== 'granted') {
+          if (!silent) {
+            showNotice(
+              perm === 'denied'
+                ? 'Notifications are blocked in browser settings. Enable Notifications for Choy Chat to get home-screen alerts.'
+                : 'Notification permission was not granted.'
+            );
+          }
+          return false;
+        }
+
+        const keyRes = await apiFetch('/api/choy/push/vapid-public-key');
+        const publicKey = typeof keyRes?.publicKey === 'string' ? keyRes.publicKey : '';
+        if (!publicKey) throw new Error('Push service key unavailable');
+
+        const registration = await navigator.serviceWorker.ready;
+        let subscription = await registration.pushManager.getSubscription();
+        if (!subscription) {
+          subscription = await registration.pushManager.subscribe({
+            userVisibleOnly: true,
+            applicationServerKey: urlBase64ToUint8Array(publicKey)
+          });
+        }
+
+        await apiFetch('/api/choy/push/subscribe', {
+          method: 'POST',
+          body: JSON.stringify({ subscription: subscription.toJSON() })
+        });
+
+        setIsPushSubscribed(true);
+        if (!silent) {
+          showNotice('Home-screen notifications enabled! You will now receive messages & video calls even when the app is closed.');
+        }
+        return true;
+      } catch (err) {
+        if (!silent) {
+          showNotice(err instanceof Error ? err.message : 'Unable to enable background notifications.');
+        }
+        return false;
+      } finally {
+        setIsSubscribingPush(false);
+      }
+    },
+    [authToken, apiFetch]
+  );
+
+  const unsubscribeFromBackgroundPush = useCallback(async () => {
+    setIsSubscribingPush(true);
+    try {
+      if ('serviceWorker' in navigator) {
+        const reg = await navigator.serviceWorker.ready;
+        const sub = await reg.pushManager.getSubscription();
+        if (sub) {
+          const endpoint = sub.endpoint;
+          await sub.unsubscribe().catch(() => {});
+          if (authToken) {
+            await apiFetch('/api/choy/push/unsubscribe', {
+              method: 'POST',
+              body: JSON.stringify({ endpoint })
+            }).catch(() => {});
+          }
+        }
+      }
+      setIsPushSubscribed(false);
+      showNotice('Background push notifications turned off on this device.');
+    } finally {
+      setIsSubscribingPush(false);
+    }
+  }, [authToken, apiFetch]);
+
+  // Silently re-register push subscription on login if user already granted permission
+  useEffect(() => {
+    if (!authToken || !currentUser) return;
+    if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
+      void subscribeToBackgroundPush(true);
+    }
+  }, [authToken, currentUser?.id, subscribeToBackgroundPush]);
+
+  // Auto-detect when user turns mobile data / Wi-Fi ON -> immediately broadcast presence, sync messages & check active calls
+  useEffect(() => {
+    if (!authToken) return;
+    const handleReconnectOnline = async () => {
+      if (!navigator.onLine) return;
+      try {
+        await apiFetch('/api/choy/presence', { method: 'POST', body: JSON.stringify({}) }).catch(() => {});
+        await fetchSyncedState();
+        const rtcData = await apiFetch(`/api/choy/rtc/poll?since=${lastRtcSeqRef.current}&_t=${Date.now()}`).catch(
+          () => null
+        );
+        if (rtcData && Array.isArray(rtcData.signals)) {
+          if (typeof rtcData.latestSeq === 'number' && rtcData.latestSeq > lastRtcSeqRef.current) {
+            lastRtcSeqRef.current = rtcData.latestSeq;
+          }
+          for (const sig of rtcData.signals) {
+            handleRtcSignalRef.current(sig as RtcSignalPayload);
+          }
+        }
+        if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
+          void subscribeToBackgroundPush(true);
+        }
+        showNotice('Data connected — live messages & calls synced.');
+      } catch {
+        // Ignore transient reconnect error
+      }
+    };
+
+    window.addEventListener('online', handleReconnectOnline);
+    const navConn = (navigator as unknown as { connection?: EventTarget }).connection;
+    const handleConnChange = () => {
+      if (navigator.onLine) {
+        void apiFetch('/api/choy/presence', { method: 'POST', body: JSON.stringify({}) }).catch(() => {});
+        void fetchSyncedState();
+      }
+    };
+    navConn?.addEventListener?.('change', handleConnChange);
+
+    // Send immediate presence ping when logged in
+    void apiFetch('/api/choy/presence', { method: 'POST', body: JSON.stringify({}) }).catch(() => {});
+
+    return () => {
+      window.removeEventListener('online', handleReconnectOnline);
+      navConn?.removeEventListener?.('change', handleConnChange);
+    };
+  }, [authToken, apiFetch, fetchSyncedState, subscribeToBackgroundPush]);
+
+  // Deep-link handler when user taps a Home-Screen Message or Video Call Notification
+  useEffect(() => {
+    if (!authToken || !currentUser) return;
+
+    const applyNotificationRoute = (params: {
+      kind?: string;
+      roomId?: string;
+      callId?: string;
+      callerName?: string;
+      action?: string;
+    }) => {
+      if (params.kind === 'call' && params.callId) {
+        const targetRoom = (params.callerName || params.roomId || 'VIP Group').trim();
+        setActiveChat(targetRoom);
+        setActiveTab('messages');
+        if (params.action === 'answer') {
+          pendingAutoAnswerCallIdRef.current = params.callId;
+        }
+        // Immediately fetch queued offer/ICE from server (since=0) in case app just launched from closed state
+        void apiFetch(`/api/choy/rtc/poll?since=0&_t=${Date.now()}`)
+          .then((data) => {
+            if (typeof data?.latestSeq === 'number' && data.latestSeq > lastRtcSeqRef.current) {
+              lastRtcSeqRef.current = data.latestSeq;
+            }
+            if (Array.isArray(data?.signals)) {
+              for (const sig of data.signals) {
+                handleRtcSignalRef.current(sig as RtcSignalPayload);
+              }
+            }
+          })
+          .catch(() => {});
+        return;
+      }
+
+      if (params.roomId) {
+        setActiveChat(params.roomId);
+        setActiveTab('messages');
+        void fetchSyncedState();
+      }
+    };
+
+    // 1. Check URL params (when opened from completely closed app)
+    const urlParams = new URLSearchParams(window.location.search);
+    const openChatParam = urlParams.get('openChat');
+    const incomingCallParam = urlParams.get('incomingCall');
+    if (incomingCallParam) {
+      applyNotificationRoute({
+        kind: 'call',
+        callId: incomingCallParam,
+        callerName: urlParams.get('caller') || undefined,
+        roomId: urlParams.get('room') || undefined,
+        action: urlParams.get('action') || 'open'
+      });
+      window.history.replaceState({}, '', '/');
+    } else if (openChatParam) {
+      applyNotificationRoute({ kind: 'message', roomId: openChatParam });
+      window.history.replaceState({}, '', '/');
+    }
+
+    // 2. Listen for Service Worker messages (when app was minimized in background)
+    const handleSwMessage = (event: MessageEvent) => {
+      const msg = event.data as {
+        type?: string;
+        kind?: string;
+        roomId?: string;
+        callId?: string;
+        callerName?: string;
+        action?: string;
+      };
+      if (msg && msg.type === 'CHOY_NOTIFICATION_ACTION') {
+        applyNotificationRoute(msg);
+      }
+    };
+    navigator.serviceWorker?.addEventListener?.('message', handleSwMessage);
+    return () => {
+      navigator.serviceWorker?.removeEventListener?.('message', handleSwMessage);
+    };
+  }, [authToken, currentUser, apiFetch, fetchSyncedState]);
 
   const messages = [...cloudMessages, ...localMessages].sort((a, b) => a.createdAtMs - b.createdAtMs);
   const chatRoomsList = (() => {
@@ -1232,6 +1531,19 @@ export default function App() {
     };
   }, [endVideoCall, incomingCall, sendRtcSignalToServer]);
 
+  // Auto-answer incoming call if user tapped "Answer Call" directly from the home-screen push notification
+  useEffect(() => {
+    if (
+      incomingCall &&
+      !isInVideoCall &&
+      pendingAutoAnswerCallIdRef.current &&
+      pendingAutoAnswerCallIdRef.current === incomingCall.callId
+    ) {
+      pendingAutoAnswerCallIdRef.current = null;
+      void acceptIncomingCall();
+    }
+  }, [incomingCall, isInVideoCall, acceptIncomingCall]);
+
   // Subtle incoming call chime + mobile vibration while ringing
   useEffect(() => {
     if (!incomingCall || isInVideoCall) return;
@@ -1502,7 +1814,7 @@ export default function App() {
 
   const uploadMediaToCloud = async (
     blob: Blob,
-    folder: 'posts' | 'messages' | 'voice'
+    folder: 'posts' | 'messages' | 'voice' | 'avatars'
   ): Promise<{ url: string; mediaType: 'image' | 'video' | 'audio' } | null> => {
     const headers: Record<string, string> = {
       'Content-Type': blob.type || 'application/octet-stream',
@@ -1533,12 +1845,144 @@ export default function App() {
 
   const tryUploadMediaToCloud = async (
     blob: Blob,
-    folder: 'posts' | 'messages' | 'voice'
+    folder: 'posts' | 'messages' | 'voice' | 'avatars'
   ): Promise<{ url: string; mediaType: 'image' | 'video' | 'audio' } | null> => {
     try {
       return await uploadMediaToCloud(blob, folder);
     } catch {
       return null;
+    }
+  };
+
+  const compressAvatarToBlob = (file: File): Promise<{ blob: Blob; dataUrl: string }> =>
+    new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onerror = () => reject(new Error('Failed to read selected photo'));
+      reader.onload = () => {
+        const rawDataUrl = String(reader.result || '');
+        const img = new Image();
+        img.onerror = () => {
+          if (rawDataUrl.startsWith('data:image/') && rawDataUrl.length <= 800_000) {
+            resolve({ blob: file, dataUrl: rawDataUrl });
+          } else {
+            reject(new Error('Unsupported photo format. Please choose JPG, PNG, or WebP.'));
+          }
+        };
+        img.onload = () => {
+          let maxDim = 512;
+          let quality = 0.85;
+          let dataUrl = '';
+          let finalCanvas: HTMLCanvasElement | null = null;
+
+          for (let attempt = 0; attempt < 4; attempt++) {
+            let { width, height } = img;
+            if (width > maxDim || height > maxDim) {
+              if (width >= height) {
+                height = Math.max(1, Math.round((height * maxDim) / width));
+                width = maxDim;
+              } else {
+                width = Math.max(1, Math.round((width * maxDim) / height));
+                height = maxDim;
+              }
+            }
+            const canvas = document.createElement('canvas');
+            canvas.width = width;
+            canvas.height = height;
+            const ctx = canvas.getContext('2d');
+            if (!ctx) {
+              resolve({ blob: file, dataUrl: rawDataUrl });
+              return;
+            }
+            ctx.drawImage(img, 0, 0, width, height);
+            dataUrl = canvas.toDataURL('image/jpeg', quality);
+            finalCanvas = canvas;
+            if (dataUrl.length <= 240_000) break;
+            maxDim = Math.round(maxDim * 0.75);
+            quality = Math.max(0.55, quality - 0.1);
+          }
+
+          if (!finalCanvas) {
+            resolve({ blob: file, dataUrl: rawDataUrl });
+            return;
+          }
+          finalCanvas.toBlob(
+            (blob) => {
+              resolve({ blob: blob || file, dataUrl });
+            },
+            'image/jpeg',
+            quality
+          );
+        };
+        img.src = rawDataUrl;
+      };
+      reader.readAsDataURL(file);
+    });
+
+  const applyLocalAvatarUpdate = (nextAvatar: string | undefined) => {
+    if (!currentUser) return;
+    const myId = currentUser.id;
+    const myLower = currentUser.name.trim().toLowerCase();
+    const resolvedDisplay = nextAvatar || DEFAULT_AVATAR;
+
+    setCurrentUser((prev) => (prev ? { ...prev, avatar: nextAvatar } : prev));
+    setUsersList((prev) =>
+      prev.map((u) =>
+        u.id === myId || u.name.trim().toLowerCase() === myLower ? { ...u, avatar: nextAvatar } : u
+      )
+    );
+    setPosts((prev) =>
+      prev.map((p) =>
+        p.authorId === myId || p.author.name.trim().toLowerCase() === myLower
+          ? { ...p, author: { ...p.author, avatar: resolvedDisplay } }
+          : p
+      )
+    );
+    setSelectedProfileUser((prev) =>
+      prev && prev.isSelf ? { ...prev, avatar: resolvedDisplay } : prev
+    );
+  };
+
+  const handleProfileAvatarSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file || !currentUser) return;
+    if (!isImageFile(file)) {
+      showNotice('Please choose an image file (JPG, PNG, or WebP) for your profile picture.');
+      return;
+    }
+    setIsUpdatingAvatar(true);
+    try {
+      const { blob, dataUrl } = await compressAvatarToBlob(file);
+      const cloud = await tryUploadMediaToCloud(blob, 'avatars');
+      const finalUrl = cloud ? cloud.url : dataUrl;
+      const resp = (await apiFetch('/api/auth/avatar', {
+        method: 'POST',
+        body: JSON.stringify({ avatarUrl: finalUrl }),
+      })) as { ok?: boolean; avatar?: string | null };
+      const savedAvatar = typeof resp.avatar === 'string' && resp.avatar.trim() ? resp.avatar.trim() : finalUrl;
+      applyLocalAvatarUpdate(savedAvatar);
+      showNotice('Profile picture updated!');
+    } catch (err) {
+      showNotice(err instanceof Error ? err.message : 'Failed to update profile picture');
+    } finally {
+      setIsUpdatingAvatar(false);
+    }
+  };
+
+  const handleRemoveProfileAvatar = async () => {
+    if (!currentUser || isUpdatingAvatar) return;
+    setIsUpdatingAvatar(true);
+    try {
+      await apiFetch('/api/auth/avatar', {
+        method: 'POST',
+        body: JSON.stringify({ avatarUrl: null }),
+      });
+      applyLocalAvatarUpdate(undefined);
+      showNotice('Profile picture reset to default.');
+    } catch (err) {
+      showNotice(err instanceof Error ? err.message : 'Failed to reset profile picture');
+    } finally {
+      setIsUpdatingAvatar(false);
     }
   };
 
@@ -2532,19 +2976,34 @@ export default function App() {
 
   return (
     <div className="fixed inset-0 bg-emerald-50 dark:bg-emerald-950/95 text-emerald-950 dark:text-slate-100 flex flex-col md:flex-row overflow-hidden text-sm">
-      {/* INCOMING LIVE VIDEO CALL BANNER */}
-      {incomingCall && !isInVideoCall && (
-        <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[60] w-[92%] max-w-md bg-emerald-950/95 border-2 border-emerald-400 rounded-2xl p-4 shadow-2xl text-white backdrop-blur-md">
+      <input
+        ref={profileAvatarInputRef}
+        type="file"
+        accept="image/*"
+        onChange={handleProfileAvatarSelect}
+        className="hidden"
+      />
+      {/* INCOMING LIVE VIDEO CALL BANNER (WITH CALLER PROFILE ICON) */}
+      {incomingCall && !isInVideoCall && (() => {
+        const callerAvatar = getUserAvatar({ id: incomingCall.fromUserId, name: incomingCall.fromUserName });
+        return (
+        <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[60] w-[94%] max-w-md bg-emerald-950/95 border-2 border-emerald-400 rounded-2xl p-4 shadow-2xl text-white backdrop-blur-md">
           <div className="flex items-center justify-between gap-3">
             <div className="flex items-center gap-3 min-w-0">
-              <div className="w-11 h-11 rounded-full bg-emerald-500/20 border border-emerald-400 flex items-center justify-center shrink-0 animate-pulse">
-                <Video className="w-5 h-5 text-emerald-300" />
+              <div className="relative w-12 h-14 rounded-xl bg-emerald-900 border-2 border-emerald-400 overflow-hidden shrink-0 shadow-md">
+                <img
+                  src={callerAvatar}
+                  alt={incomingCall.fromUserName}
+                  className={`w-full h-full ${isCustomAvatar(callerAvatar) ? 'object-cover' : 'object-contain'}`}
+                />
+                <span className="absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 rounded-full bg-emerald-400 border-2 border-emerald-950 animate-ping" />
               </div>
               <div className="min-w-0">
-                <div className="text-[11px] uppercase tracking-wider font-bold text-emerald-300">
-                  Incoming Video Call
+                <div className="text-[10px] uppercase tracking-wider font-bold text-emerald-300 flex items-center gap-1">
+                  <Video className="w-3 h-3" /> Incoming Video Call
                 </div>
                 <div className="text-sm font-black truncate">{incomingCall.fromUserName}</div>
+                <div className="text-[10px] text-emerald-200/80 truncate">Tap Accept to join live video</div>
               </div>
             </div>
             <div className="flex items-center gap-2 shrink-0">
@@ -2565,7 +3024,8 @@ export default function App() {
             </div>
           </div>
         </div>
-      )}
+        );
+      })()}
 
       {/* LIVE INCOMING MESSAGE TOAST */}
       {liveMsgBanner &&
@@ -3108,9 +3568,11 @@ export default function App() {
               }`}
             >
               <img
-                src={DEFAULT_AVATAR}
+                src={getUserAvatar(currentUser)}
                 alt=""
-                className="w-4 h-5 rounded bg-emerald-50 dark:bg-emerald-950 object-contain shrink-0 border border-emerald-400"
+                className={`w-4 h-5 rounded bg-emerald-50 dark:bg-emerald-950 shrink-0 border border-emerald-400 ${
+                  isCustomAvatar(getUserAvatar(currentUser)) ? 'object-cover' : 'object-contain'
+                }`}
               />
               <span>Account</span>
             </button>
@@ -3169,7 +3631,13 @@ export default function App() {
             onClick={() => setActiveTab('profile')}
             className="w-full p-2 rounded-xl bg-emerald-50 dark:bg-emerald-950/70 border border-emerald-200 dark:border-emerald-800 flex items-center gap-2 text-left hover:bg-emerald-100 dark:hover:bg-emerald-800/70 transition"
           >
-            <img src={DEFAULT_AVATAR} alt="" className="w-8 h-11 rounded-lg bg-emerald-50 dark:bg-emerald-950 object-contain shrink-0 border border-emerald-500/50" />
+            <img
+              src={getUserAvatar(currentUser)}
+              alt=""
+              className={`w-8 h-11 rounded-lg bg-emerald-50 dark:bg-emerald-950 shrink-0 border border-emerald-500/50 ${
+                isCustomAvatar(getUserAvatar(currentUser)) ? 'object-cover' : 'object-contain'
+              }`}
+            />
             <div className="min-w-0 flex-1">
               <div className="text-[11px] font-bold text-emerald-950 dark:text-white truncate">{currentUser.name}</div>
               <div className="text-[9px] text-emerald-700 dark:text-emerald-300 truncate">{isAdmin ? 'Admin • Synced' : 'Member • Synced'}</div>
@@ -3297,9 +3765,11 @@ export default function App() {
                               className="flex items-center gap-2.5 min-w-0 flex-1 text-left"
                             >
                               <img
-                                src={DEFAULT_AVATAR}
+                                src={getUserAvatar(u)}
                                 alt=""
-                                className="w-7 h-9 rounded-lg bg-emerald-50 dark:bg-emerald-900 object-contain border border-emerald-500/50 shrink-0"
+                                className={`w-7 h-9 rounded-lg bg-emerald-50 dark:bg-emerald-900 border border-emerald-500/50 shrink-0 ${
+                                  isCustomAvatar(getUserAvatar(u)) ? 'object-cover' : 'object-contain'
+                                }`}
                               />
                               <div className="min-w-0">
                                 <div className="text-xs font-bold text-emerald-950 dark:text-white truncate">
@@ -3487,11 +3957,22 @@ export default function App() {
                           title={`View ${p.author.name}'s profile`}
                         >
                           <div className="relative shrink-0">
-                            <img
-                              src={p.author.avatar}
-                              alt=""
-                              className="w-9 h-12 rounded-lg bg-emerald-50 dark:bg-emerald-950 object-contain border border-emerald-500/50 group-hover:border-emerald-400 transition"
-                            />
+                            {(() => {
+                              const postAvatar = getUserAvatar({
+                                id: p.authorId,
+                                name: p.author.name,
+                                avatar: p.author.avatar
+                              });
+                              return (
+                                <img
+                                  src={postAvatar}
+                                  alt=""
+                                  className={`w-9 h-12 rounded-lg bg-emerald-50 dark:bg-emerald-950 border border-emerald-500/50 group-hover:border-emerald-400 transition ${
+                                    isCustomAvatar(postAvatar) ? 'object-cover' : 'object-contain'
+                                  }`}
+                                />
+                              );
+                            })()}
                             <span
                               className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 bg-emerald-400 border-2 border-white dark:border-emerald-950 rounded-full"
                               title="Online"
@@ -3625,9 +4106,11 @@ export default function App() {
                       >
                         <div className="relative shrink-0">
                           <img
-                            src={DEFAULT_AVATAR}
+                            src={getUserAvatar(u)}
                             alt=""
-                            className="w-9 h-12 rounded-xl bg-emerald-50 dark:bg-emerald-950 object-contain border border-emerald-500/50 group-hover:border-emerald-400 transition"
+                            className={`w-9 h-12 rounded-xl bg-emerald-50 dark:bg-emerald-950 border border-emerald-500/50 group-hover:border-emerald-400 transition ${
+                              isCustomAvatar(getUserAvatar(u)) ? 'object-cover' : 'object-contain'
+                            }`}
                           />
                           <span
                             className="absolute -bottom-0.5 -right-0.5 w-3 h-3 bg-emerald-400 border-2 border-white dark:border-emerald-950 rounded-full"
@@ -3710,9 +4193,13 @@ export default function App() {
                               title={`View ${vid.sender}'s profile`}
                             >
                               <img
-                                src={DEFAULT_AVATAR}
+                                src={getUserAvatar({ id: vid.senderId, name: vid.sender })}
                                 alt=""
-                                className="w-5 h-6 rounded bg-white dark:bg-emerald-900 object-contain border border-emerald-500/50 shrink-0"
+                                className={`w-5 h-6 rounded bg-white dark:bg-emerald-900 border border-emerald-500/50 shrink-0 ${
+                                  isCustomAvatar(getUserAvatar({ id: vid.senderId, name: vid.sender }))
+                                    ? 'object-cover'
+                                    : 'object-contain'
+                                }`}
                               />
                               <span className="truncate">{vid.sender}</span>
                             </button>
@@ -3754,27 +4241,49 @@ export default function App() {
                 myPosts.filter((p) => Boolean(p.mediaUrl)).length +
                 myMessages.filter((m) => Boolean(m.mediaUrl)).length;
               const myHandle = `@${currentUser.name.toLowerCase().replace(/[^a-z0-9]+/g, '') || 'member'}`;
+              const myAvatar = getUserAvatar(currentUser);
+              const hasCustomPhoto = isCustomAvatar(myAvatar);
 
               return (
                 <div className="max-w-2xl mx-auto space-y-5">
                   {/* Clean Account Identity Card */}
                   <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl overflow-hidden shadow-sm">
                     <div className="p-5 sm:p-6 flex flex-col sm:flex-row items-center sm:items-start gap-5">
-                      <div
-                        onClick={() =>
-                          setZoomedImage({
-                            src: DEFAULT_AVATAR,
-                            caption: `${currentUser.name} (${isAdmin ? 'Admin' : 'Active Member'})`
-                          })
-                        }
-                        className="relative w-full max-w-[220px] aspect-[9/16] max-h-[340px] rounded-2xl bg-emerald-50 dark:bg-emerald-950 border-2 border-emerald-500/80 dark:border-emerald-400/80 p-1.5 overflow-hidden shadow-lg shrink-0 cursor-zoom-in"
-                        title="Tap to zoom"
-                      >
-                        <img
-                          src={DEFAULT_AVATAR}
-                          alt="Account portrait"
-                          className="w-full h-full object-contain rounded-xl"
-                        />
+                      <div className="relative w-full max-w-[220px] shrink-0">
+                        <div
+                          onClick={() =>
+                            setZoomedImage({
+                              src: myAvatar,
+                              caption: `${currentUser.name} (${isAdmin ? 'Admin' : 'Active Member'})`
+                            })
+                          }
+                          className={`relative w-full ${
+                            hasCustomPhoto ? 'aspect-square max-h-[240px]' : 'aspect-[9/16] max-h-[340px]'
+                          } rounded-2xl bg-emerald-50 dark:bg-emerald-950 border-2 border-emerald-500/80 dark:border-emerald-400/80 p-1.5 overflow-hidden shadow-lg cursor-zoom-in`}
+                          title="Tap to zoom"
+                        >
+                          <img
+                            src={myAvatar}
+                            alt="Account portrait"
+                            className={`w-full h-full rounded-xl ${
+                              hasCustomPhoto ? 'object-cover' : 'object-contain'
+                            }`}
+                          />
+                        </div>
+                        <button
+                          type="button"
+                          disabled={isUpdatingAvatar}
+                          onClick={() => profileAvatarInputRef.current?.click()}
+                          className="absolute bottom-2.5 right-2.5 p-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 dark:bg-emerald-400 dark:hover:bg-emerald-300 text-white dark:text-slate-950 border-2 border-white dark:border-emerald-950 shadow-lg transition disabled:opacity-60"
+                          title={hasCustomPhoto ? 'Change profile picture' : 'Add profile picture'}
+                          aria-label={hasCustomPhoto ? 'Change profile picture' : 'Add profile picture'}
+                        >
+                          {isUpdatingAvatar ? (
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                          ) : (
+                            <Camera className="w-4 h-4" />
+                          )}
+                        </button>
                       </div>
 
                       <div className="min-w-0 flex-1 text-center sm:text-left space-y-2.5 pt-1">
@@ -3796,6 +4305,39 @@ export default function App() {
                           <span className="font-semibold text-indigo-700 dark:text-indigo-300">
                             {isAdmin ? 'Admin' : 'Active Member'}
                           </span>
+                        </div>
+
+                        {/* Add / Change Profile Picture Actions */}
+                        <div className="flex flex-wrap items-center justify-center sm:justify-start gap-2 pt-1.5">
+                          <button
+                            type="button"
+                            disabled={isUpdatingAvatar}
+                            onClick={() => profileAvatarInputRef.current?.click()}
+                            className="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 dark:bg-emerald-400 dark:hover:bg-emerald-300 text-white dark:text-slate-950 text-xs font-bold inline-flex items-center gap-1.5 shadow-sm transition disabled:opacity-60"
+                          >
+                            {isUpdatingAvatar ? (
+                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            ) : (
+                              <Camera className="w-3.5 h-3.5" />
+                            )}
+                            <span>
+                              {isUpdatingAvatar
+                                ? 'Saving Photo...'
+                                : hasCustomPhoto
+                                ? 'Change Profile Pic'
+                                : 'Add Profile Pic'}
+                            </span>
+                          </button>
+                          {hasCustomPhoto && (
+                            <button
+                              type="button"
+                              disabled={isUpdatingAvatar}
+                              onClick={handleRemoveProfileAvatar}
+                              className="px-3 py-2 rounded-xl border border-emerald-300 dark:border-emerald-700 bg-emerald-50 dark:bg-emerald-950/70 text-emerald-800 dark:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-800 text-xs font-semibold transition disabled:opacity-60"
+                            >
+                              Reset Photo
+                            </button>
+                          )}
                         </div>
                       </div>
                     </div>
@@ -3871,7 +4413,47 @@ export default function App() {
 
           {/* MESSAGES WITH REAL-TIME SYNC & REACTIONS */}
           {activeTab === 'messages' && (
-            <div className="max-w-4xl mx-auto flex flex-col md:grid md:grid-cols-3 gap-3 md:gap-4 md:h-[580px]">
+            <div className="max-w-4xl mx-auto space-y-3">
+              {!pushBannerDismissed &&
+                pushPermission !== 'unsupported' &&
+                pushPermission !== 'denied' &&
+                !isPushSubscribed && (
+                  <div className="bg-emerald-900/90 dark:bg-emerald-900/80 border border-emerald-400/60 rounded-2xl p-3 flex flex-wrap items-center justify-between gap-2 text-white shadow">
+                    <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                      <div className="w-8 h-8 rounded-xl bg-emerald-400/20 border border-emerald-400 flex items-center justify-center shrink-0 text-emerald-300">
+                        <Bell className="w-4 h-4" />
+                      </div>
+                      <div className="min-w-0">
+                        <div className="text-xs font-bold text-white">
+                          Enable Home-Screen Notifications
+                        </div>
+                        <div className="text-[10px] text-emerald-200">
+                          Receive messages &amp; incoming video call profile alerts even when Choy Chat is closed (data on).
+                        </div>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <button
+                        type="button"
+                        disabled={isSubscribingPush}
+                        onClick={() => subscribeToBackgroundPush(false)}
+                        className="px-3 py-1.5 rounded-xl bg-emerald-400 hover:bg-emerald-300 text-slate-950 font-black text-[11px] transition disabled:opacity-60"
+                      >
+                        {isSubscribingPush ? 'Enabling...' : 'Enable Alerts'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setPushBannerDismissed(true)}
+                        className="p-1.5 text-emerald-200 hover:text-white"
+                        aria-label="Dismiss notification prompt"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+            <div className="flex flex-col md:grid md:grid-cols-3 gap-3 md:gap-4 md:h-[580px]">
               <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-3 flex flex-col space-y-2 shrink-0">
                 <div className="text-xs font-bold text-emerald-700 dark:text-emerald-300 uppercase">Chats</div>
                 <div className="flex md:flex-col gap-2 overflow-x-auto touch-pan-x overscroll-x-contain [-webkit-overflow-scrolling:touch] md:overflow-visible pb-1.5 md:pb-0">
@@ -3882,21 +4464,45 @@ export default function App() {
                   ) : (
                     filteredChatRooms.map((room) => {
                     const isActive = activeChat === room;
+                    const isVipGroup = room.trim().toLowerCase() === 'vip group';
+                    const isRoomOnline =
+                      isVipGroup ||
+                      onlineUsers.includes(room.trim().toLowerCase());
+                    const roomAvatar = isVipGroup ? '' : getUserAvatar({ name: room });
                     return (
                       <button
                         key={room}
                         type="button"
                         onClick={() => setActiveChat(room)}
-                        className={`px-3.5 py-2.5 rounded-xl text-xs flex items-center justify-between gap-2 transition whitespace-nowrap shrink-0 md:w-full text-left ${
+                        className={`px-3 py-2 rounded-xl text-xs flex items-center justify-between gap-2 transition whitespace-nowrap shrink-0 md:w-full text-left ${
                           isActive
                             ? 'bg-emerald-400 text-slate-950 font-bold shadow'
                             : 'bg-emerald-50 dark:bg-emerald-950 text-emerald-900 dark:text-emerald-200 border border-emerald-200 dark:border-emerald-800 hover:bg-emerald-100 dark:hover:bg-emerald-800'
                         }`}
                       >
-                        <span className="truncate">{room}</span>
+                        <span className="flex items-center gap-2 min-w-0">
+                          {!isVipGroup && (
+                            <img
+                              src={roomAvatar}
+                              alt=""
+                              className={`w-6 h-6 rounded-lg bg-white/80 dark:bg-emerald-900 border border-emerald-500/40 shrink-0 ${
+                                isCustomAvatar(roomAvatar) ? 'object-cover' : 'object-contain'
+                              }`}
+                            />
+                          )}
+                          <span className="truncate">{room}</span>
+                        </span>
                         <span
-                          className={`w-2.5 h-2.5 rounded-full shrink-0 ${isActive ? 'bg-slate-950' : 'bg-emerald-500 dark:bg-emerald-400'}`}
-                          title={isActive ? 'Active' : 'Online'}
+                          className={`w-2.5 h-2.5 rounded-full shrink-0 ${
+                            isRoomOnline
+                              ? isActive
+                                ? 'bg-slate-950'
+                                : 'bg-emerald-500 dark:bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.9)]'
+                              : isActive
+                              ? 'bg-slate-950/35'
+                              : 'bg-slate-400/50 dark:bg-emerald-800'
+                          }`}
+                          title={isRoomOnline ? 'Online (Data Active)' : 'Offline (Push Ready)'}
                         ></span>
                       </button>
                     );
@@ -3919,9 +4525,11 @@ export default function App() {
                         title={`View ${activeChat}'s profile`}
                       >
                         <img
-                          src={DEFAULT_AVATAR}
+                          src={getUserAvatar({ name: activeChat })}
                           alt=""
-                          className="w-6 h-7 rounded-md bg-emerald-50 dark:bg-emerald-950 object-contain border border-emerald-500/50 shrink-0"
+                          className={`w-6 h-7 rounded-md bg-emerald-50 dark:bg-emerald-950 border border-emerald-500/50 shrink-0 ${
+                            isCustomAvatar(getUserAvatar({ name: activeChat })) ? 'object-cover' : 'object-contain'
+                          }`}
                         />
                         <span className="text-sm font-black text-emerald-950 dark:text-white truncate group-hover:text-emerald-700 dark:group-hover:text-emerald-300 group-hover:underline">
                           {activeChat}
@@ -4296,6 +4904,7 @@ export default function App() {
                 </div>
               </div>
             </div>
+            </div>
           )}
 
           {/* MILESTONE SPREADSHEET LEDGER (ADMIN ONLY) */}
@@ -4558,14 +5167,23 @@ export default function App() {
                         <button
                           type="button"
                           onClick={() => openUserProfile(u)}
-                          className="group min-w-0 text-left rounded-lg p-1 -m-1 hover:bg-emerald-100/80 dark:hover:bg-emerald-900/70 transition"
+                          className="group flex items-center gap-2.5 min-w-0 text-left rounded-lg p-1 -m-1 hover:bg-emerald-100/80 dark:hover:bg-emerald-900/70 transition"
                           title={`View ${u.name}'s profile`}
                         >
-                          <div className="font-bold text-emerald-950 dark:text-white truncate group-hover:text-emerald-700 dark:group-hover:text-emerald-300 group-hover:underline">
-                            {u.name} ({u.phone})
-                          </div>
-                          <div className="text-[10px] text-emerald-700 dark:text-emerald-300">
-                            Last Active: {u.loginDate} · Tap to view profile
+                          <img
+                            src={getUserAvatar(u)}
+                            alt=""
+                            className={`w-8 h-10 rounded-lg bg-white dark:bg-emerald-900 border border-emerald-500/50 shrink-0 ${
+                              isCustomAvatar(getUserAvatar(u)) ? 'object-cover' : 'object-contain'
+                            }`}
+                          />
+                          <div className="min-w-0">
+                            <div className="font-bold text-emerald-950 dark:text-white truncate group-hover:text-emerald-700 dark:group-hover:text-emerald-300 group-hover:underline">
+                              {u.name} ({u.phone})
+                            </div>
+                            <div className="text-[10px] text-emerald-700 dark:text-emerald-300">
+                              Last Active: {u.loginDate} · Tap to view profile
+                            </div>
                           </div>
                         </button>
                         <div className="flex items-center gap-2 shrink-0">
@@ -4990,27 +5608,37 @@ export default function App() {
                   </button>
 
                   <div className="flex items-start gap-4 pr-8">
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setZoomedImage({
-                          src: viewed.avatar,
-                          caption: `${viewed.name} (${viewed.role === 'admin' ? 'Admin' : 'Active Member'})`
-                        })
-                      }
-                      className="relative w-20 h-28 rounded-2xl bg-emerald-50 dark:bg-emerald-900 border-2 border-emerald-500/80 dark:border-emerald-400/80 p-1 overflow-hidden shadow-md shrink-0 cursor-zoom-in group"
-                      title="Tap to zoom avatar"
-                    >
-                      <img
-                        src={viewed.avatar}
-                        alt={viewed.name}
-                        className="w-full h-full object-contain rounded-xl group-hover:scale-105 transition"
-                      />
-                      <span
-                        className="absolute bottom-1.5 right-1.5 w-3 h-3 bg-emerald-400 border-2 border-white dark:border-emerald-950 rounded-full"
-                        title="Online"
-                      ></span>
-                    </button>
+                    {(() => {
+                      const modalAvatar = getUserAvatar(viewed);
+                      const modalCustom = isCustomAvatar(modalAvatar);
+                      return (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setZoomedImage({
+                              src: modalAvatar,
+                              caption: `${viewed.name} (${viewed.role === 'admin' ? 'Admin' : 'Active Member'})`
+                            })
+                          }
+                          className={`relative ${
+                            modalCustom ? 'w-24 h-24' : 'w-20 h-28'
+                          } rounded-2xl bg-emerald-50 dark:bg-emerald-900 border-2 border-emerald-500/80 dark:border-emerald-400/80 p-1 overflow-hidden shadow-md shrink-0 cursor-zoom-in group`}
+                          title="Tap to zoom avatar"
+                        >
+                          <img
+                            src={modalAvatar}
+                            alt={viewed.name}
+                            className={`w-full h-full rounded-xl group-hover:scale-105 transition ${
+                              modalCustom ? 'object-cover' : 'object-contain'
+                            }`}
+                          />
+                          <span
+                            className="absolute bottom-1.5 right-1.5 w-3 h-3 bg-emerald-400 border-2 border-white dark:border-emerald-950 rounded-full"
+                            title="Online"
+                          ></span>
+                        </button>
+                      );
+                    })()}
 
                     <div className="min-w-0 flex-1 space-y-1.5 pt-1">
                       <div className="flex flex-wrap items-center gap-2">
@@ -5057,6 +5685,29 @@ export default function App() {
                           <Clock className="w-3.5 h-3.5 shrink-0" />
                           <span>Last Active: {viewed.loginDate || 'Active recently'}</span>
                         </div>
+                        {viewed.isSelf && (
+                          <div className="pt-1.5">
+                            <button
+                              type="button"
+                              disabled={isUpdatingAvatar}
+                              onClick={() => profileAvatarInputRef.current?.click()}
+                              className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 dark:bg-emerald-400 dark:hover:bg-emerald-300 text-white dark:text-slate-950 text-[11px] font-bold inline-flex items-center gap-1.5 shadow-sm transition disabled:opacity-60"
+                            >
+                              {isUpdatingAvatar ? (
+                                <Loader2 className="w-3 h-3 animate-spin" />
+                              ) : (
+                                <Camera className="w-3 h-3" />
+                              )}
+                              <span>
+                                {isUpdatingAvatar
+                                  ? 'Saving...'
+                                  : isCustomAvatar(getUserAvatar(viewed))
+                                  ? 'Change Profile Pic'
+                                  : 'Add Profile Pic'}
+                              </span>
+                            </button>
+                          </div>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -5257,9 +5908,11 @@ export default function App() {
                   }`}
                 >
                   <img
-                    src={DEFAULT_AVATAR}
+                    src={getUserAvatar(currentUser)}
                     alt=""
-                    className="w-10 h-13 rounded-xl bg-white dark:bg-emerald-950 object-contain border border-emerald-500/60 shrink-0"
+                    className={`w-10 h-13 rounded-xl bg-white dark:bg-emerald-950 border border-emerald-500/60 shrink-0 ${
+                      isCustomAvatar(getUserAvatar(currentUser)) ? 'object-cover' : 'object-contain'
+                    }`}
                   />
                   <div className="min-w-0 flex-1">
                     <div className="text-xs font-black text-emerald-950 dark:text-white truncate">{currentUser.name}</div>
@@ -5292,6 +5945,55 @@ export default function App() {
 
                 <div>
                   <PWAInstallButton fullWidth />
+                </div>
+
+                {/* Background Home-Screen Notifications (Messages & Video Calls) */}
+                <div className="p-3 rounded-xl bg-emerald-50/80 dark:bg-emerald-900/50 border border-emerald-200 dark:border-emerald-700 space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 min-w-0">
+                      {isPushSubscribed ? (
+                        <Bell className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                      ) : (
+                        <BellOff className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0" />
+                      )}
+                      <div className="min-w-0">
+                        <div className="text-xs font-bold text-emerald-950 dark:text-white truncate">
+                          Background Notifications
+                        </div>
+                        <div className="text-[10px] text-emerald-700 dark:text-emerald-300">
+                          {pushPermission === 'unsupported'
+                            ? 'Install PWA on Home Screen to enable'
+                            : pushPermission === 'denied'
+                            ? 'Blocked in browser site settings'
+                            : isPushSubscribed
+                            ? 'Active — Home-screen messages & calls ON'
+                            : 'Receive alerts even when app is closed'}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  {pushPermission !== 'unsupported' && (
+                    <button
+                      type="button"
+                      disabled={isSubscribingPush || pushPermission === 'denied'}
+                      onClick={() =>
+                        isPushSubscribed
+                          ? unsubscribeFromBackgroundPush()
+                          : subscribeToBackgroundPush(false)
+                      }
+                      className={`w-full py-2 rounded-lg text-xs font-bold transition disabled:opacity-50 ${
+                        isPushSubscribed
+                          ? 'bg-white dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 text-emerald-800 dark:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-800'
+                          : 'bg-emerald-500 hover:bg-emerald-400 text-slate-950 shadow-xs'
+                      }`}
+                    >
+                      {isSubscribingPush
+                        ? 'Updating...'
+                        : isPushSubscribed
+                        ? 'Turn Off Background Alerts'
+                        : 'Enable Home-Screen Alerts'}
+                    </button>
+                  )}
                 </div>
 
                 {isAdmin && (

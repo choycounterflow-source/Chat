@@ -3,8 +3,13 @@ import crypto from 'crypto';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
+import { createRequire } from 'module';
 import dotenv from 'dotenv';
+import type WebPushType from 'web-push';
 import { GoogleGenAI } from '@google/genai';
+
+const require = createRequire(import.meta.url);
+const webpush = require('web-push') as typeof WebPushType;
 import {
   ChoyStore,
   ALLOWED_CHAT_ROOMS,
@@ -35,8 +40,78 @@ interface SseClient {
   userName: string;
 }
 
+const DEFAULT_PROFILE_ICON = '/assets/aistudio/image_20261121_145253_f477cbfa.webp';
+
+function getSafePushIcon(avatar?: string): string {
+  const clean = typeof avatar === 'string' ? avatar.trim() : '';
+  if (clean && (clean.startsWith('https://') || clean.startsWith('/assets/'))) {
+    return clean;
+  }
+  return DEFAULT_PROFILE_ICON;
+}
 const sseClients = new Set<SseClient>();
 const userLastSeenMap = new Map<string, number>();
+
+let vapidReadyPromise: Promise<string> | null = null;
+async function ensureWebPushConfigured(): Promise<string> {
+  if (!vapidReadyPromise) {
+    vapidReadyPromise = (async () => {
+      const keys = await store.getOrCreateVapidKeys(() => webpush.generateVAPIDKeys());
+      const subject = (process.env.VAPID_SUBJECT || 'mailto:choyjiez07@gmail.com').trim();
+      webpush.setVapidDetails(subject, keys.publicKey, keys.privateKey);
+      return keys.publicKey;
+    })().catch((err) => {
+      vapidReadyPromise = null;
+      throw err;
+    });
+  }
+  return vapidReadyPromise;
+}
+
+async function sendWebPushToTarget(
+  targetName: string,
+  excludeUserId: string,
+  payload: Record<string, unknown>,
+  urgency: 'normal' | 'high' = 'normal'
+): Promise<number> {
+  try {
+    await ensureWebPushConfigured();
+    const subs = await store.listPushSubscriptionsForTarget(targetName, excludeUserId);
+    if (subs.length === 0) return 0;
+
+    const body = JSON.stringify(payload);
+    const ttl = urgency === 'high' ? 90 : 86400; // 24h TTL for messages so turning mobile data ON delivers queued alerts
+    let sent = 0;
+
+    await Promise.allSettled(
+      subs.map(async (sub) => {
+        try {
+          await webpush.sendNotification(
+            {
+              endpoint: sub.endpoint,
+              keys: { p256dh: sub.keys.p256dh, auth: sub.keys.auth },
+            },
+            body,
+            { TTL: ttl, urgency }
+          );
+          sent += 1;
+        } catch (err: unknown) {
+          const statusCode =
+            typeof err === 'object' && err !== null && 'statusCode' in err
+              ? Number((err as { statusCode?: number }).statusCode)
+              : 0;
+          if (statusCode === 404 || statusCode === 410) {
+            await store.removePushSubscription(sub.endpoint).catch(() => {});
+          }
+        }
+      })
+    );
+    return sent;
+  } catch (err) {
+    console.warn('[WebPush] Dispatch skipped:', err instanceof Error ? err.message : err);
+    return 0;
+  }
+}
 
 interface QueuedRtcSignal {
   seq: number;
@@ -51,7 +126,7 @@ const rtcSignalQueue: QueuedRtcSignal[] = [];
 let rtcSignalSeq = 0;
 
 function pruneRtcQueue(now = Date.now()) {
-  const cutoff = now - 60_000;
+  const cutoff = now - 90_000;
   while (rtcSignalQueue.length > 0 && rtcSignalQueue[0].createdAtMs < cutoff) {
     rtcSignalQueue.shift();
   }
@@ -65,6 +140,20 @@ function touchUserPresence(userName: string) {
   if (key) {
     userLastSeenMap.set(key, Date.now());
   }
+}
+
+function getOnlineUserNames(now = Date.now()): string[] {
+  const online = new Set<string>();
+  for (const client of sseClients) {
+    const key = client.userName.trim().toLowerCase();
+    if (key) online.add(key);
+  }
+  for (const [key, lastSeen] of userLastSeenMap.entries()) {
+    if (now - lastSeen <= 20_000) {
+      online.add(key);
+    }
+  }
+  return Array.from(online);
 }
 
 function broadcastSync(topic: string) {
@@ -371,6 +460,7 @@ app.get('/api/auth/session', async (req, res) => {
         role: user.role,
         status: user.status,
         blockedUsers: user.blockedUsers,
+        avatar: user.avatar,
       },
     });
   } catch {
@@ -425,6 +515,7 @@ app.post('/api/auth/setup-admin', async (req, res) => {
         role: user.role,
         status: user.status,
         blockedUsers: user.blockedUsers,
+        avatar: user.avatar,
       },
     });
   } catch (err: unknown) {
@@ -472,6 +563,7 @@ app.post('/api/auth/register', async (req, res) => {
         role: user.role,
         status: user.status,
         blockedUsers: user.blockedUsers,
+        avatar: user.avatar,
       },
     });
   } catch (err: unknown) {
@@ -504,6 +596,7 @@ app.post('/api/auth/login', async (req, res) => {
           role: adminUser.role,
           status: adminUser.status,
           blockedUsers: adminUser.blockedUsers,
+          avatar: adminUser.avatar,
         },
       });
     }
@@ -527,10 +620,68 @@ app.post('/api/auth/login', async (req, res) => {
         role: user.role,
         status: user.status,
         blockedUsers: user.blockedUsers,
+        avatar: user.avatar,
       },
     });
   } catch (err: unknown) {
     return res.status(500).json({ error: err instanceof Error ? err.message : 'Login failed' });
+  }
+});
+
+app.post('/api/auth/avatar', requireAuth, async (req: AuthedRequest, res: Response) => {
+  try {
+    const hasBearer = Boolean(req.headers.authorization?.startsWith('Bearer '));
+    if (!hasBearer) {
+      const origin = req.headers.origin;
+      const expectedHost = (req.headers['x-forwarded-host'] || req.headers.host || '').toString().split(',')[0].trim();
+      const hasRequestedWith = req.headers['x-requested-with'] === 'XMLHttpRequest';
+      let originMatches = false;
+      if (typeof origin === 'string' && expectedHost) {
+        try {
+          originMatches = new URL(origin).host === expectedHost;
+        } catch {
+          originMatches = false;
+        }
+      }
+      if (!originMatches && !hasRequestedWith) {
+        return res.status(403).json({ error: 'Cross-origin request blocked' });
+      }
+    }
+
+    const user = req.choyUser!;
+    const rawAvatar = req.body?.avatarUrl;
+    let nextAvatar: string | undefined;
+
+    if (rawAvatar === null || rawAvatar === undefined || (typeof rawAvatar === 'string' && !rawAvatar.trim())) {
+      nextAvatar = undefined;
+    } else if (typeof rawAvatar === 'string') {
+      const trimmed = rawAvatar.trim();
+      const safe = sanitizeMediaUrl(trimmed);
+      const isAllowedImage =
+        Boolean(safe) &&
+        (safe!.startsWith('https://') ||
+          safe!.startsWith('/assets/') ||
+          safe!.startsWith('data:image/'));
+      if (!isAllowedImage) {
+        return res.status(400).json({ error: 'Please upload a valid image (JPG, PNG, WebP, or GIF).' });
+      }
+      nextAvatar = safe;
+    } else {
+      return res.status(400).json({ error: 'Invalid profile picture format.' });
+    }
+
+    const updated = await store.updateUserAvatar(user.id, nextAvatar);
+    if (!updated) {
+      return res.status(404).json({ error: 'Account not found' });
+    }
+    broadcastSync('users');
+    broadcastSync('posts');
+    return res.json({
+      ok: true,
+      avatar: updated.avatar || null,
+    });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to update profile picture' });
   }
 });
 
@@ -614,6 +765,61 @@ app.get('/api/choy/stream', requireAuth, (req: AuthedRequest, res: Response) => 
   });
 });
 
+// ---- BACKGROUND WEB PUSH NOTIFICATIONS & LIVE PRESENCE ----
+app.get('/api/choy/push/vapid-public-key', requireAuth, async (_req: AuthedRequest, res: Response) => {
+  try {
+    const publicKey = await ensureWebPushConfigured();
+    return res.json({ publicKey });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Push service unavailable' });
+  }
+});
+
+app.post('/api/choy/push/subscribe', requireAuth, async (req: AuthedRequest, res: Response) => {
+  try {
+    const user = req.choyUser!;
+    touchUserPresence(user.name);
+    const sub = req.body?.subscription || req.body;
+    const endpoint = typeof sub?.endpoint === 'string' ? sub.endpoint.trim() : '';
+    const p256dh = typeof sub?.keys?.p256dh === 'string' ? sub.keys.p256dh.trim() : '';
+    const auth = typeof sub?.keys?.auth === 'string' ? sub.keys.auth.trim() : '';
+
+    if (!endpoint || !endpoint.startsWith('https://') || !p256dh || !auth) {
+      return res.status(400).json({ error: 'Valid push subscription with HTTPS endpoint and keys is required' });
+    }
+
+    await store.savePushSubscription({
+      endpoint,
+      userId: user.id,
+      userName: user.name,
+      keys: { p256dh, auth },
+    });
+
+    return res.json({ ok: true, subscribed: true });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to save push subscription' });
+  }
+});
+
+app.post('/api/choy/push/unsubscribe', requireAuth, async (req: AuthedRequest, res: Response) => {
+  try {
+    const endpoint = typeof req.body?.endpoint === 'string' ? req.body.endpoint.trim() : '';
+    if (endpoint) {
+      await store.removePushSubscription(endpoint);
+    }
+    return res.json({ ok: true });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to unsubscribe' });
+  }
+});
+
+app.post('/api/choy/presence', requireAuth, (req: AuthedRequest, res: Response) => {
+  const user = req.choyUser!;
+  touchUserPresence(user.name);
+  broadcastSync('presence');
+  return res.json({ ok: true, onlineUsers: getOnlineUserNames() });
+});
+
 // ---- REAL-TIME WEBRTC VIDEO CALL SIGNALING (SSE + RELIABLE POLL FALLBACK) ----
 app.get('/api/choy/rtc/poll', requireAuth, (req: AuthedRequest, res: Response) => {
   const user = req.choyUser!;
@@ -624,7 +830,7 @@ app.get('/api/choy/rtc/poll', requireAuth, (req: AuthedRequest, res: Response) =
   const rawSince = Number(req.query.since);
   const since = Number.isFinite(rawSince) && rawSince > 0 ? rawSince : 0;
   const myNameLower = user.name.trim().toLowerCase();
-  const minFreshTs = since === 0 ? now - 25_000 : 0;
+  const minFreshTs = since === 0 ? now - 75_000 : 0;
 
   const matched = rtcSignalQueue.filter((item) => {
     if (item.seq <= since) return false;
@@ -674,6 +880,40 @@ app.post('/api/choy/rtc/signal', requireAuth, async (req: AuthedRequest, res: Re
       ts: Date.now(),
     });
 
+    // Wake closed/backgrounded devices on mobile data with Caller Profile Icon alert
+    if (type === 'offer') {
+      void sendWebPushToTarget(
+        targetName,
+        user.id,
+        {
+          kind: 'call',
+          title: `Incoming Video Call · ${user.name}`,
+          body: `${user.name} is calling you on Choy Chat. Tap Answer to join live video.`,
+          icon: getSafePushIcon(user.avatar),
+          badge: '/pwa-192x192.png',
+          tag: `choy-call-${callId}`,
+          callId,
+          roomId,
+          callerName: user.name,
+          url: `/?incomingCall=${encodeURIComponent(callId)}&caller=${encodeURIComponent(
+            user.name
+          )}&room=${encodeURIComponent(roomId)}`,
+        },
+        'high'
+      );
+    } else if (type === 'hangup' || type === 'decline') {
+      void sendWebPushToTarget(
+        targetName,
+        user.id,
+        {
+          kind: 'call_ended',
+          callId,
+          callerName: user.name,
+        },
+        'high'
+      );
+    }
+
     return res.json({ ok: true, ...result });
   } catch (err: unknown) {
     return res.status(500).json({ error: err instanceof Error ? err.message : 'Signaling failed' });
@@ -708,12 +948,14 @@ app.get('/api/choy/state', requireAuth, async (req: AuthedRequest, res: Response
         role: user.role,
         status: user.status,
         blockedUsers: user.blockedUsers,
+        avatar: user.avatar,
       },
       posts,
       messages,
       users,
       knowledge,
       leaderboard,
+      onlineUsers: getOnlineUserNames(),
       ...(isAdmin ? { ledger, settings } : {}),
     });
   } catch (err: unknown) {
@@ -741,7 +983,7 @@ app.post('/api/choy/posts', requireAuth, async (req: AuthedRequest, res: Respons
       authorId: user.id,
       authorName: user.name,
       authorHandle: `@${safeHandle}`,
-      authorAvatar: '/assets/aistudio/image_20261121_145253_f477cbfa.webp',
+      authorAvatar: user.avatar || DEFAULT_PROFILE_ICON,
       content,
       mediaUrl: safeUrl,
       mediaType: safeUrl ? mediaType : 'text',
@@ -808,6 +1050,35 @@ app.post('/api/choy/messages', requireAuth, async (req: AuthedRequest, res: Resp
       transcript,
     });
     broadcastSync('messages');
+
+    // Dispatch background Web Push Notification (delivers on home screen even when app is closed)
+    const isGroupRoom = resolvedRoomId.trim().toLowerCase() === 'vip group';
+    const openRoom = isGroupRoom ? 'VIP Group' : user.name;
+    const previewBody =
+      text ||
+      (mediaType === 'image'
+        ? 'Sent you a photo'
+        : mediaType === 'video'
+        ? 'Sent you a video'
+        : mediaType === 'audio'
+        ? transcript || 'Sent you a voice message'
+        : 'Sent you a file');
+    void sendWebPushToTarget(
+      resolvedRoomId,
+      user.id,
+      {
+        kind: 'message',
+        title: isGroupRoom ? `${user.name} · VIP Group` : user.name,
+        body: previewBody.slice(0, 180),
+        icon: getSafePushIcon(user.avatar),
+        badge: '/pwa-192x192.png',
+        tag: `choy-msg-${openRoom.toLowerCase()}`,
+        roomId: openRoom,
+        url: `/?openChat=${encodeURIComponent(openRoom)}`,
+      },
+      'normal'
+    );
+
     return res.status(201).json(msg);
   } catch (err: unknown) {
     return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to send message' });
