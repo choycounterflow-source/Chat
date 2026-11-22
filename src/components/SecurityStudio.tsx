@@ -26,6 +26,7 @@ export interface SecurityUserAccount {
   phone: string;
   role?: 'admin' | 'member';
   status: 'pending' | 'approved';
+  newsfeed?: 'feed_a' | 'feed_b' | 'both';
   loginDate: string;
 }
 
@@ -41,6 +42,7 @@ interface SecurityStudioProps {
   setUsersList: React.Dispatch<React.SetStateAction<SecurityUserAccount[]>>;
   onAddUser?: (name: string, phone: string) => Promise<void> | void;
   onDeleteUser?: (userId: string) => Promise<void> | void;
+  onUpdateUserNewsfeed?: (userId: string, newsfeed: 'feed_a' | 'feed_b' | 'both') => Promise<void> | void;
   deletingUserIds?: string[];
   isCloudSynced?: boolean;
   storageMode?: 'postgres' | 'memory';
@@ -112,6 +114,7 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
   setUsersList,
   onAddUser,
   onDeleteUser,
+  onUpdateUserNewsfeed,
   deletingUserIds = [],
   isCloudSynced = false,
   storageMode = 'memory',
@@ -136,6 +139,9 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
   });
   const [editingLinks, setEditingLinks] = useState(false);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  const [newsfeedATitle, setNewsfeedATitle] = useState(() => localStorage.getItem('choychat_nf_a_title') || 'Newsfeed A');
+  const [newsfeedBTitle, setNewsfeedBTitle] = useState(() => localStorage.getItem('choychat_nf_b_title') || 'Newsfeed B');
+  const [nfTitlesSaved, setNfTitlesSaved] = useState(false);
 
   // 2. Simple Unified Keys (Pre-filled with safe known values)
   const [mainKeys, setMainKeys] = useState<MainKeysConfig>(() => {
@@ -984,6 +990,93 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
               <Trash2 className="w-3.5 h-3.5" /> Clear App Cache
             </button>
           </div>
+        </div>
+      </div>
+
+      {/* NEWSFEEDS A & B SETUP & USER ASSIGNMENT */}
+      <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-5 space-y-4 shadow">
+        <div className="flex items-center gap-2">
+          <Globe className="w-4 h-4 text-emerald-700 dark:text-emerald-300" />
+          <h3 className="text-sm font-bold text-emerald-950 dark:text-white">Newsfeeds A & B Setup & User Assignment</h3>
+        </div>
+        <p className="text-xs text-emerald-800 dark:text-emerald-200">
+          Configure separated Newsfeeds ({newsfeedATitle} vs {newsfeedBTitle}). Users assigned to Newsfeed A will only see posts from users in Newsfeed A and Both A&B. Users in Newsfeed B will only see Newsfeed B and Both A&B.
+        </p>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-800">
+          <div className="space-y-1">
+            <label className="text-[11px] font-bold text-emerald-900 dark:text-emerald-200">Newsfeed A Name</label>
+            <input
+              type="text"
+              value={newsfeedATitle}
+              onChange={(e) => setNewsfeedATitle(e.target.value)}
+              className="w-full p-2 bg-white dark:bg-slate-950 border border-emerald-300 dark:border-emerald-700 rounded-xl text-xs text-emerald-950 dark:text-white"
+            />
+          </div>
+          <div className="space-y-1">
+            <label className="text-[11px] font-bold text-emerald-900 dark:text-emerald-200">Newsfeed B Name</label>
+            <input
+              type="text"
+              value={newsfeedBTitle}
+              onChange={(e) => setNewsfeedBTitle(e.target.value)}
+              className="w-full p-2 bg-white dark:bg-slate-950 border border-emerald-300 dark:border-emerald-700 rounded-xl text-xs text-emerald-950 dark:text-white"
+            />
+          </div>
+          <div className="sm:col-span-2 flex items-center justify-between pt-1">
+            <button
+              type="button"
+              onClick={() => {
+                localStorage.setItem('choychat_nf_a_title', newsfeedATitle);
+                localStorage.setItem('choychat_nf_b_title', newsfeedBTitle);
+                setNfTitlesSaved(true);
+                setTimeout(() => setNfTitlesSaved(false), 2000);
+              }}
+              className="px-3 py-1.5 rounded-lg bg-emerald-400 text-slate-950 font-bold text-xs"
+            >
+              Save Newsfeed Titles
+            </button>
+            {nfTitlesSaved && <span className="text-emerald-700 dark:text-emerald-300 text-xs font-semibold">Titles Saved!</span>}
+          </div>
+        </div>
+
+        <div className="overflow-x-auto rounded-xl border border-emerald-200 dark:border-emerald-800">
+          <table className="w-full text-left border-collapse text-xs whitespace-nowrap">
+            <thead className="bg-emerald-50 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300 text-[10px] uppercase">
+              <tr>
+                <th className="p-3">User Name</th>
+                <th className="p-3">Phone / ID</th>
+                <th className="p-3">Assigned Newsfeed</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-emerald-200 dark:divide-emerald-800 bg-white dark:bg-emerald-950/50">
+              {usersList.map((u) => (
+                <tr key={u.id} className="hover:bg-emerald-50 dark:hover:bg-emerald-900/40">
+                  <td className="p-3 font-bold text-emerald-950 dark:text-white">{u.name}</td>
+                  <td className="p-3 font-mono text-emerald-700 dark:text-emerald-300">{u.phone}</td>
+                  <td className="p-3">
+                    <select
+                      value={u.newsfeed || 'both'}
+                      onChange={(e) => {
+                        const val = e.target.value as 'feed_a' | 'feed_b' | 'both';
+                        if (onUpdateUserNewsfeed) {
+                          onUpdateUserNewsfeed(u.id, val);
+                        } else {
+                          setUsersList(
+                            usersList.map((item) => (item.id === u.id ? { ...item, newsfeed: val } : item))
+                          );
+                        }
+                      }}
+                      className="p-1.5 rounded-lg bg-white dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 text-emerald-950 dark:text-white font-bold text-xs"
+                    >
+                      <option value="feed_a">{newsfeedATitle || 'Newsfeed A'}</option>
+                      <option value="feed_b">{newsfeedBTitle || 'Newsfeed B'}</option>
+                      <option value="both">Both A & B</option>
+                    </select>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       </div>
 

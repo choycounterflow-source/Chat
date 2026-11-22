@@ -350,6 +350,7 @@ export default function App() {
   const [newPostMediaName, setNewPostMediaName] = useState('');
   const [newPostType, setNewPostType] = useState<'text' | 'image' | 'video'>('text');
   const [newPostCategory, setNewPostCategory] = useState<'feed' | 'myday' | 'video'>('feed');
+  const [newPostNewsfeed, setNewPostNewsfeed] = useState<'feed_a' | 'feed_b' | 'both'>('both');
   const [isProcessingPostMedia, setIsProcessingPostMedia] = useState(false);
   const postFileInputRef = useRef<HTMLInputElement>(null);
 
@@ -2220,6 +2221,29 @@ export default function App() {
     }
   };
 
+  const handleUpdateUserNewsfeed = async (userId: string, newsfeed: 'feed_a' | 'feed_b' | 'both') => {
+    try {
+      const res = await fetch(`/api/admin/users/${userId}/newsfeed`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+        },
+        body: JSON.stringify({ newsfeed }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || 'Failed to update newsfeed');
+      }
+      const data = await res.json();
+      setUsersList((prev) =>
+        prev.map((u) => (u.id === userId ? { ...u, newsfeed: data.user.newsfeed } : u))
+      );
+    } catch (err) {
+      showNotice(err instanceof Error ? err.message : 'Failed to update newsfeed');
+    }
+  };
+
   const handleCreatePost = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newPostText.trim() && !newPostMedia.trim()) return;
@@ -2230,8 +2254,9 @@ export default function App() {
           content: newPostText.trim(),
           mediaUrl: newPostMedia.trim() || undefined,
           mediaType: newPostMedia.trim() ? newPostType : 'text',
-          category: newPostCategory
-        })
+          category: newPostCategory,
+          newsfeed: newPostNewsfeed,
+        }),
       });
       setNewPostText('');
       setNewPostMedia('');
@@ -4186,6 +4211,18 @@ export default function App() {
                 </div>
 
                 <form onSubmit={handleCreatePost} className="space-y-2.5">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[11px] font-bold text-emerald-800 dark:text-emerald-200">Target Newsfeed:</span>
+                    <select
+                      value={newPostNewsfeed}
+                      onChange={(e) => setNewPostNewsfeed(e.target.value as 'feed_a' | 'feed_b' | 'both')}
+                      className="p-1.5 rounded-xl bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 text-emerald-950 dark:text-white text-xs font-bold"
+                    >
+                      <option value="feed_a">Newsfeed A</option>
+                      <option value="feed_b">Newsfeed B</option>
+                      <option value="both">Both A & B</option>
+                    </select>
+                  </div>
                   <input
                     type="file"
                     ref={postFileInputRef}
@@ -5875,6 +5912,7 @@ export default function App() {
               setUsersList={setUsersList}
               onAddUser={(name, phone) => handleAddCloudUser(name, phone)}
               onDeleteUser={handleDeleteCloudUser}
+              onUpdateUserNewsfeed={handleUpdateUserNewsfeed}
               deletingUserIds={deletingUserIds}
               isCloudSynced
               storageMode={storageMode}

@@ -1008,6 +1008,12 @@ app.get('/api/choy/state', requireAuth, async (req: AuthedRequest, res: Response
           );
         });
 
+    const userNewsfeed = user.newsfeed || 'both';
+    const filteredPosts =
+      isAdmin || userNewsfeed === 'both'
+        ? posts
+        : posts.filter((p) => p.newsfeed === 'both' || p.newsfeed === userNewsfeed);
+
     let ledger = undefined;
     let settings = undefined;
     if (isAdmin) {
@@ -1024,8 +1030,9 @@ app.get('/api/choy/state', requireAuth, async (req: AuthedRequest, res: Response
         status: user.status,
         blockedUsers: user.blockedUsers,
         avatar: user.avatar,
+        newsfeed: user.newsfeed,
       },
-      posts,
+      posts: filteredPosts,
       messages,
       users,
       knowledge,
@@ -1052,6 +1059,11 @@ app.post('/api/choy/posts', requireAuth, async (req: AuthedRequest, res: Respons
     const rawCat = req.body?.category;
     const category: 'feed' | 'myday' | 'video' =
       rawCat === 'myday' || rawCat === 'video' ? rawCat : 'feed';
+    const rawNf = req.body?.newsfeed;
+    const postNewsfeed =
+      rawNf === 'feed_a' || rawNf === 'feed_b' || rawNf === 'both'
+        ? rawNf
+        : user.newsfeed || 'both';
 
     const safeHandle = user.name.toLowerCase().replace(/[^a-z0-9]+/g, '').slice(0, 18) || 'member';
     const post = await store.createPost({
@@ -1063,6 +1075,7 @@ app.post('/api/choy/posts', requireAuth, async (req: AuthedRequest, res: Respons
       mediaUrl: safeUrl,
       mediaType: safeUrl ? mediaType : 'text',
       category,
+      newsfeed: postNewsfeed,
     });
     broadcastSync('posts');
     return res.status(201).json(post);
@@ -1184,6 +1197,33 @@ app.put('/api/choy/blocked-users', requireAuth, async (req: AuthedRequest, res: 
     return res.json({ blockedUsers: updated });
   } catch (err: unknown) {
     return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to update blocked users' });
+  }
+});
+
+app.patch('/api/admin/users/:id/newsfeed', requireAuth, requireAdmin, async (req: AuthedRequest, res: Response) => {
+  try {
+    const userId = req.params.id;
+    const newsfeed = req.body?.newsfeed;
+    const updated = await store.updateUserNewsfeed(userId, newsfeed);
+    if (!updated) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    broadcastSync('users');
+    return res.json({
+      ok: true,
+      user: {
+        id: updated.id,
+        name: updated.name,
+        phone: updated.phone,
+        role: updated.role,
+        status: updated.status,
+        blockedUsers: updated.blockedUsers,
+        avatar: updated.avatar,
+        newsfeed: updated.newsfeed,
+      },
+    });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to update user newsfeed' });
   }
 });
 

@@ -10,6 +10,7 @@ export interface StoredUser {
   status: 'pending' | 'approved';
   blockedUsers: string[];
   avatar?: string;
+  newsfeed: 'feed_a' | 'feed_b' | 'both';
   createdAt: string;
   updatedAt: string;
 }
@@ -21,6 +22,7 @@ export interface PublicUserDTO {
   role: 'admin' | 'member';
   status: 'pending' | 'approved';
   avatar?: string;
+  newsfeed: 'feed_a' | 'feed_b' | 'both';
   loginDate: string;
 }
 
@@ -34,6 +36,7 @@ export interface StoredPost {
   mediaUrl?: string;
   mediaType: 'text' | 'image' | 'video';
   category: 'feed' | 'myday' | 'video';
+  newsfeed: 'feed_a' | 'feed_b' | 'both';
   createdAt: string;
 }
 
@@ -336,10 +339,12 @@ export class ChoyStore {
         status TEXT NOT NULL DEFAULT 'approved',
         blocked_users JSONB NOT NULL DEFAULT '[]'::jsonb,
         avatar_url TEXT,
+        newsfeed TEXT NOT NULL DEFAULT 'both',
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
       ALTER TABLE app_users ADD COLUMN IF NOT EXISTS avatar_url TEXT;
+      ALTER TABLE app_users ADD COLUMN IF NOT EXISTS newsfeed TEXT NOT NULL DEFAULT 'both';
       CREATE TABLE IF NOT EXISTS app_posts (
         id TEXT PRIMARY KEY,
         author_id TEXT NOT NULL,
@@ -350,8 +355,10 @@ export class ChoyStore {
         media_url TEXT,
         media_type TEXT NOT NULL DEFAULT 'text',
         category TEXT NOT NULL DEFAULT 'feed',
+        newsfeed TEXT NOT NULL DEFAULT 'both',
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
+      ALTER TABLE app_posts ADD COLUMN IF NOT EXISTS newsfeed TEXT NOT NULL DEFAULT 'both';
       CREATE TABLE IF NOT EXISTS app_messages (
         id TEXT PRIMARY KEY,
         sender_id TEXT NOT NULL,
@@ -497,6 +504,7 @@ export class ChoyStore {
         mediaUrl: DEFAULT_AVATAR,
         mediaType: 'image',
         category: 'feed',
+        newsfeed: 'both',
         createdAt: now,
       },
     ];
@@ -613,14 +621,15 @@ export class ChoyStore {
       role: 'admin',
       status: 'approved',
       blockedUsers: [],
+      newsfeed: 'both',
       createdAt: now,
       updatedAt: now,
     };
     if (this.usePostgres && this.pool) {
       await this.pool.query(
-        `INSERT INTO app_users (id, name, phone, pin_hash, role, status, blocked_users)
-         VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)`,
-        [user.id, user.name, user.phone, user.pinHash, user.role, user.status, JSON.stringify(user.blockedUsers)]
+        `INSERT INTO app_users (id, name, phone, pin_hash, role, status, blocked_users, newsfeed)
+         VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8)`,
+        [user.id, user.name, user.phone, user.pinHash, user.role, user.status, JSON.stringify(user.blockedUsers), user.newsfeed]
       );
     } else {
       this.memUsers.push(user);
@@ -634,10 +643,15 @@ export class ChoyStore {
     pin: string;
     role: 'admin' | 'member';
     status: 'pending' | 'approved';
+    newsfeed?: 'feed_a' | 'feed_b' | 'both';
   }): Promise<StoredUser> {
     await this.ready();
     const id = (params.role === 'admin' ? 'admin_' : 'u_') + crypto.randomUUID().slice(0, 10);
     const now = new Date().toISOString();
+    const newsfeed =
+      params.newsfeed === 'feed_a' || params.newsfeed === 'feed_b' || params.newsfeed === 'both'
+        ? params.newsfeed
+        : 'both';
     const user: StoredUser = {
       id,
       name: params.name.slice(0, 80),
@@ -646,19 +660,38 @@ export class ChoyStore {
       role: params.role,
       status: params.status,
       blockedUsers: [],
+      newsfeed,
       createdAt: now,
       updatedAt: now,
     };
     if (this.usePostgres && this.pool) {
       await this.pool.query(
-        `INSERT INTO app_users (id, name, phone, pin_hash, role, status, blocked_users)
-         VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)`,
-        [user.id, user.name, user.phone, user.pinHash, user.role, user.status, JSON.stringify(user.blockedUsers)]
+        `INSERT INTO app_users (id, name, phone, pin_hash, role, status, blocked_users, newsfeed)
+         VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8)`,
+        [user.id, user.name, user.phone, user.pinHash, user.role, user.status, JSON.stringify(user.blockedUsers), user.newsfeed]
       );
     } else {
       this.memUsers.push(user);
     }
     return user;
+  }
+
+  public async updateUserNewsfeed(userId: string, newsfeed: 'feed_a' | 'feed_b' | 'both'): Promise<StoredUser | null> {
+    await this.ready();
+    const clean = newsfeed === 'feed_a' || newsfeed === 'feed_b' ? newsfeed : 'both';
+    if (this.usePostgres && this.pool) {
+      const res = await this.pool.query(
+        'UPDATE app_users SET newsfeed = $1, updated_at = NOW() WHERE id = $2 RETURNING *',
+        [clean, userId]
+      );
+      if (res.rows.length === 0) return null;
+      return this.mapUserRow(res.rows[0]);
+    }
+    const found = this.memUsers.find((u) => u.id === userId);
+    if (!found) return null;
+    found.newsfeed = clean;
+    found.updatedAt = new Date().toISOString();
+    return found;
   }
 
   public async listUsers(includePhone: boolean): Promise<PublicUserDTO[]> {
@@ -677,6 +710,7 @@ export class ChoyStore {
       role: u.role,
       status: u.status,
       avatar: u.avatar,
+      newsfeed: u.newsfeed,
       loginDate: u.updatedAt.slice(0, 16).replace('T', ' '),
     }));
   }
@@ -892,23 +926,38 @@ export class ChoyStore {
         mediaUrl: r.media_url || undefined,
         mediaType: r.media_type,
         category: r.category,
+        newsfeed: (r.newsfeed === 'feed_a' || r.newsfeed === 'feed_b' || r.newsfeed === 'both'
+          ? r.newsfeed
+          : 'both') as 'feed_a' | 'feed_b' | 'both',
         createdAt: new Date(r.created_at).toISOString(),
       }));
     }
-    return [...this.memPosts].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    return [...this.memPosts]
+      .map((p) => ({
+        ...p,
+        newsfeed: (p.newsfeed === 'feed_a' || p.newsfeed === 'feed_b' || p.newsfeed === 'both'
+          ? p.newsfeed
+          : 'both') as 'feed_a' | 'feed_b' | 'both',
+      }))
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   }
 
   public async createPost(post: Omit<StoredPost, 'id' | 'createdAt'>): Promise<StoredPost> {
     await this.ready();
+    const nf =
+      post.newsfeed === 'feed_a' || post.newsfeed === 'feed_b' || post.newsfeed === 'both'
+        ? post.newsfeed
+        : 'both';
     const item: StoredPost = {
       ...post,
+      newsfeed: nf,
       id: 'p_' + crypto.randomUUID().slice(0, 12),
       createdAt: new Date().toISOString(),
     };
     if (this.usePostgres && this.pool) {
       await this.pool.query(
-        `INSERT INTO app_posts (id, author_id, author_name, author_handle, author_avatar, content, media_url, media_type, category)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+        `INSERT INTO app_posts (id, author_id, author_name, author_handle, author_avatar, content, media_url, media_type, category, newsfeed)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
         [
           item.id,
           item.authorId,
@@ -919,6 +968,7 @@ export class ChoyStore {
           item.mediaUrl || null,
           item.mediaType,
           item.category,
+          item.newsfeed,
         ]
       );
     } else {
@@ -1375,6 +1425,9 @@ export class ChoyStore {
 
   private mapUserRow(r: Record<string, unknown>): StoredUser {
     const rawAvatar = typeof r.avatar_url === 'string' ? r.avatar_url.trim() : '';
+    const rawNewsfeed = typeof r.newsfeed === 'string' ? r.newsfeed.trim().toLowerCase() : 'both';
+    const newsfeed: 'feed_a' | 'feed_b' | 'both' =
+      rawNewsfeed === 'feed_a' || rawNewsfeed === 'feed_b' ? rawNewsfeed : 'both';
     return {
       id: String(r.id),
       name: String(r.name),
@@ -1384,6 +1437,7 @@ export class ChoyStore {
       status: String(r.status || '').trim().toLowerCase() === 'approved' ? 'approved' : 'pending',
       blockedUsers: Array.isArray(r.blocked_users) ? (r.blocked_users as string[]) : [],
       avatar: rawAvatar || undefined,
+      newsfeed,
       createdAt: new Date(String(r.created_at)).toISOString(),
       updatedAt: new Date(String(r.updated_at)).toISOString(),
     };
