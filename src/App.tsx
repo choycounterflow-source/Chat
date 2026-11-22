@@ -63,9 +63,7 @@ import {
   MapPin,
   Copy,
   ExternalLink,
-  Globe,
-  CheckCircle2,
-  Lock
+  Globe
 } from 'lucide-react';
 import { PWAInstallButton } from './components/PWAInstallButton';
 import { OfflineIndicator } from './components/OfflineIndicator';
@@ -389,6 +387,7 @@ export default function App() {
     | 'admin_approvals'
     | 'admin_knowledge'
     | 'admin_prices'
+    | 'admin_newsfeeds'
     | 'admin_security'
     | 'choyai'
     | 'github'
@@ -483,7 +482,17 @@ export default function App() {
     feedBTitle: localStorage.getItem('choychat_nf_b_title') || 'Newsfeed B',
   }));
   const [adminNewsfeedFilter, setAdminNewsfeedFilter] = useState<'all' | 'feed_a' | 'feed_b'>('all');
+  const [adminNfTitleA, setAdminNfTitleA] = useState(() => localStorage.getItem('choychat_nf_a_title') || 'Newsfeed A');
+  const [adminNfTitleB, setAdminNfTitleB] = useState(() => localStorage.getItem('choychat_nf_b_title') || 'Newsfeed B');
+  const [savingAdminNfTitles, setSavingAdminNfTitles] = useState(false);
+  const [adminNfSaved, setAdminNfSaved] = useState(false);
+  const [adminNfUserSearch, setAdminNfUserSearch] = useState('');
   const [isProcessingPostMedia, setIsProcessingPostMedia] = useState(false);
+
+  useEffect(() => {
+    setAdminNfTitleA(newsfeedConfig.feedATitle);
+    setAdminNfTitleB(newsfeedConfig.feedBTitle);
+  }, [newsfeedConfig]);
   const postFileInputRef = useRef<HTMLInputElement>(null);
 
   const [activeChat, setActiveChat] = useState<string>('VIP Group');
@@ -2876,6 +2885,31 @@ export default function App() {
     }
   };
 
+  const handleSaveAdminNewsfeedTitles = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const cleanA = adminNfTitleA.trim() || 'Newsfeed A';
+    const cleanB = adminNfTitleB.trim() || 'Newsfeed B';
+    setAdminNfTitleA(cleanA);
+    setAdminNfTitleB(cleanB);
+    localStorage.setItem('choychat_nf_a_title', cleanA);
+    localStorage.setItem('choychat_nf_b_title', cleanB);
+    setSavingAdminNfTitles(true);
+    try {
+      const data = await apiFetch('/api/admin/newsfeed-config', {
+        method: 'PUT',
+        body: JSON.stringify({ feedATitle: cleanA, feedBTitle: cleanB }),
+      });
+      const saved = data.newsfeedConfig || { feedATitle: cleanA, feedBTitle: cleanB };
+      setNewsfeedConfig(saved);
+      setAdminNfSaved(true);
+      setTimeout(() => setAdminNfSaved(false), 2000);
+    } catch (err) {
+      showNotice(err instanceof Error ? err.message : 'Failed to save newsfeed titles');
+    } finally {
+      setSavingAdminNfTitles(false);
+    }
+  };
+
   const handleDownloadChatBackup = (format: 'json' | 'txt') => {
     const roomMsgs = [...cloudMessages, ...localMessages].filter((m) =>
       messageBelongsToRoom(m, activeChat, currentUser?.name || '')
@@ -4786,6 +4820,18 @@ export default function App() {
                 </button>
                 <button
                   type="button"
+                  onClick={() => setActiveTab('admin_newsfeeds')}
+                  className={`px-3 py-2 rounded-xl flex items-center gap-2 whitespace-nowrap shrink-0 ${
+                    activeTab === 'admin_newsfeeds'
+                      ? 'bg-indigo-600 text-white font-bold'
+                      : 'text-indigo-200 hover:bg-emerald-800'
+                  }`}
+                >
+                  <Globe className="w-4 h-4 shrink-0" />
+                  <span>Newsfeed Setup</span>
+                </button>
+                <button
+                  type="button"
                   onClick={() => setActiveTab('admin_security')}
                   className={`px-3 py-2 rounded-xl flex items-center gap-2 whitespace-nowrap shrink-0 ${
                     activeTab === 'admin_security'
@@ -5042,21 +5088,21 @@ export default function App() {
           {/* FEED */}
           {activeTab === 'feed' && (
             <div className="max-w-2xl mx-auto space-y-4">
-              {/* Visible Newsfeed Choices Bar (Admin chooses assignment; Users see choices read-only) */}
-              <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-3.5 shadow-sm space-y-2">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="flex items-center gap-1.5 text-xs font-bold text-emerald-950 dark:text-white">
-                    <Globe className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
-                    <span>Newsfeed Choices</span>
+              {isAdmin && (
+                <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-3.5 shadow-sm space-y-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-1.5 text-xs font-bold text-emerald-950 dark:text-white">
+                      <Globe className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+                      <span>Admin Newsfeed Filter</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab('admin_newsfeeds')}
+                      className="px-2.5 py-1 rounded-xl text-[11px] font-bold bg-indigo-600 hover:bg-indigo-500 text-white transition"
+                    >
+                      Newsfeed Setup
+                    </button>
                   </div>
-                  <span className="text-[10px] font-semibold text-emerald-700 dark:text-emerald-300">
-                    {isAdmin
-                      ? 'Admin Filter & Assignment Active'
-                      : `Assigned by Admin: ${getNewsfeedLabel(currentUser.newsfeed)}`}
-                  </span>
-                </div>
-
-                {isAdmin ? (
                   <div className="flex flex-wrap items-center gap-1.5">
                     <button
                       type="button"
@@ -5091,41 +5137,9 @@ export default function App() {
                     >
                       {newsfeedConfig.feedBTitle}
                     </button>
-                    <button
-                      type="button"
-                      onClick={() => setActiveTab('admin_security')}
-                      className="ml-auto px-2.5 py-1 rounded-xl text-[11px] font-bold bg-amber-100 dark:bg-amber-500/20 text-amber-900 dark:text-amber-200 border border-amber-300 dark:border-amber-500/40 hover:brightness-95 transition"
-                    >
-                      Assign Users
-                    </button>
                   </div>
-                ) : (
-                  <div className="flex flex-wrap items-center gap-1.5">
-                    {(
-                      [
-                        { id: 'feed_a', label: newsfeedConfig.feedATitle },
-                        { id: 'feed_b', label: newsfeedConfig.feedBTitle },
-                        { id: 'both', label: `Both (${newsfeedConfig.feedATitle} & ${newsfeedConfig.feedBTitle})` },
-                      ] as const
-                    ).map((choice) => {
-                      const assigned = (currentUser.newsfeed || 'both') === choice.id;
-                      return (
-                        <span
-                          key={choice.id}
-                          className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-xl text-[11px] font-bold border ${
-                            assigned
-                              ? 'bg-emerald-500/20 dark:bg-emerald-500/25 border-emerald-500 text-emerald-950 dark:text-emerald-100'
-                              : 'bg-emerald-50/60 dark:bg-emerald-950/60 border-emerald-200/80 dark:border-emerald-800 text-emerald-700/80 dark:text-emerald-300/75'
-                          }`}
-                        >
-                          {assigned ? <CheckCircle2 className="w-3 h-3 text-emerald-600 dark:text-emerald-400" /> : <Lock className="w-2.5 h-2.5 opacity-60" />}
-                          <span>{choice.label}</span>
-                        </span>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
+                </div>
+              )}
 
               <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-4 shadow space-y-3">
                 <div className="flex flex-wrap items-center gap-2 border-b border-emerald-200 dark:border-emerald-800 pb-2 text-xs font-bold">
@@ -5295,10 +5309,14 @@ export default function App() {
                             </div>
                             <div className="flex flex-wrap items-center gap-1.5 text-[10px] text-emerald-700 dark:text-emerald-300">
                               <span>{p.timestamp}</span>
-                              <span>·</span>
-                              <span className="px-1.5 py-0.5 rounded-md bg-emerald-100 dark:bg-emerald-950 border border-emerald-300/70 dark:border-emerald-700 font-bold text-emerald-800 dark:text-emerald-200">
-                                {getNewsfeedLabel(p.newsfeed)}
-                              </span>
+                              {isAdmin && (
+                                <>
+                                  <span>·</span>
+                                  <span className="px-1.5 py-0.5 rounded-md bg-emerald-100 dark:bg-emerald-950 border border-emerald-300/70 dark:border-emerald-700 font-bold text-emerald-800 dark:text-emerald-200">
+                                    {getNewsfeedLabel(p.newsfeed)}
+                                  </span>
+                                </>
+                              )}
                             </div>
                           </div>
                         </button>
@@ -5439,10 +5457,12 @@ export default function App() {
                             {u.name} {isMe ? '(You)' : ''}
                           </div>
                           <div className="flex flex-wrap items-center gap-1.5 text-[10px] text-emerald-700 dark:text-emerald-300">
-                            <span className="truncate">{u.role === 'admin' ? 'Admin' : 'Active'}</span>
-                            <span className="px-1.5 py-0.5 rounded-md bg-emerald-100 dark:bg-emerald-950 border border-emerald-300/70 dark:border-emerald-700 font-bold text-emerald-800 dark:text-emerald-200">
-                              {getNewsfeedLabel(u.newsfeed)}
-                            </span>
+                            <span className="truncate">{u.role === 'admin' ? 'Admin' : 'Active'} · Tap to view profile</span>
+                            {isAdmin && (
+                              <span className="px-1.5 py-0.5 rounded-md bg-emerald-100 dark:bg-emerald-950 border border-emerald-300/70 dark:border-emerald-700 font-bold text-emerald-800 dark:text-emerald-200">
+                                {getNewsfeedLabel(u.newsfeed)}
+                              </span>
+                            )}
                           </div>
                         </div>
                       </button>
@@ -5625,11 +5645,15 @@ export default function App() {
                           <span className="font-semibold text-indigo-700 dark:text-indigo-300">
                             {isAdmin ? 'Admin' : 'Active Member'}
                           </span>
-                          <span aria-hidden="true" className="text-emerald-400 dark:text-emerald-600">·</span>
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-100 dark:bg-emerald-950 border border-emerald-300/70 dark:border-emerald-700 text-[11px] font-bold text-emerald-800 dark:text-emerald-200">
-                            <Globe className="w-3 h-3" />
-                            {getNewsfeedLabel(currentUser.newsfeed)}
-                          </span>
+                          {isAdmin && (
+                            <>
+                              <span aria-hidden="true" className="text-emerald-400 dark:text-emerald-600">·</span>
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-100 dark:bg-emerald-950 border border-emerald-300/70 dark:border-emerald-700 text-[11px] font-bold text-emerald-800 dark:text-emerald-200">
+                                <Globe className="w-3 h-3" />
+                                {getNewsfeedLabel(currentUser.newsfeed)}
+                              </span>
+                            </>
+                          )}
                         </div>
 
                         {/* Add / Change Profile Picture & Name Actions */}
@@ -7216,6 +7240,136 @@ export default function App() {
             </div>
           )}
 
+          {/* NEWSFEED SETUP (ADMIN ONLY SIDEBAR VIEW) */}
+          {activeTab === 'admin_newsfeeds' && isAdmin && (
+            <div className="max-w-3xl mx-auto space-y-4">
+              <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-5 space-y-4 shadow">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <Globe className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+                    <h3 className="text-sm font-bold text-emerald-950 dark:text-white">
+                      Newsfeed Setup &amp; User Assignment (Admin Only)
+                    </h3>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('feed')}
+                    className="px-3 py-1.5 rounded-xl bg-emerald-400 hover:bg-emerald-300 text-slate-950 text-xs font-bold transition"
+                  >
+                    Open Newsfeed
+                  </button>
+                </div>
+                <p className="text-xs text-emerald-800 dark:text-emerald-200">
+                  Only the Admin sees and controls Newsfeed setup. Assign each user to {newsfeedConfig.feedATitle}, {newsfeedConfig.feedBTitle}, or Both A &amp; B. Regular users only see posts from their assigned feed.
+                </p>
+
+                <form
+                  onSubmit={handleSaveAdminNewsfeedTitles}
+                  className="grid grid-cols-1 sm:grid-cols-2 gap-3 p-3.5 rounded-xl bg-emerald-50 dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-800"
+                >
+                  <div className="space-y-1">
+                    <label className="text-[11px] font-bold text-emerald-900 dark:text-emerald-200">
+                      Newsfeed A Name
+                    </label>
+                    <input
+                      type="text"
+                      maxLength={60}
+                      value={adminNfTitleA}
+                      onChange={(e) => setAdminNfTitleA(e.target.value)}
+                      className="w-full p-2 bg-white dark:bg-slate-950 border border-emerald-300 dark:border-emerald-700 rounded-xl text-xs text-emerald-950 dark:text-white"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[11px] font-bold text-emerald-900 dark:text-emerald-200">
+                      Newsfeed B Name
+                    </label>
+                    <input
+                      type="text"
+                      maxLength={60}
+                      value={adminNfTitleB}
+                      onChange={(e) => setAdminNfTitleB(e.target.value)}
+                      className="w-full p-2 bg-white dark:bg-slate-950 border border-emerald-300 dark:border-emerald-700 rounded-xl text-xs text-emerald-950 dark:text-white"
+                    />
+                  </div>
+                  <div className="sm:col-span-2 flex flex-wrap items-center justify-between gap-2 pt-1">
+                    <button
+                      type="submit"
+                      disabled={savingAdminNfTitles}
+                      className="px-3.5 py-1.5 rounded-lg bg-emerald-400 hover:bg-emerald-300 text-slate-950 font-bold text-xs disabled:opacity-50"
+                    >
+                      {savingAdminNfTitles ? 'Saving...' : 'Save Newsfeed Titles'}
+                    </button>
+                    {adminNfSaved && (
+                      <span className="text-emerald-700 dark:text-emerald-300 text-xs font-semibold">
+                        Newsfeed Titles Saved &amp; Synced!
+                      </span>
+                    )}
+                  </div>
+                </form>
+
+                <div className="relative">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-emerald-600 dark:text-emerald-400 pointer-events-none" />
+                  <input
+                    type="text"
+                    placeholder="Filter users by name or phone..."
+                    value={adminNfUserSearch}
+                    onChange={(e) => setAdminNfUserSearch(e.target.value)}
+                    className="w-full pl-9 pr-3 py-2 bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 rounded-xl text-xs text-emerald-950 dark:text-white focus:outline-none focus:border-emerald-500"
+                  />
+                </div>
+
+                <div className="overflow-x-auto rounded-xl border border-emerald-200 dark:border-emerald-800">
+                  <table className="w-full text-left border-collapse text-xs whitespace-nowrap">
+                    <thead className="bg-emerald-50 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300 text-[10px] uppercase">
+                      <tr>
+                        <th className="p-3">User Name</th>
+                        <th className="p-3">Phone</th>
+                        <th className="p-3">Role</th>
+                        <th className="p-3">Assigned Newsfeed</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-emerald-200 dark:divide-emerald-800 bg-white dark:bg-emerald-950/50">
+                      {usersList
+                        .filter((u) => {
+                          const q = adminNfUserSearch.trim().toLowerCase();
+                          if (!q) return true;
+                          return (
+                            u.name.toLowerCase().includes(q) ||
+                            (u.phone || '').toLowerCase().includes(q)
+                          );
+                        })
+                        .map((u) => (
+                          <tr key={u.id} className="hover:bg-emerald-50 dark:hover:bg-emerald-900/40">
+                            <td className="p-3 font-bold text-emerald-950 dark:text-white">{u.name}</td>
+                            <td className="p-3 font-mono text-emerald-700 dark:text-emerald-300">{u.phone}</td>
+                            <td className="p-3 text-emerald-700 dark:text-emerald-300 uppercase text-[10px] font-bold">
+                              {u.role || 'member'}
+                            </td>
+                            <td className="p-3">
+                              <select
+                                value={u.newsfeed || 'both'}
+                                onChange={(e) =>
+                                  handleUpdateUserNewsfeed(
+                                    u.id,
+                                    e.target.value as 'feed_a' | 'feed_b' | 'both'
+                                  )
+                                }
+                                className="p-1.5 rounded-lg bg-white dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 text-emerald-950 dark:text-white font-bold text-xs"
+                              >
+                                <option value="feed_a">{newsfeedConfig.feedATitle}</option>
+                                <option value="feed_b">{newsfeedConfig.feedBTitle}</option>
+                                <option value="both">Both ({newsfeedConfig.feedATitle} &amp; {newsfeedConfig.feedBTitle})</option>
+                              </select>
+                            </td>
+                          </tr>
+                        ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* SECURITY STUDIO (ADMIN ONLY) */}
           {activeTab === 'admin_security' && isAdmin && (
             <SecurityStudio
@@ -7489,10 +7643,12 @@ export default function App() {
                           <ShieldCheck className="w-3 h-3" />
                           {viewed.role === 'admin' ? 'Admin' : 'Active Member'}
                         </span>
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-emerald-100 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-200 border border-emerald-300/70 dark:border-emerald-700">
-                          <Globe className="w-3 h-3" />
-                          {getNewsfeedLabel(viewed.newsfeed)}
-                        </span>
+                        {isAdmin && (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-emerald-100 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-200 border border-emerald-300/70 dark:border-emerald-700">
+                            <Globe className="w-3 h-3" />
+                            {getNewsfeedLabel(viewed.newsfeed)}
+                          </span>
+                        )}
                         {isViewedBlocked && !viewed.isSelf && (
                           <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold uppercase bg-rose-100 dark:bg-rose-500/20 text-rose-700 dark:text-rose-300 border border-rose-300 dark:border-rose-600/50">
                             Blocked
