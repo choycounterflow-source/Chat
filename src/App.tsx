@@ -44,7 +44,12 @@ import {
   Moon,
   Monitor,
   Type,
-  RotateCcw
+  RotateCcw,
+  X,
+  User,
+  Ban,
+  Phone,
+  Clock
 } from 'lucide-react';
 import { PWAInstallButton } from './components/PWAInstallButton';
 import { OfflineIndicator } from './components/OfflineIndicator';
@@ -70,6 +75,16 @@ interface UserAccount {
   role?: 'admin' | 'member';
   status: 'pending' | 'approved';
   loginDate: string;
+}
+
+interface ViewedProfile {
+  id?: string;
+  name: string;
+  role: 'admin' | 'member';
+  phone?: string;
+  loginDate?: string;
+  avatar: string;
+  isSelf: boolean;
 }
 
 interface Post {
@@ -276,12 +291,78 @@ export default function App() {
   const [deleteAccountPin, setDeleteAccountPin] = useState('');
   const [deleteAccountError, setDeleteAccountError] = useState('');
   const [deletingMyAccount, setDeletingMyAccount] = useState(false);
+  const [selectedProfileUser, setSelectedProfileUser] = useState<ViewedProfile | null>(null);
   const syncSeqRef = useRef(0);
 
   const showNotice = (msg: string) => {
     setSyncNotice(msg);
     setTimeout(() => setSyncNotice(''), 3500);
   };
+
+  const openUserProfile = useCallback(
+    (target: {
+      id?: string;
+      name: string;
+      avatar?: string;
+      role?: 'admin' | 'member';
+      phone?: string;
+      loginDate?: string;
+    }) => {
+      const cleanName = (target.name || '').trim();
+      if (!cleanName) return;
+
+      const matched = usersList.find(
+        (u) =>
+          (target.id && u.id === target.id) ||
+          u.name.trim().toLowerCase() === cleanName.toLowerCase()
+      );
+
+      const isSelf = Boolean(
+        currentUser &&
+          ((target.id && target.id === currentUser.id) ||
+            (matched?.id && matched.id === currentUser.id) ||
+            cleanName.toLowerCase() === currentUser.name.trim().toLowerCase())
+      );
+
+      const resolvedRole: 'admin' | 'member' = isSelf
+        ? currentUser!.role
+        : matched?.role || target.role || (cleanName.toLowerCase() === 'choy admin' ? 'admin' : 'member');
+
+      const rawPhone = isSelf ? currentUser?.phone : matched?.phone || target.phone;
+      const safePhone =
+        (isSelf || isAdmin) && rawPhone && rawPhone.toLowerCase() !== 'member' ? rawPhone : undefined;
+
+      setSelectedProfileUser({
+        id: isSelf ? currentUser?.id : matched?.id || target.id,
+        name: isSelf ? currentUser!.name : matched?.name || cleanName,
+        role: resolvedRole,
+        phone: safePhone,
+        loginDate: matched?.loginDate || target.loginDate || 'Active recently',
+        avatar: target.avatar || DEFAULT_AVATAR,
+        isSelf
+      });
+    },
+    [currentUser, isAdmin, usersList]
+  );
+
+  const handleMessageUser = useCallback((userName: string) => {
+    const cleanName = userName.trim();
+    if (!cleanName) return;
+    setActiveChat(cleanName);
+    setSelectedProfileUser(null);
+    setActiveTab('messages');
+  }, []);
+
+  useEffect(() => {
+    if (!selectedProfileUser) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setSelectedProfileUser(null);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [selectedProfileUser]);
 
   // Authenticated fetch helper using in-memory Bearer token
   const apiFetch = useCallback(
@@ -472,6 +553,13 @@ export default function App() {
   }, [authToken, fetchSyncedState]);
 
   const messages = [...cloudMessages, ...localMessages].sort((a, b) => a.createdAtMs - b.createdAtMs);
+  const chatRoomsList = Array.from(
+    new Set([
+      ...CHAT_ROOMS,
+      activeChat,
+      ...messages.map((m) => m.receiver).filter((room): room is string => Boolean(room && room.trim()))
+    ])
+  );
 
   // Photo Editor Canvas Loader
   useEffect(() => {
@@ -2130,6 +2218,24 @@ export default function App() {
             <div className="flex items-center gap-1.5 shrink-0">
               <button
                 type="button"
+                onClick={() => setActiveTab('profile')}
+                className={`flex items-center gap-1.5 px-2 py-1.5 rounded-xl border transition shrink-0 ${
+                  activeTab === 'profile'
+                    ? 'bg-emerald-400 border-emerald-500 text-slate-950 font-bold shadow-sm'
+                    : 'bg-white dark:bg-emerald-900 border-emerald-300 dark:border-emerald-700 text-emerald-900 dark:text-emerald-100 hover:bg-emerald-100 dark:hover:bg-emerald-800'
+                }`}
+                title="Open My Profile"
+                aria-label="Open My Profile"
+              >
+                <img
+                  src={DEFAULT_AVATAR}
+                  alt=""
+                  className="w-5 h-6 rounded-md bg-emerald-50 dark:bg-emerald-950 object-contain border border-emerald-500/50 shrink-0"
+                />
+                <span className="hidden sm:inline text-xs font-bold max-w-[96px] truncate">{currentUser.name}</span>
+              </button>
+              <button
+                type="button"
                 onClick={toggleLightDark}
                 className="p-2 bg-white dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 rounded-xl text-amber-700 dark:text-amber-300 hover:bg-emerald-100 dark:hover:bg-emerald-800 transition shrink-0"
                 title={resolvedTheme === 'dark' ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
@@ -2283,20 +2389,37 @@ export default function App() {
                 ) : (
                   filteredPosts.map((p) => (
                     <div key={p.id} className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-4 space-y-3">
-                      <div className="flex justify-between items-center">
-                        <div className="flex items-center gap-2 cursor-pointer" onClick={() => setActiveTab('profile')}>
-                          <div className="relative">
-                            <img src={p.author.avatar} alt="" className="w-9 h-12 rounded-lg bg-emerald-50 dark:bg-emerald-950 object-contain border border-emerald-500/50" />
+                      <div className="flex justify-between items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            openUserProfile({
+                              id: p.authorId,
+                              name: p.author.name,
+                              avatar: p.author.avatar
+                            })
+                          }
+                          className="group flex items-center gap-2.5 text-left rounded-xl p-1 -m-1 hover:bg-emerald-50 dark:hover:bg-emerald-800/60 transition focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400"
+                          title={`View ${p.author.name}'s profile`}
+                        >
+                          <div className="relative shrink-0">
+                            <img
+                              src={p.author.avatar}
+                              alt=""
+                              className="w-9 h-12 rounded-lg bg-emerald-50 dark:bg-emerald-950 object-contain border border-emerald-500/50 group-hover:border-emerald-400 transition"
+                            />
                             <span
-                              className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 bg-emerald-400 border-2 border-emerald-950 rounded-full"
+                              className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 bg-emerald-400 border-2 border-white dark:border-emerald-950 rounded-full"
                               title="Online"
                             ></span>
                           </div>
                           <div>
-                            <div className="text-xs font-bold text-emerald-950 dark:text-white">{p.author.name}</div>
+                            <div className="text-xs font-bold text-emerald-950 dark:text-white group-hover:text-emerald-700 dark:group-hover:text-emerald-300 group-hover:underline">
+                              {p.author.name}
+                            </div>
                             <div className="text-[10px] text-emerald-700 dark:text-emerald-300">{p.timestamp}</div>
                           </div>
-                        </div>
+                        </button>
                         {(p.authorId === currentUser.id || isAdmin) && (
                           <button
                             type="button"
@@ -2352,44 +2475,61 @@ export default function App() {
                     key={u.id}
                     className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-4 flex items-center justify-between gap-2"
                   >
-                    <div className="flex items-center gap-3 min-w-0">
+                    <button
+                      type="button"
+                      onClick={() => openUserProfile(u)}
+                      className="group flex items-center gap-3 min-w-0 flex-1 text-left rounded-xl p-1 -m-1 hover:bg-emerald-50 dark:hover:bg-emerald-800/50 transition focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400"
+                      title={`View ${u.name}'s profile`}
+                    >
                       <div className="relative shrink-0">
-                        <img src={DEFAULT_AVATAR} alt="" className="w-9 h-12 rounded-xl bg-emerald-50 dark:bg-emerald-950 object-contain border border-emerald-500/50" />
+                        <img
+                          src={DEFAULT_AVATAR}
+                          alt=""
+                          className="w-9 h-12 rounded-xl bg-emerald-50 dark:bg-emerald-950 object-contain border border-emerald-500/50 group-hover:border-emerald-400 transition"
+                        />
                         <span
-                          className="absolute -bottom-0.5 -right-0.5 w-3 h-3 bg-emerald-400 border-2 border-emerald-950 rounded-full"
+                          className="absolute -bottom-0.5 -right-0.5 w-3 h-3 bg-emerald-400 border-2 border-white dark:border-emerald-950 rounded-full"
                           title="Online"
                         ></span>
                       </div>
                       <div className="min-w-0">
-                        <div className="text-xs font-bold text-emerald-950 dark:text-white truncate">
+                        <div className="text-xs font-bold text-emerald-950 dark:text-white truncate group-hover:text-emerald-700 dark:group-hover:text-emerald-300 group-hover:underline">
                           {u.name} {isMe ? '(You)' : ''}
                         </div>
                         <div className="text-[10px] text-emerald-700 dark:text-emerald-300 truncate">
-                          {u.role === 'admin' ? 'Admin' : 'Active'}
+                          {u.role === 'admin' ? 'Admin' : 'Active'} · Tap to view profile
                         </div>
                       </div>
-                    </div>
-                    {!isMe && (
-                      <div className="flex items-center gap-2 shrink-0">
+                    </button>
+                    {!isMe ? (
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => handleMessageUser(u.name)}
+                          className="px-2.5 py-1.5 rounded-xl text-xs font-bold bg-emerald-400 hover:bg-emerald-300 text-slate-950 transition"
+                        >
+                          Message
+                        </button>
                         <button
                           type="button"
                           onClick={() => handleToggleBlockUser(u.name)}
-                          className={`px-3 py-1.5 rounded-xl text-xs font-bold ${
-                            isBlocked ? 'bg-red-500 text-white' : 'bg-red-950 text-red-300 border border-red-700'
+                          className={`px-2.5 py-1.5 rounded-xl text-xs font-bold transition ${
+                            isBlocked
+                              ? 'bg-red-600 text-white hover:bg-red-700'
+                              : 'bg-red-50 dark:bg-red-950 text-red-700 dark:text-red-300 border border-red-300 dark:border-red-700 hover:bg-red-100 dark:hover:bg-red-900'
                           }`}
                         >
-                          {isBlocked ? 'Blocked' : 'Block User'}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setIsFriend(!isFriend)}
-                          className={`px-3 py-1.5 rounded-xl text-xs font-bold ${
-                            isFriend ? 'bg-slate-800 text-slate-300' : 'bg-emerald-400 text-slate-950'
-                          }`}
-                        >
-                          {isFriend ? 'Friends' : 'Add Friend'}
+                          {isBlocked ? 'Blocked' : 'Block'}
                         </button>
                       </div>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setActiveTab('profile')}
+                        className="px-3 py-1.5 rounded-xl text-xs font-bold bg-emerald-100 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-200 border border-emerald-300 dark:border-emerald-700 hover:bg-emerald-200 dark:hover:bg-emerald-800 transition shrink-0"
+                      >
+                        My Profile
+                      </button>
                     )}
                   </div>
                 );
@@ -2419,7 +2559,20 @@ export default function App() {
                     ) : (
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                         {sharedChatVideos.map((vid) => (
-                          <div key={vid.id} className="p-2.5 rounded-xl bg-emerald-50 dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-800">
+                          <div key={vid.id} className="p-2.5 rounded-xl bg-emerald-50 dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-800 space-y-2">
+                            <button
+                              type="button"
+                              onClick={() => openUserProfile({ id: vid.senderId, name: vid.sender })}
+                              className="inline-flex items-center gap-1.5 text-[11px] font-bold text-emerald-900 dark:text-emerald-200 hover:text-emerald-700 dark:hover:text-emerald-300 hover:underline transition"
+                              title={`View ${vid.sender}'s profile`}
+                            >
+                              <img
+                                src={DEFAULT_AVATAR}
+                                alt=""
+                                className="w-5 h-6 rounded bg-white dark:bg-emerald-900 object-contain border border-emerald-500/50 shrink-0"
+                              />
+                              <span className="truncate">{vid.sender}</span>
+                            </button>
                             <ChatVideoPlayer
                               src={vid.mediaUrl!}
                               title={vid.text || `Video from ${vid.sender}`}
@@ -2781,7 +2934,7 @@ export default function App() {
               <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-3 flex flex-col space-y-2 shrink-0">
                 <div className="text-xs font-bold text-emerald-700 dark:text-emerald-300 uppercase">Chats</div>
                 <div className="flex md:flex-col gap-2 overflow-x-auto touch-pan-x overscroll-x-contain [-webkit-overflow-scrolling:touch] md:overflow-visible pb-1.5 md:pb-0">
-                  {CHAT_ROOMS.map((room) => {
+                  {chatRoomsList.map((room) => {
                     const isActive = activeChat === room;
                     return (
                       <button
@@ -2791,12 +2944,12 @@ export default function App() {
                         className={`px-3.5 py-2.5 rounded-xl text-xs flex items-center justify-between gap-2 transition whitespace-nowrap shrink-0 md:w-full text-left ${
                           isActive
                             ? 'bg-emerald-400 text-slate-950 font-bold shadow'
-                            : 'bg-emerald-950 text-emerald-200 hover:bg-emerald-800'
+                            : 'bg-emerald-50 dark:bg-emerald-950 text-emerald-900 dark:text-emerald-200 border border-emerald-200 dark:border-emerald-800 hover:bg-emerald-100 dark:hover:bg-emerald-800'
                         }`}
                       >
-                        <span>{room}</span>
+                        <span className="truncate">{room}</span>
                         <span
-                          className={`w-2.5 h-2.5 rounded-full shrink-0${isActive ? 'bg-white dark:bg-slate-950' : 'bg-emerald-400'}`}
+                          className={`w-2.5 h-2.5 rounded-full shrink-0 ${isActive ? 'bg-slate-950' : 'bg-emerald-500 dark:bg-emerald-400'}`}
                           title={isActive ? 'Active' : 'Online'}
                         ></span>
                       </button>
@@ -2809,7 +2962,25 @@ export default function App() {
                 {/* Responsive Swipeable Chat Header */}
                 <div className="p-3 border-b border-emerald-200 dark:border-emerald-800 space-y-2 text-xs font-bold text-emerald-950 dark:text-white shrink-0">
                   <div className="flex items-center justify-between gap-2">
-                    <span className="text-sm font-black text-emerald-950 dark:text-white truncate">{activeChat}</span>
+                    {activeChat === 'VIP Group' ? (
+                      <span className="text-sm font-black text-emerald-950 dark:text-white truncate">{activeChat}</span>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => openUserProfile({ name: activeChat })}
+                        className="group flex items-center gap-2 min-w-0 text-left rounded-lg px-1.5 py-1 -ml-1.5 hover:bg-emerald-50 dark:hover:bg-emerald-800/60 transition"
+                        title={`View ${activeChat}'s profile`}
+                      >
+                        <img
+                          src={DEFAULT_AVATAR}
+                          alt=""
+                          className="w-6 h-7 rounded-md bg-emerald-50 dark:bg-emerald-950 object-contain border border-emerald-500/50 shrink-0"
+                        />
+                        <span className="text-sm font-black text-emerald-950 dark:text-white truncate group-hover:text-emerald-700 dark:group-hover:text-emerald-300 group-hover:underline">
+                          {activeChat}
+                        </span>
+                      </button>
+                    )}
                     <div className="flex items-center gap-1.5 overflow-x-auto touch-pan-x overscroll-x-contain [-webkit-overflow-scrolling:touch] max-w-[68%] sm:max-w-none pb-0.5">
                       <button
                         type="button"
@@ -2819,8 +2990,8 @@ export default function App() {
                         }}
                         className={`px-2.5 py-1.5 rounded-lg text-[11px] font-bold shrink-0 whitespace-nowrap ${
                           blockedUsers.includes(activeChat === 'VIP Group' ? 'Choy Admin' : activeChat)
-                            ? 'bg-red-500 text-white'
-                            : 'bg-red-950 text-red-300 border border-red-700'
+                            ? 'bg-red-600 text-white'
+                            : 'bg-red-50 dark:bg-red-950 text-red-700 dark:text-red-300 border border-red-300 dark:border-red-700'
                         }`}
                         title="Block / Unblock User"
                       >
@@ -2881,9 +3052,17 @@ export default function App() {
                     .filter((m) => !blockedUsers.includes(m.sender))
                     .filter((m) => (m.text || '').toLowerCase().includes(msgSearchQuery.toLowerCase()))
                     .map((m) => (
-                      <div key={m.id} className={`flex flex-col${m.isMe ? 'items-end' : 'items-start'}`}>
-                        <div className="text-[10px] text-emerald-700 dark:text-emerald-300 px-1 mb-0.5">
-                          {m.sender} • {m.time}
+                      <div key={m.id} className={`flex flex-col ${m.isMe ? 'items-end' : 'items-start'}`}>
+                        <div className="text-[10px] text-emerald-700 dark:text-emerald-300 px-1 mb-0.5 flex items-center gap-1">
+                          <button
+                            type="button"
+                            onClick={() => openUserProfile({ id: m.senderId, name: m.sender })}
+                            className="font-bold hover:text-emerald-950 dark:hover:text-white hover:underline transition"
+                            title={`View ${m.sender}'s profile`}
+                          >
+                            {m.sender}
+                          </button>
+                          <span>• {m.time}</span>
                         </div>
                         <div className="p-3 rounded-2xl text-xs bg-emerald-50 dark:bg-emerald-950 text-emerald-950 dark:text-slate-100 space-y-2 max-w-[85%]">
                           {m.mediaType === 'image' && m.mediaUrl && (
@@ -3394,12 +3573,19 @@ export default function App() {
                         key={u.id}
                         className="p-3 rounded-xl flex flex-wrap items-center justify-between text-xs gap-2 border bg-emerald-50 dark:bg-emerald-950 border-emerald-200 dark:border-emerald-800"
                       >
-                        <div className="min-w-0">
-                          <div className="font-bold text-emerald-950 dark:text-white truncate">
+                        <button
+                          type="button"
+                          onClick={() => openUserProfile(u)}
+                          className="group min-w-0 text-left rounded-lg p-1 -m-1 hover:bg-emerald-100/80 dark:hover:bg-emerald-900/70 transition"
+                          title={`View ${u.name}'s profile`}
+                        >
+                          <div className="font-bold text-emerald-950 dark:text-white truncate group-hover:text-emerald-700 dark:group-hover:text-emerald-300 group-hover:underline">
                             {u.name} ({u.phone})
                           </div>
-                          <div className="text-[10px] text-emerald-700 dark:text-emerald-300">Last Active: {u.loginDate}</div>
-                        </div>
+                          <div className="text-[10px] text-emerald-700 dark:text-emerald-300">
+                            Last Active: {u.loginDate} · Tap to view profile
+                          </div>
+                        </button>
                         <div className="flex items-center gap-2 shrink-0">
                           <span
                             className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
@@ -3665,14 +3851,17 @@ export default function App() {
                 ) : (
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                     {topLeaderboard.slice(0, 3).map((u, i) => (
-                      <div
+                      <button
                         key={u.id}
-                        className="p-4 rounded-xl bg-emerald-50 dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-800 text-center space-y-1 text-xs"
+                        type="button"
+                        onClick={() => openUserProfile({ name: u.name })}
+                        className="p-4 rounded-xl bg-emerald-50 dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-800 hover:border-amber-400/80 hover:bg-emerald-100/70 dark:hover:bg-emerald-900/80 text-center space-y-1 text-xs transition cursor-pointer"
+                        title={`View ${u.name}'s profile`}
                       >
-                        <div className="text-amber-400 font-bold">#{i + 1}</div>
-                        <div className="font-bold text-emerald-950 dark:text-white">{u.name}</div>
+                        <div className="text-amber-500 dark:text-amber-400 font-bold">#{i + 1}</div>
+                        <div className="font-bold text-emerald-950 dark:text-white hover:underline">{u.name}</div>
                         <div className="font-mono text-emerald-700 dark:text-emerald-300">₱{u.total.toLocaleString()}</div>
-                      </div>
+                      </button>
                     ))}
                   </div>
                 )}
@@ -3772,6 +3961,258 @@ export default function App() {
           </div>
         )}
       </div>
+
+      {/* CLICKABLE USER PROFILE MODAL */}
+      {selectedProfileUser &&
+        (() => {
+          const viewed = selectedProfileUser;
+          const viewedLower = viewed.name.trim().toLowerCase();
+          const userPosts = posts.filter(
+            (p) =>
+              (viewed.id && p.authorId === viewed.id) ||
+              p.author.name.trim().toLowerCase() === viewedLower
+          );
+          const userMessages = messages.filter(
+            (m) =>
+              (viewed.id && m.senderId === viewed.id) ||
+              m.sender.trim().toLowerCase() === viewedLower
+          );
+          const mediaCount =
+            userPosts.filter((p) => Boolean(p.mediaUrl)).length +
+            userMessages.filter((m) => Boolean(m.mediaUrl)).length;
+          const isViewedBlocked = blockedUsers.includes(viewed.name);
+          const handleSlug = `@${viewed.name.toLowerCase().replace(/[^a-z0-9]+/g, '') || 'member'}`;
+
+          return (
+            <div
+              className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4"
+              onClick={() => setSelectedProfileUser(null)}
+              role="dialog"
+              aria-modal="true"
+              aria-label={`${viewed.name} Profile`}
+            >
+              <div
+                className="w-full max-w-lg max-h-[90dvh] overflow-y-auto rounded-2xl bg-white dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-700/80 shadow-2xl"
+                onClick={(e) => e.stopPropagation()}
+              >
+                {/* Modal Top Header Banner */}
+                <div className="relative px-5 pt-5 pb-4 border-b border-emerald-200 dark:border-emerald-800 bg-gradient-to-r from-emerald-50 via-white to-amber-50/70 dark:from-emerald-900/90 dark:via-emerald-950 dark:to-emerald-900/70">
+                  <button
+                    type="button"
+                    onClick={() => setSelectedProfileUser(null)}
+                    className="absolute top-3.5 right-3.5 p-1.5 rounded-xl bg-white/90 dark:bg-emerald-900 border border-emerald-200 dark:border-emerald-700 text-emerald-800 dark:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-800 transition"
+                    aria-label="Close profile"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+
+                  <div className="flex items-start gap-4 pr-8">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setZoomedImage({
+                          src: viewed.avatar,
+                          caption: `${viewed.name} (${viewed.role === 'admin' ? 'Admin' : 'Active Member'})`
+                        })
+                      }
+                      className="relative w-20 h-28 rounded-2xl bg-emerald-50 dark:bg-emerald-900 border-2 border-emerald-500/80 dark:border-emerald-400/80 p-1 overflow-hidden shadow-md shrink-0 cursor-zoom-in group"
+                      title="Tap to zoom avatar"
+                    >
+                      <img
+                        src={viewed.avatar}
+                        alt={viewed.name}
+                        className="w-full h-full object-contain rounded-xl group-hover:scale-105 transition"
+                      />
+                      <span
+                        className="absolute bottom-1.5 right-1.5 w-3 h-3 bg-emerald-400 border-2 border-white dark:border-emerald-950 rounded-full"
+                        title="Online"
+                      ></span>
+                    </button>
+
+                    <div className="min-w-0 flex-1 space-y-1.5 pt-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h3 className="text-base sm:text-lg font-black text-emerald-950 dark:text-white truncate">
+                          {viewed.name}
+                        </h3>
+                        {viewed.isSelf && (
+                          <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-emerald-100 dark:bg-emerald-800 text-emerald-800 dark:text-emerald-200">
+                            You
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="text-[11px] font-mono text-emerald-700 dark:text-emerald-300 truncate">
+                        {handleSlug}
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+                        <span
+                          className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold uppercase ${
+                            viewed.role === 'admin'
+                              ? 'bg-amber-100 dark:bg-amber-500/20 text-amber-800 dark:text-amber-300 border border-amber-300/70 dark:border-amber-500/40'
+                              : 'bg-emerald-100 dark:bg-emerald-500/20 text-emerald-800 dark:text-emerald-300 border border-emerald-300/70 dark:border-emerald-500/40'
+                          }`}
+                        >
+                          <ShieldCheck className="w-3 h-3" />
+                          {viewed.role === 'admin' ? 'Admin' : 'Active Member'}
+                        </span>
+                        {isViewedBlocked && !viewed.isSelf && (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold uppercase bg-rose-100 dark:bg-rose-500/20 text-rose-700 dark:text-rose-300 border border-rose-300 dark:border-rose-600/50">
+                            Blocked
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="pt-1 space-y-1 text-[11px] text-emerald-800 dark:text-emerald-200">
+                        {viewed.phone && (
+                          <div className="flex items-center gap-1.5">
+                            <Phone className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                            <span className="font-mono">{viewed.phone}</span>
+                          </div>
+                        )}
+                        <div className="flex items-center gap-1.5 text-emerald-700 dark:text-emerald-300">
+                          <Clock className="w-3.5 h-3.5 shrink-0" />
+                          <span>Last Active: {viewed.loginDate || 'Active recently'}</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Activity Stats Strip */}
+                <div className="grid grid-cols-3 divide-x divide-emerald-200 dark:divide-emerald-800 border-b border-emerald-200 dark:border-emerald-800 bg-emerald-50/70 dark:bg-emerald-900/40">
+                  <div className="py-3 px-2 text-center">
+                    <div className="text-base font-black text-emerald-950 dark:text-white font-mono">
+                      {userPosts.length}
+                    </div>
+                    <div className="text-[10px] font-bold uppercase tracking-wider text-emerald-700 dark:text-emerald-300">
+                      Posts
+                    </div>
+                  </div>
+                  <div className="py-3 px-2 text-center">
+                    <div className="text-base font-black text-emerald-950 dark:text-white font-mono">
+                      {mediaCount}
+                    </div>
+                    <div className="text-[10px] font-bold uppercase tracking-wider text-emerald-700 dark:text-emerald-300">
+                      Media
+                    </div>
+                  </div>
+                  <div className="py-3 px-2 text-center">
+                    <div className="text-base font-black text-emerald-950 dark:text-white font-mono">
+                      {userMessages.length}
+                    </div>
+                    <div className="text-[10px] font-bold uppercase tracking-wider text-emerald-700 dark:text-emerald-300">
+                      Messages
+                    </div>
+                  </div>
+                </div>
+
+                {/* Direct Actions */}
+                <div className="p-4 border-b border-emerald-200 dark:border-emerald-800 flex flex-wrap items-center gap-2">
+                  {viewed.isSelf ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedProfileUser(null);
+                        setActiveTab('profile');
+                      }}
+                      className="flex-1 min-h-[38px] px-4 py-2 rounded-xl bg-emerald-400 hover:bg-emerald-300 text-slate-950 font-bold text-xs inline-flex items-center justify-center gap-1.5 shadow-sm transition"
+                    >
+                      <User className="w-4 h-4" /> Open Full Profile & Settings
+                    </button>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => handleMessageUser(viewed.name)}
+                        className="flex-1 min-h-[38px] px-4 py-2 rounded-xl bg-emerald-400 hover:bg-emerald-300 text-slate-950 font-bold text-xs inline-flex items-center justify-center gap-1.5 shadow-sm transition"
+                      >
+                        <MessageSquare className="w-4 h-4" /> Message
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleToggleBlockUser(viewed.name)}
+                        className={`min-h-[38px] px-3.5 py-2 rounded-xl font-bold text-xs inline-flex items-center justify-center gap-1.5 transition ${
+                          isViewedBlocked
+                            ? 'bg-rose-600 hover:bg-rose-700 text-white'
+                            : 'bg-rose-50 dark:bg-rose-950/70 border border-rose-300 dark:border-rose-700 text-rose-700 dark:text-rose-200 hover:bg-rose-100 dark:hover:bg-rose-900'
+                        }`}
+                      >
+                        <Ban className="w-3.5 h-3.5" />
+                        {isViewedBlocked ? 'Unblock' : 'Block'}
+                      </button>
+                      {isAdmin && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSelectedProfileUser(null);
+                            setActiveTab('admin_approvals');
+                          }}
+                          className="min-h-[38px] px-3.5 py-2 rounded-xl bg-indigo-50 dark:bg-indigo-950/80 border border-indigo-300 dark:border-indigo-700 text-indigo-800 dark:text-indigo-200 hover:bg-indigo-100 dark:hover:bg-indigo-900 font-bold text-xs inline-flex items-center justify-center gap-1.5 transition"
+                        >
+                          <ShieldCheck className="w-3.5 h-3.5" /> Accounts
+                        </button>
+                      )}
+                    </>
+                  )}
+                </div>
+
+                {/* Recent Posts by This User */}
+                <div className="p-4 space-y-2.5">
+                  <div className="text-[11px] font-bold uppercase tracking-wider text-emerald-700 dark:text-emerald-300">
+                    Recent Posts ({userPosts.length})
+                  </div>
+                  {userPosts.length === 0 ? (
+                    <div className="p-4 rounded-xl bg-emerald-50/70 dark:bg-emerald-900/40 border border-emerald-200/80 dark:border-emerald-800 text-center text-xs text-emerald-700 dark:text-emerald-300">
+                      No posts shared by {viewed.name} yet.
+                    </div>
+                  ) : (
+                    <div className="space-y-2.5">
+                      {userPosts.slice(0, 4).map((post) => (
+                        <div
+                          key={post.id}
+                          className="p-3 rounded-xl bg-emerald-50/70 dark:bg-emerald-900/50 border border-emerald-200 dark:border-emerald-800 space-y-2"
+                        >
+                          <div className="flex items-center justify-between text-[10px] text-emerald-700 dark:text-emerald-300">
+                            <span className="font-bold">{post.author.name}</span>
+                            <span>{post.timestamp}</span>
+                          </div>
+                          {post.content && (
+                            <p className="text-xs text-emerald-950 dark:text-slate-100 break-words">
+                              {post.content}
+                            </p>
+                          )}
+                          {post.mediaUrl && post.mediaType === 'image' && (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setZoomedImage({
+                                  src: post.mediaUrl!,
+                                  caption: post.content || `${post.author.name} • ${post.timestamp}`
+                                })
+                              }
+                              className="block w-full rounded-lg overflow-hidden bg-white dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-800 cursor-zoom-in"
+                              title="Tap to zoom"
+                            >
+                              <img
+                                src={post.mediaUrl}
+                                alt={post.content || 'Post image'}
+                                className="max-h-44 w-full object-contain"
+                              />
+                            </button>
+                          )}
+                          {post.mediaUrl && post.mediaType === 'video' && (
+                            <ChatVideoPlayer src={post.mediaUrl} title={post.author.name} subtitle={post.timestamp} compact />
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          );
+        })()}
 
       {zoomedImage && (
         <ImageZoomModal
