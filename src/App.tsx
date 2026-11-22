@@ -464,6 +464,7 @@ export default function App() {
   const [showDeleteAccountSetup, setShowDeleteAccountSetup] = useState(false);
   const [deleteAccountPin, setDeleteAccountPin] = useState('');
   const [deleteAccountError, setDeleteAccountError] = useState('');
+  const [deleteAccountConfirmed, setDeleteAccountConfirmed] = useState(false);
   const [deletingMyAccount, setDeletingMyAccount] = useState(false);
   const [selectedProfileUser, setSelectedProfileUser] = useState<ViewedProfile | null>(null);
   const [isUpdatingAvatar, setIsUpdatingAvatar] = useState(false);
@@ -6940,6 +6941,7 @@ export default function App() {
                         setShowDeleteAccountSetup((v) => !v);
                         setDeleteAccountError('');
                         setDeleteAccountPin('');
+                        setDeleteAccountConfirmed(false);
                       }}
                       className="w-full px-3.5 py-2.5 rounded-xl border border-rose-300 dark:border-rose-700 bg-white dark:bg-rose-950/70 text-rose-700 dark:text-rose-200 hover:bg-rose-100 dark:hover:bg-rose-900/70 text-xs font-bold inline-flex items-center justify-center gap-1.5 transition"
                     >
@@ -6948,9 +6950,30 @@ export default function App() {
                     </button>
 
                     {showDeleteAccountSetup && (
-                      <form onSubmit={handleDeleteMyAccount} className="space-y-2.5 pt-1">
+                      <form onSubmit={handleDeleteMyAccount} className="space-y-3 pt-1">
+                        <div className="p-3 rounded-xl bg-rose-100/70 dark:bg-rose-950/60 border border-rose-300 dark:border-rose-700/80 space-y-2">
+                          <p className="text-xs font-bold text-rose-900 dark:text-rose-100 flex items-center gap-1.5">
+                            <Trash2 className="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0" />
+                            Are you sure you want to permanently delete your account?
+                          </p>
+                          <p className="text-[11px] text-rose-800/90 dark:text-rose-200/90 leading-relaxed">
+                            This action is permanent and cannot be undone. All your posts, messages, and profile data will be removed.
+                          </p>
+                          <label className="flex items-start gap-2.5 pt-1 cursor-pointer select-none">
+                            <input
+                              type="checkbox"
+                              checked={deleteAccountConfirmed}
+                              onChange={(e) => setDeleteAccountConfirmed(e.target.checked)}
+                              className="mt-0.5 w-4 h-4 rounded border-rose-400 text-rose-600 focus:ring-rose-500 accent-rose-600 shrink-0"
+                            />
+                            <span className="text-[11px] font-semibold text-rose-950 dark:text-rose-100 leading-tight">
+                              I understand that deleting my account is permanent and irreversible.
+                            </span>
+                          </label>
+                        </div>
+
                         <p className="text-[11px] text-rose-800 dark:text-rose-200 leading-relaxed">
-                          Enter your current PIN to permanently delete your account:
+                          Enter your current PIN to confirm deletion:
                         </p>
                         {deleteAccountError && (
                           <div
@@ -6971,8 +6994,8 @@ export default function App() {
                         />
                         <button
                           type="submit"
-                          disabled={deletingMyAccount || !deleteAccountPin.trim()}
-                          className="w-full px-3.5 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold transition disabled:opacity-50"
+                          disabled={deletingMyAccount || !deleteAccountPin.trim() || !deleteAccountConfirmed}
+                          className="w-full px-3.5 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold transition disabled:opacity-50 shadow"
                         >
                           {deletingMyAccount ? 'Deleting...' : 'Confirm Delete Account'}
                         </button>
