@@ -361,6 +361,68 @@ export default function App() {
   const [selectedGalleryVideo, setSelectedGalleryVideo] = useState<Message | null>(null);
   const [cloudMessages, setCloudMessages] = useState<Message[]>([]);
   const [localMessages, setLocalMessages] = useState<Message[]>([]);
+  const [chatHeadBubbleEnabled, setChatHeadBubbleEnabled] = useState<boolean>(() => {
+    return localStorage.getItem('choychat_chat_head_bubble_v1') !== 'false';
+  });
+  const [activeChatHeadMessage, setActiveChatHeadMessage] = useState<Message | null>(null);
+  const lastSeenMsgIdRef = useRef<string>('');
+  const [seenRoomMap, setSeenRoomMap] = useState<Record<string, string>>(() => {
+    try {
+      const saved = localStorage.getItem('choychat_seen_rooms_v1');
+      return saved ? JSON.parse(saved) : {};
+    } catch {
+      return {};
+    }
+  });
+
+  const getLatestMessageForRoom = useCallback((room: string) => {
+    const roomMsgs = [...cloudMessages, ...localMessages].filter((m) =>
+      messageBelongsToRoom(m, room, currentUser?.name || '')
+    );
+    if (roomMsgs.length === 0) return null;
+    return roomMsgs[roomMsgs.length - 1];
+  }, [cloudMessages, localMessages, currentUser]);
+
+  const markRoomSeen = useCallback((room: string) => {
+    const latest = getLatestMessageForRoom(room);
+    if (!latest) return;
+    setSeenRoomMap((prev) => {
+      if (prev[room] === latest.id) return prev;
+      const next = { ...prev, [room]: latest.id };
+      localStorage.setItem('choychat_seen_rooms_v1', JSON.stringify(next));
+      return next;
+    });
+  }, [getLatestMessageForRoom]);
+
+  useEffect(() => {
+    if (activeChat) {
+      markRoomSeen(activeChat);
+    }
+  }, [activeChat, markRoomSeen]);
+
+  useEffect(() => {
+    if (!chatHeadBubbleEnabled || !currentUser) return;
+    const allMsgs = [...cloudMessages, ...localMessages];
+    if (allMsgs.length === 0) return;
+    const latest = allMsgs[allMsgs.length - 1];
+    if (!latest) return;
+
+    const room = latest.receiver.trim().toLowerCase() === 'vip group' ? 'VIP Group' : (latest.sender === currentUser.name ? latest.receiver : latest.sender);
+    if (
+      lastSeenMsgIdRef.current &&
+      lastSeenMsgIdRef.current !== latest.id &&
+      latest.sender !== currentUser.name &&
+      !(activeTab === 'messages' && activeChat.trim().toLowerCase() === room.trim().toLowerCase())
+    ) {
+      setActiveChatHeadMessage(latest);
+      playMessageNotificationTune();
+    }
+    if (!lastSeenMsgIdRef.current) {
+      lastSeenMsgIdRef.current = latest.id;
+    } else if (latest.id !== lastSeenMsgIdRef.current) {
+      lastSeenMsgIdRef.current = latest.id;
+    }
+  }, [cloudMessages, localMessages, chatHeadBubbleEnabled, currentUser, activeTab, activeChat]);
   const [msgInput, setMsgInput] = useState('');
   const [msgMediaType, setMsgMediaType] = useState<'text' | 'image' | 'video' | 'audio' | 'file'>('text');
   const [msgTranscript, setMsgTranscript] = useState('');
@@ -2244,6 +2306,59 @@ export default function App() {
     }
   };
 
+  const handleDownloadChatBackup = (format: 'json' | 'txt') => {
+    const roomMsgs = [...cloudMessages, ...localMessages].filter((m) =>
+      messageBelongsToRoom(m, activeChat, currentUser?.name || '')
+    );
+    const uniqueMsgs = Array.from(new Map(roomMsgs.map((m) => [m.id, m])).values()).sort(
+      (a, b) => a.createdAtMs - b.createdAtMs
+    );
+
+    if (uniqueMsgs.length === 0) {
+      showNotice(`No messages found in ${activeChat} to backup.`);
+      return;
+    }
+
+    let fileContent = '';
+    let filename = `choychat-backup-${activeChat.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${new Date().toISOString().slice(0, 10)}`;
+
+    if (format === 'json') {
+      fileContent = JSON.stringify(
+        {
+          room: activeChat,
+          exportedAt: new Date().toISOString(),
+          totalMessages: uniqueMsgs.length,
+          messages: uniqueMsgs,
+        },
+        null,
+        2
+      );
+      filename += '.json';
+    } else {
+      fileContent = `=== CHOY CHAT BACKUP ===\nRoom: ${activeChat}\nExported At: ${new Date().toISOString()}\nTotal Messages: ${uniqueMsgs.length}\n========================================\n\n` +
+        uniqueMsgs
+          .map(
+            (m) =>
+              `[${new Date(m.createdAtMs).toISOString().replace('T', ' ').slice(0, 19)}] ${m.sender}: ${m.text || (m.mediaUrl ? `[Media: ${m.mediaType}]` : '')}${
+                m.transcript ? `\n   Voice Transcript: "${m.transcript}"` : ''
+              }${m.reactions && m.reactions.length > 0 ? `\n   Reactions: ${m.reactions.join(' ')}` : ''}`
+          )
+          .join('\n\n');
+      filename += '.txt';
+    }
+
+    const blob = new Blob([fileContent], { type: format === 'json' ? 'application/json;charset=utf-8' : 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    showNotice(`Successfully downloaded ${activeChat} backup (${format.toUpperCase()})!`);
+  };
+
   const handleCreatePost = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newPostText.trim() && !newPostMedia.trim()) return;
@@ -3990,6 +4105,27 @@ export default function App() {
               <div className="text-[9px] text-emerald-700 dark:text-emerald-300 truncate">{isAdmin ? 'Admin • Synced' : 'Member • Synced'}</div>
             </div>
           </button>
+          <div className="flex items-center justify-between px-2.5 py-2 rounded-xl bg-emerald-50 dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-800 text-xs">
+            <span className="font-bold text-emerald-950 dark:text-white flex items-center gap-1.5">
+              <MessageSquare className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" /> Headbubble
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                const next = !chatHeadBubbleEnabled;
+                setChatHeadBubbleEnabled(next);
+                localStorage.setItem('choychat_chat_head_bubble_v1', String(next));
+                showNotice(next ? 'Chat Head Bubbles Enabled' : 'Chat Head Bubbles Disabled');
+              }}
+              className={`px-2 py-1 rounded-lg text-[10px] font-bold transition ${
+                chatHeadBubbleEnabled
+                  ? 'bg-emerald-400 text-slate-950 shadow'
+                  : 'bg-emerald-200 dark:bg-emerald-900 text-emerald-700 dark:text-emerald-300'
+              }`}
+            >
+              {chatHeadBubbleEnabled ? 'ON' : 'OFF'}
+            </button>
+          </div>
           <button
             type="button"
             onClick={() => setIsMenuDrawerOpen(true)}
@@ -4875,59 +5011,77 @@ export default function App() {
                 activeChatMobileView ? 'hidden md:flex' : 'flex'
               }`}>
                 <div className="text-xs font-bold text-emerald-700 dark:text-emerald-300 uppercase">Chats</div>
-                <div className="flex md:flex-col gap-2 overflow-x-auto touch-pan-x overscroll-x-contain [-webkit-overflow-scrolling:touch] md:overflow-visible pb-1.5 md:pb-0">
+                <div className="flex flex-col gap-2 overflow-y-auto max-h-[520px] touch-pan-y pr-1">
                   {filteredChatRooms.length === 0 ? (
                     <div className="px-3 py-2 text-[11px] text-emerald-700 dark:text-emerald-300">
                       No chats match "{searchQuery.trim()}"
                     </div>
                   ) : (
                     filteredChatRooms.map((room) => {
-                    const isActive = activeChat === room;
-                    const isVipGroup = room.trim().toLowerCase() === 'vip group';
-                    const isRoomOnline =
-                      isVipGroup ||
-                      onlineUsers.includes(room.trim().toLowerCase());
-                    const roomAvatar = isVipGroup ? '' : getUserAvatar({ name: room });
-                    return (
-                      <button
-                        key={room}
-                        type="button"
-                        onClick={() => {
-                          setActiveChat(room);
-                          setActiveChatMobileView(true);
-                        }}
-                        className={`px-3 py-2 rounded-xl text-xs flex items-center justify-between gap-2 transition whitespace-nowrap shrink-0 md:w-full text-left ${
-                          isActive
-                            ? 'bg-emerald-400 text-slate-950 font-bold shadow'
-                            : 'bg-emerald-50 dark:bg-emerald-950 text-emerald-900 dark:text-emerald-200 border border-emerald-200 dark:border-emerald-800 hover:bg-emerald-100 dark:hover:bg-emerald-800'
-                        }`}
-                      >
-                        <span className="flex items-center gap-2 min-w-0">
-                          {!isVipGroup && (
-                            <img
-                              src={roomAvatar}
-                              alt=""
-                              className={`w-6 h-6 rounded-lg bg-white/80 dark:bg-emerald-900 border border-emerald-500/40 shrink-0 ${
-                                isCustomAvatar(roomAvatar) ? 'object-cover' : 'object-contain'
-                              }`}
-                            />
-                          )}
-                          <span className="truncate">{room}</span>
-                        </span>
-                        <span
-                          className={`w-2.5 h-2.5 rounded-full shrink-0 ${
-                            isRoomOnline
-                              ? isActive
-                                ? 'bg-slate-950'
-                                : 'bg-emerald-500 dark:bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.9)]'
-                              : isActive
-                              ? 'bg-slate-950/35'
-                              : 'bg-slate-400/50 dark:bg-emerald-800'
+                      const isActive = activeChat === room;
+                      const isVipGroup = room.trim().toLowerCase() === 'vip group';
+                      const isRoomOnline =
+                        isVipGroup ||
+                        onlineUsers.includes(room.trim().toLowerCase());
+                      const roomAvatar = isVipGroup ? '' : getUserAvatar({ name: room });
+                      const latestMsg = getLatestMessageForRoom(room);
+                      const snippet = latestMsg
+                        ? (latestMsg.text || (latestMsg.mediaUrl ? `[Media]` : ''))
+                        : 'No messages yet';
+                      const shortSnippet = snippet.length > 15 ? snippet.slice(0, 15) + '...' : snippet;
+                      const isUnread = latestMsg ? seenRoomMap[room] !== latestMsg.id : false;
+
+                      return (
+                        <button
+                          key={room}
+                          type="button"
+                          onClick={() => {
+                            setActiveChat(room);
+                            setActiveChatMobileView(true);
+                            markRoomSeen(room);
+                          }}
+                          className={`p-2.5 rounded-xl text-xs flex items-center justify-between gap-2 transition w-full text-left ${
+                            isActive
+                              ? 'bg-emerald-400 text-slate-950 font-bold shadow'
+                              : 'bg-emerald-50/80 dark:bg-emerald-950 text-emerald-900 dark:text-emerald-200 border border-emerald-200 dark:border-emerald-800 hover:bg-emerald-100 dark:hover:bg-emerald-800'
                           }`}
-                          title={isRoomOnline ? 'Online (Data Active)' : 'Offline (Push Ready)'}
-                        ></span>
-                      </button>
-                    );
+                        >
+                          <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                            {!isVipGroup && (
+                              <div className="relative shrink-0">
+                                <img
+                                  src={roomAvatar}
+                                  alt=""
+                                  className="w-9 h-9 rounded-lg bg-white/90 dark:bg-emerald-900 border border-emerald-500/40 object-cover"
+                                />
+                                <span
+                                  className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-white dark:border-emerald-950 ${
+                                    isRoomOnline ? 'bg-emerald-400' : 'bg-slate-400'
+                                  }`}
+                                />
+                              </div>
+                            )}
+                            {isVipGroup && (
+                              <div className="w-9 h-9 rounded-lg bg-emerald-200 dark:bg-emerald-800 border border-emerald-400/50 flex items-center justify-center shrink-0 text-emerald-800 dark:text-emerald-200 font-bold">
+                                👥
+                              </div>
+                            )}
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center justify-between gap-1">
+                                <span className={`truncate ${isUnread && !isActive ? 'font-black text-amber-600 dark:text-amber-400' : ''}`}>
+                                  {room}
+                                </span>
+                                {isUnread && !isActive && (
+                                  <span className="w-2 h-2 rounded-full bg-amber-500 shrink-0 animate-ping"></span>
+                                )}
+                              </div>
+                              <div className={`text-[10px] truncate ${isUnread && !isActive ? 'font-bold text-emerald-950 dark:text-white' : 'text-emerald-700 dark:text-emerald-300'}`}>
+                                {shortSnippet}
+                              </div>
+                            </div>
+                          </div>
+                        </button>
+                      );
                     })
                   )}
                 </div>
@@ -5015,6 +5169,31 @@ export default function App() {
                       >
                         <ImageIcon className="w-3.5 h-3.5" /> Gallery
                       </button>
+                      <div className="relative group/backup shrink-0">
+                        <button
+                          type="button"
+                          className="px-2.5 py-1.5 bg-emerald-100/80 dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 text-emerald-800 dark:text-emerald-200 rounded-lg flex items-center gap-1 shadow whitespace-nowrap hover:text-emerald-950 dark:hover:text-white text-[11px]"
+                          title="Download Chat Backup"
+                        >
+                          <Download className="w-3.5 h-3.5" /> Backup
+                        </button>
+                        <div className="absolute right-0 top-full mt-1 hidden group-hover/backup:flex flex-col bg-white dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 rounded-xl shadow-xl z-30 p-1 min-w-[120px] space-y-1">
+                          <button
+                            type="button"
+                            onClick={() => handleDownloadChatBackup('json')}
+                            className="w-full text-left px-3 py-1.5 rounded-lg hover:bg-emerald-100 dark:hover:bg-emerald-900 text-xs font-bold text-emerald-950 dark:text-white"
+                          >
+                            JSON File
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDownloadChatBackup('txt')}
+                            className="w-full text-left px-3 py-1.5 rounded-lg hover:bg-emerald-100 dark:hover:bg-emerald-900 text-xs font-bold text-emerald-950 dark:text-white"
+                          >
+                            Text File (.txt)
+                          </button>
+                        </div>
+                      </div>
                       <button
                         type="button"
                         onClick={() => startVideoCall(activeChat)}
@@ -6983,6 +7162,45 @@ export default function App() {
           caption={zoomedImage.caption}
           onClose={() => setZoomedImage(null)}
         />
+      )}
+
+      {/* FLOATING CHAT HEAD BUBBLE POPUP */}
+      {chatHeadBubbleEnabled && activeChatHeadMessage && (
+        <div className="fixed bottom-20 right-5 z-50 animate-bounce transition-all duration-300">
+          <div
+            className="flex items-center gap-3 p-3 rounded-2xl bg-gradient-to-r from-emerald-900 to-teal-900 text-white shadow-2xl border-2 border-amber-400 max-w-xs cursor-pointer group hover:scale-105"
+            onClick={() => {
+              const room = activeChatHeadMessage.receiver.trim().toLowerCase() === 'vip group' ? 'VIP Group' : (activeChatHeadMessage.sender === currentUser.name ? activeChatHeadMessage.receiver : activeChatHeadMessage.sender);
+              setActiveChat(room);
+              setActiveTab('messages');
+              setActiveChatHeadMessage(null);
+            }}
+          >
+            <div className="relative shrink-0">
+              <img
+                src={getUserAvatar({ name: activeChatHeadMessage.sender })}
+                alt=""
+                className="w-12 h-12 rounded-full object-cover border-2 border-amber-400 shadow"
+              />
+              <span className="absolute -top-1 -right-1 w-3.5 h-3.5 bg-emerald-400 rounded-full border-2 border-emerald-950 animate-ping"></span>
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="text-xs font-black text-amber-300 truncate">{activeChatHeadMessage.sender}</div>
+              <div className="text-[11px] text-white truncate">{activeChatHeadMessage.text || 'Sent an attachment'}</div>
+            </div>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                setActiveChatHeadMessage(null);
+              }}
+              className="p-1 rounded-full bg-white/20 hover:bg-white/40 text-white shrink-0 text-xs font-bold"
+              title="Close bubble"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        </div>
       )}
 
       <OfflineIndicator />
