@@ -24,6 +24,7 @@ export interface SecurityUserAccount {
   id: string;
   name: string;
   phone: string;
+  role?: 'admin' | 'member';
   status: 'pending' | 'approved';
   loginDate: string;
 }
@@ -39,8 +40,8 @@ interface SecurityStudioProps {
   usersList: SecurityUserAccount[];
   setUsersList: React.Dispatch<React.SetStateAction<SecurityUserAccount[]>>;
   onAddUser?: (name: string, phone: string) => Promise<void> | void;
-  onToggleUserStatus?: (user: SecurityUserAccount) => Promise<void> | void;
   onDeleteUser?: (userId: string) => Promise<void> | void;
+  deletingUserIds?: string[];
   isCloudSynced?: boolean;
   storageMode?: 'postgres' | 'memory';
   authToken?: string | null;
@@ -110,8 +111,8 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
   usersList,
   setUsersList,
   onAddUser,
-  onToggleUserStatus,
   onDeleteUser,
+  deletingUserIds = [],
   isCloudSynced = false,
   storageMode = 'memory',
   authToken = null,
@@ -212,6 +213,7 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
   // 5. Add user quick form
   const [newUserName, setNewUserName] = useState('');
   const [newUserPhone, setNewUserPhone] = useState('');
+  const [confirmDeleteUserId, setConfirmDeleteUserId] = useState<string | null>(null);
 
   const refreshStorageStats = async () => {
     try {
@@ -393,8 +395,7 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
     return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
   };
 
-  const approvedCount = usersList.filter((u) => u.status === 'approved').length;
-  const pendingCount = usersList.filter((u) => u.status === 'pending').length;
+  const activeMembersCount = usersList.length;
   const totalMediaItems = mediaPostsCount + mediaMessagesCount;
   const browserPercent =
     storageEstimate.quotaBytes > 0
@@ -832,8 +833,8 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
           <div className="p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-800">
             <div className="text-[10px] text-emerald-700 dark:text-emerald-300 uppercase">Users</div>
-            <div className="text-xl font-black text-emerald-950 dark:text-white font-mono">{usersList.length}</div>
-            <div className="text-[10px] text-emerald-700 dark:text-emerald-400">{approvedCount} active / {pendingCount} pending</div>
+            <div className="text-xl font-black text-emerald-950 dark:text-white font-mono">{activeMembersCount}</div>
+            <div className="text-[10px] text-emerald-700 dark:text-emerald-400">Auto-active on sign in</div>
           </div>
           <div className="p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-800">
             <div className="text-[10px] text-emerald-700 dark:text-emerald-300 uppercase">Blocked</div>
@@ -993,13 +994,15 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
             <Users className="w-4 h-4 text-emerald-700 dark:text-emerald-300" />
             <h3 className="text-sm font-bold text-emerald-950 dark:text-white">List of Users (Data)</h3>
           </div>
-          <button
-            type="button"
-            onClick={handleExportUsers}
-            className="px-3 py-1.5 rounded-lg bg-emerald-400 text-slate-950 font-bold flex items-center gap-1.5"
-          >
-            <Download className="w-3.5 h-3.5" /> Export CSV
-          </button>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={handleExportUsers}
+              className="px-3 py-1.5 rounded-lg bg-emerald-400 text-slate-950 font-bold flex items-center gap-1.5"
+            >
+              <Download className="w-3.5 h-3.5" /> Export CSV
+            </button>
+          </div>
         </div>
 
         <form
@@ -1066,47 +1069,56 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
                   <td className="p-3">
                     <span
                       className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
-                        u.status === 'approved'
-                          ? 'bg-emerald-100 dark:bg-emerald-500/20 text-emerald-800 dark:text-emerald-300'
-                          : 'bg-amber-100 dark:bg-amber-500/20 text-amber-800 dark:text-amber-300'
+                        u.role === 'admin' || u.phone === '09361223978' || u.phone === 'choyjiez07@gmail.com'
+                          ? 'bg-amber-100 dark:bg-amber-500/20 text-amber-800 dark:text-amber-300'
+                          : 'bg-emerald-100 dark:bg-emerald-500/20 text-emerald-800 dark:text-emerald-300'
                       }`}
                     >
-                      {u.status}
+                      {u.role === 'admin' || u.phone === '09361223978' || u.phone === 'choyjiez07@gmail.com' ? 'Admin' : 'Active'}
                     </span>
                   </td>
                   <td className="p-3 text-right space-x-2">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (onToggleUserStatus) {
-                          onToggleUserStatus(u);
-                        } else {
-                          setUsersList(
-                            usersList.map((item) =>
-                              item.id === u.id ? { ...item, status: item.status === 'approved' ? 'pending' : 'approved' } : item
-                            )
-                          );
-                        }
-                      }}
-                      className="px-2.5 py-1 rounded bg-emerald-100 dark:bg-emerald-800 text-emerald-900 dark:text-emerald-100 hover:bg-emerald-700 font-semibold"
-                    >
-                      {u.status === 'approved' ? 'Set Pending' : 'Approve'}
-                    </button>
-                    {u.phone !== '09361223978' && u.phone !== 'choyjiez07@gmail.com' && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          if (onDeleteUser) {
-                            onDeleteUser(u.id);
-                          } else {
-                            setUsersList(usersList.filter((item) => item.id !== u.id));
-                          }
-                        }}
-                        className="p-1 text-red-400 hover:text-red-200 align-middle"
-                        title="Remove User"
-                      >
-                        <Trash2 className="w-3.5 h-3.5 inline" />
-                      </button>
+                    {u.role !== 'admin' && u.phone !== '09361223978' && u.phone !== 'choyjiez07@gmail.com' ? (
+                      confirmDeleteUserId === u.id ? (
+                        <span className="inline-flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            disabled={deletingUserIds.includes(u.id)}
+                            onClick={() => {
+                              setConfirmDeleteUserId(null);
+                              if (onDeleteUser) {
+                                onDeleteUser(u.id);
+                              } else {
+                                setUsersList(usersList.filter((item) => item.id !== u.id));
+                              }
+                            }}
+                            className="px-2.5 py-1 rounded bg-rose-600 hover:bg-rose-700 text-white font-bold transition disabled:opacity-50"
+                          >
+                            {deletingUserIds.includes(u.id) ? 'Deleting...' : 'Confirm Delete'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setConfirmDeleteUserId(null)}
+                            className="px-2 py-1 rounded border border-emerald-300 dark:border-emerald-700 bg-white dark:bg-emerald-900 text-emerald-800 dark:text-emerald-200 font-semibold"
+                          >
+                            Cancel
+                          </button>
+                        </span>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => setConfirmDeleteUserId(u.id)}
+                          className="px-2.5 py-1 rounded border border-rose-300 dark:border-rose-700/80 bg-rose-50 dark:bg-rose-950/60 text-rose-700 dark:text-rose-200 hover:bg-rose-600 hover:text-white font-semibold inline-flex items-center gap-1 transition"
+                          title="Delete Account"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                          <span>Delete Account</span>
+                        </button>
+                      )
+                    ) : (
+                      <span className="text-[10px] font-semibold text-amber-700 dark:text-amber-300 px-1.5">
+                        Protected
+                      </span>
                     )}
                   </td>
                 </tr>

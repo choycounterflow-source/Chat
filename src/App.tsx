@@ -270,6 +270,13 @@ export default function App() {
 
   const [isChoyAIPopupOpen, setIsChoyAIPopupOpen] = useState(false);
   const [shareCopied, setShareCopied] = useState(false);
+  const [deletingUserIds, setDeletingUserIds] = useState<string[]>([]);
+  const [confirmDeleteUserId, setConfirmDeleteUserId] = useState<string | null>(null);
+  const [showDeleteAccountSetup, setShowDeleteAccountSetup] = useState(false);
+  const [deleteAccountPin, setDeleteAccountPin] = useState('');
+  const [deleteAccountError, setDeleteAccountError] = useState('');
+  const [deletingMyAccount, setDeletingMyAccount] = useState(false);
+  const syncSeqRef = useRef(0);
 
   const showNotice = (msg: string) => {
     setSyncNotice(msg);
@@ -336,8 +343,11 @@ export default function App() {
   // 2. Sync full state from backend database
   const fetchSyncedState = useCallback(async () => {
     if (!authToken) return;
+    const seq = ++syncSeqRef.current;
     try {
       const data = await apiFetch('/api/choy/state');
+      // Ignore stale responses if a newer sync or mutation already started
+      if (seq !== syncSeqRef.current) return;
       if (data.storageMode) setStorageMode(data.storageMode);
       if (data.user) {
         setCurrentUser(data.user);
@@ -1145,20 +1155,6 @@ export default function App() {
     }
   };
 
-  const handleToggleUserStatus = async (userItem: UserAccount) => {
-    if (!isAdmin) return;
-    const nextStatus = userItem.status === 'approved' ? 'pending' : 'approved';
-    try {
-      await apiFetch(`/api/choy/users/${encodeURIComponent(userItem.id)}/status`, {
-        method: 'PATCH',
-        body: JSON.stringify({ status: nextStatus })
-      });
-      await fetchSyncedState();
-    } catch (err) {
-      showNotice(err instanceof Error ? err.message : 'Failed to update status');
-    }
-  };
-
   const handleAddCloudUser = async (name: string, phone: string) => {
     if (!isAdmin) return;
     try {
@@ -1166,6 +1162,7 @@ export default function App() {
         method: 'POST',
         body: JSON.stringify({ name, phone: phone || `member_${Date.now()}` })
       });
+      showNotice(`Added account for ${name}.`);
       await fetchSyncedState();
     } catch (err) {
       showNotice(err instanceof Error ? err.message : 'Failed to add user');
@@ -1174,11 +1171,57 @@ export default function App() {
 
   const handleDeleteCloudUser = async (userId: string) => {
     if (!isAdmin) return;
+    if (deletingUserIds.includes(userId)) return;
+    setDeletingUserIds((prev) => [...prev, userId]);
+    syncSeqRef.current += 1;
     try {
       await apiFetch(`/api/choy/users/${encodeURIComponent(userId)}`, { method: 'DELETE' });
+      setUsersList((prev) => prev.filter((item) => item.id !== userId));
+      setConfirmDeleteUserId(null);
+      showNotice('Account permanently deleted.');
       await fetchSyncedState();
     } catch (err) {
       showNotice(err instanceof Error ? err.message : 'Failed to delete user');
+    } finally {
+      setDeletingUserIds((prev) => prev.filter((id) => id !== userId));
+    }
+  };
+
+  const handleDeleteMyAccount = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!currentUser || isAdmin || deletingMyAccount) return;
+    const trimmedPin = deleteAccountPin.trim();
+    if (!trimmedPin) {
+      setDeleteAccountError('Enter your current PIN to confirm account deletion.');
+      return;
+    }
+    setDeletingMyAccount(true);
+    setDeleteAccountError('');
+    try {
+      await apiFetch('/api/auth/delete-account', {
+        method: 'POST',
+        headers: { 'X-Requested-With': 'XMLHttpRequest' },
+        body: JSON.stringify({ pin: trimmedPin }),
+      });
+      setDeleteAccountPin('');
+      setShowDeleteAccountSetup(false);
+      setAuthToken(null);
+      setCurrentUser(null);
+      setPosts([]);
+      setCloudMessages([]);
+      setLocalMessages([]);
+      setUsersList([]);
+      setKnowledgeBase([]);
+      setLedgerRows([]);
+      setLeaderboard([]);
+      setBlockedUsers([]);
+      setActiveTab('feed');
+      setLoginError('Your account has been permanently deleted.');
+      checkAuthStatus();
+    } catch (err) {
+      setDeleteAccountError(err instanceof Error ? err.message : 'Failed to delete account');
+    } finally {
+      setDeletingMyAccount(false);
     }
   };
 
@@ -1436,7 +1479,7 @@ export default function App() {
                     setLoginError('');
                   }}
                   className={`py-2 rounded-lg font-bold flex items-center justify-center gap-1.5 transition ${
-                    authMode === 'login' ? 'bg-emerald-400 text-slate-950 shadow' : 'text-emerald-200'
+                    authMode === 'login' ? 'bg-emerald-400 text-slate-950 shadow' : 'text-emerald-800 dark:text-emerald-200'
                   }`}
                 >
                   <LogIn className="w-3.5 h-3.5" /> Login
@@ -1448,7 +1491,7 @@ export default function App() {
                     setLoginError('');
                   }}
                   className={`py-2 rounded-lg font-bold flex items-center justify-center gap-1.5 transition ${
-                    authMode === 'register' ? 'bg-emerald-400 text-slate-950 shadow' : 'text-emerald-200'
+                    authMode === 'register' ? 'bg-emerald-400 text-slate-950 shadow' : 'text-emerald-800 dark:text-emerald-200'
                   }`}
                 >
                   <UserPlus className="w-3.5 h-3.5" /> Sign Up
@@ -1954,11 +1997,11 @@ export default function App() {
                   className={`px-3 py-2 rounded-xl flex items-center gap-2 shrink-0 whitespace-nowrap ${
                     activeTab === 'admin_approvals'
                       ? 'bg-indigo-600 text-white font-bold'
-                      : 'text-indigo-200 hover:bg-emerald-800'
+                      : 'text-indigo-800 dark:text-indigo-200 hover:bg-emerald-100 dark:hover:bg-emerald-800'
                   }`}
                 >
-                  <ShieldCheck className="w-4 h-4 shrink-0" />
-                  <span>Approvals</span>
+                  <Users className="w-4 h-4 shrink-0" />
+                  <span>Accounts</span>
                 </button>
                 <button
                   type="button"
@@ -2321,7 +2364,9 @@ export default function App() {
                         <div className="text-xs font-bold text-emerald-950 dark:text-white truncate">
                           {u.name} {isMe ? '(You)' : ''}
                         </div>
-                        <div className="text-[10px] text-emerald-700 dark:text-emerald-300 truncate">{u.status}</div>
+                        <div className="text-[10px] text-emerald-700 dark:text-emerald-300 truncate">
+                          {u.role === 'admin' ? 'Admin' : 'Active'}
+                        </div>
                       </div>
                     </div>
                     {!isMe && (
@@ -2648,6 +2693,84 @@ export default function App() {
                     </span>
                   </div>
                 </div>
+              </section>
+
+              {/* Account Setup & Delete Account */}
+              <section className="bg-white dark:bg-emerald-900/60 border border-rose-200 dark:border-rose-800/70 rounded-2xl p-5 sm:p-6 space-y-4 shadow-sm">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <h3 className="text-base font-bold text-emerald-950 dark:text-white flex items-center gap-2">
+                      <Trash2 className="w-4 h-4 text-rose-600 dark:text-rose-400" />
+                      <span>Account Setup &amp; Delete Account</span>
+                    </h3>
+                    <p className="text-xs text-emerald-700 dark:text-emerald-300 mt-0.5">
+                      {isAdmin
+                        ? 'Sign-ups are automatically active without admin approval. Open Accounts to remove member accounts.'
+                        : 'Permanently delete your Choy Chat account and sign out of this device.'}
+                    </p>
+                  </div>
+
+                  {isAdmin ? (
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab('admin_approvals')}
+                      className="px-4 py-2 min-h-[40px] rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition shadow-xs"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>Manage / Delete Accounts</span>
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowDeleteAccountSetup((v) => !v);
+                        setDeleteAccountError('');
+                        setDeleteAccountPin('');
+                      }}
+                      className="px-4 py-2 min-h-[40px] rounded-xl border border-rose-300 dark:border-rose-700 bg-rose-50 dark:bg-rose-950/60 text-rose-700 dark:text-rose-200 hover:bg-rose-100 dark:hover:bg-rose-900/70 text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>{showDeleteAccountSetup ? 'Cancel' : 'Delete Account'}</span>
+                    </button>
+                  )}
+                </div>
+
+                {!isAdmin && showDeleteAccountSetup && (
+                  <form
+                    onSubmit={handleDeleteMyAccount}
+                    className="p-4 rounded-xl bg-rose-50/80 dark:bg-rose-950/50 border border-rose-200 dark:border-rose-800/80 space-y-3"
+                  >
+                    <p className="text-xs text-rose-800 dark:text-rose-200 leading-relaxed">
+                      <strong>Warning:</strong> Deleting your account removes your login credentials permanently. Enter your current PIN below to confirm.
+                    </p>
+                    {deleteAccountError && (
+                      <div
+                        role="alert"
+                        className="p-2.5 rounded-lg bg-white dark:bg-rose-950 border border-rose-300 dark:border-rose-700 text-xs text-rose-700 dark:text-rose-200"
+                      >
+                        {deleteAccountError}
+                      </div>
+                    )}
+                    <div className="flex flex-col sm:flex-row gap-2">
+                      <input
+                        type="password"
+                        required
+                        minLength={4}
+                        value={deleteAccountPin}
+                        onChange={(e) => setDeleteAccountPin(e.target.value)}
+                        placeholder="Enter your account PIN..."
+                        className="flex-1 min-h-[40px] px-3 py-2 rounded-xl bg-white dark:bg-emerald-950 border border-rose-300 dark:border-rose-700 text-xs text-emerald-950 dark:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-rose-500"
+                      />
+                      <button
+                        type="submit"
+                        disabled={deletingMyAccount || !deleteAccountPin.trim()}
+                        className="px-4 py-2 min-h-[40px] rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold whitespace-nowrap transition disabled:opacity-50"
+                      >
+                        {deletingMyAccount ? 'Deleting...' : 'Confirm Delete Account'}
+                      </button>
+                    </div>
+                  </form>
+                )}
               </section>
             </div>
           )}
@@ -3249,39 +3372,80 @@ export default function App() {
           {activeTab === 'admin_approvals' && isAdmin && (
             <div className="max-w-4xl mx-auto space-y-4">
               <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-5 space-y-4">
-                <h3 className="text-sm font-bold text-emerald-950 dark:text-white">User Accounts Approval & Sync Monitor</h3>
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <h3 className="text-sm font-bold text-emerald-950 dark:text-white">
+                      User Accounts Management
+                    </h3>
+                    <p className="text-[11px] text-emerald-700 dark:text-emerald-300 mt-0.5">
+                      {usersList.length} active account{usersList.length === 1 ? '' : 's'} · Auto-active on sign in (no approval needed) ·{' '}
+                      {storageMode === 'postgres' ? 'Saved to Cloud Postgres' : 'Preview Memory Mode'}
+                    </p>
+                  </div>
+                </div>
+
                 <div className="space-y-2">
-                  {usersList.map((u) => (
-                    <div
-                      key={u.id}
-                      className="p-3 bg-emerald-50 dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-800 rounded-xl flex items-center justify-between text-xs gap-2"
-                    >
-                      <div className="min-w-0">
-                        <div className="font-bold text-emerald-950 dark:text-white truncate">
-                          {u.name} ({u.phone})
+                  {usersList.map((u) => {
+                    const isDeleting = deletingUserIds.includes(u.id);
+                    const isConfirming = confirmDeleteUserId === u.id;
+                    const isAccountAdmin = u.role === 'admin' || u.id === currentUser.id;
+                    return (
+                      <div
+                        key={u.id}
+                        className="p-3 rounded-xl flex flex-wrap items-center justify-between text-xs gap-2 border bg-emerald-50 dark:bg-emerald-950 border-emerald-200 dark:border-emerald-800"
+                      >
+                        <div className="min-w-0">
+                          <div className="font-bold text-emerald-950 dark:text-white truncate">
+                            {u.name} ({u.phone})
+                          </div>
+                          <div className="text-[10px] text-emerald-700 dark:text-emerald-300">Last Active: {u.loginDate}</div>
                         </div>
-                        <div className="text-[10px] text-emerald-700 dark:text-emerald-300">Last Synced: {u.loginDate}</div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <span
+                            className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
+                              isAccountAdmin
+                                ? 'bg-amber-100 dark:bg-amber-500/20 text-amber-800 dark:text-amber-300'
+                                : 'bg-emerald-100 dark:bg-emerald-500/20 text-emerald-800 dark:text-emerald-300'
+                            }`}
+                          >
+                            {isAccountAdmin ? 'Admin' : 'Active'}
+                          </span>
+
+                          {!isAccountAdmin && (
+                            isConfirming ? (
+                              <div className="flex items-center gap-1.5">
+                                <button
+                                  type="button"
+                                  disabled={isDeleting}
+                                  onClick={() => handleDeleteCloudUser(u.id)}
+                                  className="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-bold transition disabled:opacity-50"
+                                >
+                                  {isDeleting ? 'Deleting...' : 'Confirm Delete'}
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={isDeleting}
+                                  onClick={() => setConfirmDeleteUserId(null)}
+                                  className="px-2.5 py-1.5 rounded-lg border border-emerald-300 dark:border-emerald-700 bg-white dark:bg-emerald-900 text-emerald-800 dark:text-emerald-200 font-semibold transition"
+                                >
+                                  Cancel
+                                </button>
+                              </div>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => setConfirmDeleteUserId(u.id)}
+                                className="px-3 py-1.5 rounded-lg border border-rose-300 dark:border-rose-700/80 bg-rose-50 dark:bg-rose-950/60 text-rose-700 dark:text-rose-200 hover:bg-rose-600 hover:text-white dark:hover:bg-rose-600 dark:hover:text-white font-bold inline-flex items-center gap-1.5 transition"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                                <span>Delete Account</span>
+                              </button>
+                            )
+                          )}
+                        </div>
                       </div>
-                      <div className="flex items-center gap-2 shrink-0">
-                        <span
-                          className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
-                            u.status === 'approved'
-                              ? 'bg-emerald-500/20 text-emerald-400'
-                              : 'bg-amber-500/20 text-amber-400'
-                          }`}
-                        >
-                          {u.status}
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() => handleToggleUserStatus(u)}
-                          className="px-2.5 py-1 bg-emerald-400 text-slate-950 font-bold rounded"
-                        >
-                          {u.status === 'approved' ? 'Set Pending' : 'Approve'}
-                        </button>
-                      </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
             </div>
@@ -3469,8 +3633,8 @@ export default function App() {
               usersList={usersList}
               setUsersList={setUsersList}
               onAddUser={(name, phone) => handleAddCloudUser(name, phone)}
-              onToggleUserStatus={handleToggleUserStatus}
               onDeleteUser={handleDeleteCloudUser}
+              deletingUserIds={deletingUserIds}
               isCloudSynced
               storageMode={storageMode}
               authToken={authToken}

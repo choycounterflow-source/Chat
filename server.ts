@@ -183,8 +183,8 @@ app.post(
   async (req: AuthedRequest, res: Response) => {
     try {
       const user = req.choyUser;
-      if (!user || (user.status !== 'approved' && user.role !== 'admin')) {
-        return res.status(403).json({ error: 'Account must be approved to upload media' });
+      if (!user) {
+        return res.status(401).json({ error: 'Authentication required to upload media' });
       }
 
       // CSRF protection when authenticated via session cookie
@@ -355,7 +355,7 @@ app.post('/api/auth/register', async (req, res) => {
       phone,
       pin,
       role: 'member',
-      status: 'pending',
+      status: 'approved',
     });
     const token = signSessionToken(user.id, user.role);
     setSessionCookie(req, res, token);
@@ -409,6 +409,10 @@ app.post('/api/auth/login', async (req, res) => {
     if (!user || !verifyPin(pin, user.pinHash)) {
       return res.status(401).json({ error: 'Invalid phone or PIN' });
     }
+    if (user.status !== 'approved') {
+      await store.updateUserStatus(user.id, 'approved');
+      user.status = 'approved';
+    }
     const token = signSessionToken(user.id, user.role);
     setSessionCookie(req, res, token);
     return res.json({
@@ -426,6 +430,56 @@ app.post('/api/auth/login', async (req, res) => {
     return res.status(500).json({ error: err instanceof Error ? err.message : 'Login failed' });
   }
 });
+
+const handleSelfDeleteAccount = async (req: AuthedRequest, res: Response) => {
+  try {
+    // CSRF guard when authenticated via session cookie
+    const hasBearer = Boolean(req.headers.authorization?.startsWith('Bearer '));
+    if (!hasBearer) {
+      const origin = req.headers.origin;
+      const expectedHost = (req.headers['x-forwarded-host'] || req.headers.host || '').toString().split(',')[0].trim();
+      const hasRequestedWith = req.headers['x-requested-with'] === 'XMLHttpRequest';
+      let originMatches = false;
+      if (typeof origin === 'string' && expectedHost) {
+        try {
+          originMatches = new URL(origin).host === expectedHost;
+        } catch {
+          originMatches = false;
+        }
+      }
+      if (!originMatches && !hasRequestedWith) {
+        return res.status(403).json({ error: 'Cross-origin request blocked' });
+      }
+    }
+
+    const user = req.choyUser;
+    if (!user) {
+      return res.status(401).json({ error: 'Authentication required' });
+    }
+    if (user.role === 'admin') {
+      return res.status(403).json({ error: 'Admin account cannot be self-deleted.' });
+    }
+
+    const pin = typeof req.body?.pin === 'string' ? req.body.pin.trim() : '';
+    if (!pin || !verifyPin(pin, user.pinHash)) {
+      return res.status(401).json({ error: 'Incorrect PIN. Enter your current PIN to confirm account deletion.' });
+    }
+
+    const deleted = await store.deleteUser(user.id);
+    if (!deleted) {
+      return res.status(404).json({ error: 'Account could not be deleted.' });
+    }
+
+    clearSessionCookie(req, res);
+    broadcastSync('users');
+    return res.json({ deleted: true });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to delete account' });
+  }
+};
+
+app.post('/api/auth/delete-account', requireAuth, handleSelfDeleteAccount);
+app.delete('/api/auth/account', requireAuth, handleSelfDeleteAccount);
 
 app.get('/api/choy/stream', requireAuth, (req: AuthedRequest, res: Response) => {
   res.setHeader('Content-Type', 'text/event-stream');
@@ -730,15 +784,34 @@ app.post('/api/choy/users', requireAuth, requireAdmin, async (req: AuthedRequest
   }
 });
 
-app.patch('/api/choy/users/:id/status', requireAuth, requireAdmin, async (req: AuthedRequest, res: Response) => {
+const handleUpdateUserStatusRoute = async (req: AuthedRequest, res: Response) => {
   try {
-    const status = req.body?.status === 'approved' ? 'approved' : 'pending';
+    const rawStatus = typeof req.body?.status === 'string' ? req.body.status.trim().toLowerCase() : '';
+    if (rawStatus !== 'approved' && rawStatus !== 'pending') {
+      return res.status(400).json({ error: 'Status must be either "approved" or "pending"' });
+    }
+    const status: 'approved' | 'pending' = rawStatus;
     const ok = await store.updateUserStatus(req.params.id, status);
-    if (!ok) return res.status(404).json({ error: 'User not found' });
+    if (!ok) {
+      return res.status(404).json({ error: 'User not found or admin status cannot be set to pending' });
+    }
     broadcastSync('users');
     return res.json({ id: req.params.id, status });
   } catch (err: unknown) {
     return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to update status' });
+  }
+};
+
+app.patch('/api/choy/users/:id/status', requireAuth, requireAdmin, handleUpdateUserStatusRoute);
+app.post('/api/choy/users/:id/status', requireAuth, requireAdmin, handleUpdateUserStatusRoute);
+
+app.post('/api/choy/users/approve-all', requireAuth, requireAdmin, async (_req: AuthedRequest, res: Response) => {
+  try {
+    const approvedCount = await store.approveAllPendingUsers();
+    broadcastSync('users');
+    return res.json({ approvedCount });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to approve pending users' });
   }
 });
 

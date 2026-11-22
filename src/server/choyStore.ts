@@ -312,7 +312,7 @@ export class ChoyStore {
         phone TEXT UNIQUE NOT NULL,
         pin_hash TEXT NOT NULL,
         role TEXT NOT NULL DEFAULT 'member',
-        status TEXT NOT NULL DEFAULT 'pending',
+        status TEXT NOT NULL DEFAULT 'approved',
         blocked_users JSONB NOT NULL DEFAULT '[]'::jsonb,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -374,6 +374,11 @@ export class ChoyStore {
     await this.pool.query(
       'INSERT INTO app_settings (id, data) VALUES ($1, $2::jsonb) ON CONFLICT (id) DO NOTHING',
       ['prices', JSON.stringify(DEFAULT_SETTINGS)]
+    );
+
+    // Ensure all existing member accounts are active (no admin approval gate required)
+    await this.pool.query(
+      `UPDATE app_users SET status = 'approved', updated_at = NOW() WHERE status != 'approved'`
     );
 
     await this.pool.query(
@@ -644,6 +649,13 @@ export class ChoyStore {
   public async updateUserStatus(userId: string, status: 'pending' | 'approved'): Promise<boolean> {
     await this.ready();
     if (this.usePostgres && this.pool) {
+      if (status === 'pending') {
+        const res = await this.pool.query(
+          `UPDATE app_users SET status = $1, updated_at = NOW() WHERE id = $2 AND role != 'admin'`,
+          [status, userId]
+        );
+        return Boolean(res.rowCount && res.rowCount > 0);
+      }
       const res = await this.pool.query(
         'UPDATE app_users SET status = $1, updated_at = NOW() WHERE id = $2',
         [status, userId]
@@ -652,9 +664,30 @@ export class ChoyStore {
     }
     const found = this.memUsers.find((u) => u.id === userId);
     if (!found) return false;
+    if (status === 'pending' && found.role === 'admin') return false;
     found.status = status;
     found.updatedAt = new Date().toISOString();
     return true;
+  }
+
+  public async approveAllPendingUsers(): Promise<number> {
+    await this.ready();
+    if (this.usePostgres && this.pool) {
+      const res = await this.pool.query(
+        `UPDATE app_users SET status = 'approved', updated_at = NOW() WHERE status != 'approved'`
+      );
+      return res.rowCount || 0;
+    }
+    let count = 0;
+    const now = new Date().toISOString();
+    for (const u of this.memUsers) {
+      if (u.status !== 'approved') {
+        u.status = 'approved';
+        u.updatedAt = now;
+        count += 1;
+      }
+    }
+    return count;
   }
 
   public async deleteUser(userId: string): Promise<boolean> {
@@ -1062,7 +1095,7 @@ export class ChoyStore {
       phone: String(r.phone),
       pinHash: String(r.pin_hash),
       role: r.role === 'admin' ? 'admin' : 'member',
-      status: r.status === 'approved' ? 'approved' : 'pending',
+      status: String(r.status || '').trim().toLowerCase() === 'approved' ? 'approved' : 'pending',
       blockedUsers: Array.isArray(r.blocked_users) ? (r.blocked_users as string[]) : [],
       createdAt: new Date(String(r.created_at)).toISOString(),
       updatedAt: new Date(String(r.updated_at)).toISOString(),
