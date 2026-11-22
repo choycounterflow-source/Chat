@@ -1012,7 +1012,7 @@ app.get('/api/choy/state', requireAuth, async (req: AuthedRequest, res: Response
     const filteredPosts =
       isAdmin || userNewsfeed === 'both'
         ? posts
-        : posts.filter((p) => p.newsfeed === 'both' || p.newsfeed === userNewsfeed);
+        : posts.filter((p) => p.newsfeed === userNewsfeed);
 
     let ledger = undefined;
     let settings = undefined;
@@ -1059,11 +1059,16 @@ app.post('/api/choy/posts', requireAuth, async (req: AuthedRequest, res: Respons
     const rawCat = req.body?.category;
     const category: 'feed' | 'myday' | 'video' =
       rawCat === 'myday' || rawCat === 'video' ? rawCat : 'feed';
-    const rawNf = req.body?.newsfeed;
-    const postNewsfeed =
-      rawNf === 'feed_a' || rawNf === 'feed_b' || rawNf === 'both'
-        ? rawNf
-        : user.newsfeed || 'both';
+    const userNf = user.newsfeed || 'both';
+    let postNewsfeed: 'feed_a' | 'feed_b' | 'both' = userNf;
+    if (userNf === 'both') {
+      const rawNf = req.body?.newsfeed;
+      if (rawNf === 'feed_a' || rawNf === 'feed_b' || rawNf === 'both') {
+        postNewsfeed = rawNf;
+      }
+    } else {
+      postNewsfeed = userNf;
+    }
 
     const safeHandle = user.name.toLowerCase().replace(/[^a-z0-9]+/g, '').slice(0, 18) || 'member';
     const post = await store.createPost({
