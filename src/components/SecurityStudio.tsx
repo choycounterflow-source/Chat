@@ -28,8 +28,19 @@ import {
   ChevronDown,
   ChevronUp,
   DollarSign,
-  Layers
+  Layers,
+  Share2,
+  Link2,
+  Pin
 } from 'lucide-react';
+import {
+  type EmojiLinkItem,
+  generateEmojiFromUrl,
+  generateRandomEmojiCode,
+  buildEmojiShareUrl,
+  renderAppIconWithEmojiFile,
+  shareEmojiLinkWithAppImage,
+} from '../utils/emojiLinkShare';
 
 export interface SecurityUserAccount {
   id: string;
@@ -66,6 +77,9 @@ interface SecurityStudioProps {
   ledgerCount: number;
   ledgerTotalValue: number;
   knowledgeCount: number;
+  emojiLinks?: EmojiLinkItem[];
+  onEmojiLinksChanged?: (links: EmojiLinkItem[]) => void;
+  defaultAppIcon?: string;
 }
 
 const DEFAULT_LINKS = {
@@ -138,6 +152,9 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
   ledgerCount,
   ledgerTotalValue,
   knowledgeCount,
+  emojiLinks: propEmojiLinks,
+  onEmojiLinksChanged,
+  defaultAppIcon = '/assets/aistudio/image_20261121_145253_f477cbfa.webp',
 }) => {
   // 1. Direct Admin Links
   const [adminLinks, setAdminLinks] = useState(() => {
@@ -249,6 +266,186 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
   const [pinSavedMsg, setPinSavedMsg] = useState('');
   const [isFingerprinting, setIsFingerprinting] = useState(false);
   const [expandedToolId, setExpandedToolId] = useState<string | null>(null);
+
+  // 8. Live Website Emoji Link & App Icon Image Generator (Auto Push/Sync)
+  const [emojiLinksList, setEmojiLinksList] = useState<EmojiLinkItem[]>(propEmojiLinks || []);
+  const [emojiTargetUrl, setEmojiTargetUrl] = useState<string>(() => adminLinks.renderLiveApp || 'https://chat-9-si9x.onrender.com');
+  const [emojiLinkTitle, setEmojiLinkTitle] = useState<string>('Choy Chat Live App');
+  const [emojiCodeInput, setEmojiCodeInput] = useState<string>(() => generateEmojiFromUrl(adminLinks.renderLiveApp || 'https://chat-9-si9x.onrender.com'));
+  const [emojiIconUrl, setEmojiIconUrl] = useState<string>(defaultAppIcon);
+  const [pinToAppIconOnSave, setPinToAppIconOnSave] = useState<boolean>(true);
+  const [autoPushOnSave, setAutoPushOnSave] = useState<boolean>(true);
+  const [isSavingEmojiLink, setIsSavingEmojiLink] = useState<boolean>(false);
+  const [emojiLinkStatusMsg, setEmojiLinkStatusMsg] = useState<string>('');
+  const [emojiLinkError, setEmojiLinkError] = useState<string>('');
+
+  useEffect(() => {
+    if (Array.isArray(propEmojiLinks)) {
+      setEmojiLinksList(propEmojiLinks);
+    }
+  }, [propEmojiLinks]);
+
+  useEffect(() => {
+    if (!authToken) return;
+    let cancelled = false;
+    fetch('/api/choy/emoji-links', {
+      headers: { Authorization: `Bearer ${authToken}` },
+      cache: 'no-store',
+    })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (!cancelled && data && Array.isArray(data.emojiLinks)) {
+          setEmojiLinksList(data.emojiLinks);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [authToken]);
+
+  const handleSaveEmojiLink = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setEmojiLinkError('');
+    setEmojiLinkStatusMsg('');
+    const cleanUrl = emojiTargetUrl.trim();
+    const cleanEmoji = emojiCodeInput.trim();
+    if (!cleanUrl || (!cleanUrl.startsWith('https://') && !cleanUrl.startsWith('http://'))) {
+      setEmojiLinkError('Please enter a valid live website URL starting with https:// or http://');
+      return;
+    }
+    if (!cleanEmoji) {
+      setEmojiLinkError('Please generate or enter an emoji code for your link.');
+      return;
+    }
+    if (!authToken) {
+      setEmojiLinkError('Admin login token required to save & auto-sync.');
+      return;
+    }
+
+    setIsSavingEmojiLink(true);
+    try {
+      const res = await fetch('/api/choy/emoji-links', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`,
+        },
+        body: JSON.stringify({
+          emojiCode: cleanEmoji,
+          targetUrl: cleanUrl,
+          title: emojiLinkTitle.trim() || 'Choy Chat Live App',
+          iconUrl: emojiIconUrl.trim() || defaultAppIcon,
+          pinnedToAppIcon: pinToAppIconOnSave,
+          autoPush: autoPushOnSave,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setEmojiLinkError(data.error || 'Failed to save emoji link');
+        return;
+      }
+      if (Array.isArray(data.emojiLinks)) {
+        setEmojiLinksList(data.emojiLinks);
+        onEmojiLinksChanged?.(data.emojiLinks);
+      }
+      setEmojiLinkStatusMsg(
+        `Saved to Security Studio (${cleanEmoji})${pinToAppIconOnSave ? ' + Attached to App Icon Image' : ''}${
+          autoPushOnSave ? ' + Auto Pushed & Synced to all devices!' : ' + Synced!'
+        }`
+      );
+      setTimeout(() => setEmojiLinkStatusMsg(''), 5000);
+    } catch (err) {
+      setEmojiLinkError(err instanceof Error ? err.message : 'Failed to save emoji link');
+    } finally {
+      setIsSavingEmojiLink(false);
+    }
+  };
+
+  const handlePinExistingEmojiLink = async (id: string) => {
+    if (!authToken) return;
+    setEmojiLinkError('');
+    try {
+      const res = await fetch(`/api/choy/emoji-links/${encodeURIComponent(id)}/pin`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`,
+        },
+        body: JSON.stringify({ autoPush: autoPushOnSave }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setEmojiLinkError(data.error || 'Failed to pin emoji link');
+        return;
+      }
+      if (Array.isArray(data.emojiLinks)) {
+        setEmojiLinksList(data.emojiLinks);
+        onEmojiLinksChanged?.(data.emojiLinks);
+      }
+      setEmojiLinkStatusMsg('Pinned to App Icon Image & auto-synced across all devices!');
+      setTimeout(() => setEmojiLinkStatusMsg(''), 4000);
+    } catch {
+      setEmojiLinkError('Could not pin emoji link.');
+    }
+  };
+
+  const handleDeleteExistingEmojiLink = async (id: string) => {
+    if (!authToken) return;
+    try {
+      const res = await fetch(`/api/choy/emoji-links/${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      const data = await res.json();
+      if (res.ok && Array.isArray(data.emojiLinks)) {
+        setEmojiLinksList(data.emojiLinks);
+        onEmojiLinksChanged?.(data.emojiLinks);
+        setEmojiLinkStatusMsg('Emoji link removed & synced.');
+        setTimeout(() => setEmojiLinkStatusMsg(''), 3000);
+      }
+    } catch {
+      // ignore
+    }
+  };
+
+  const handleShareCurrentEmojiWithImage = async (item?: {
+    emojiCode: string;
+    title: string;
+    targetUrl: string;
+    iconUrl: string;
+  }) => {
+    const payload = item || {
+      emojiCode: emojiCodeInput.trim() || '🔐🟢💬✨🚀',
+      title: emojiLinkTitle.trim() || 'Choy Chat Live App',
+      targetUrl: emojiTargetUrl.trim() || adminLinks.renderLiveApp,
+      iconUrl: emojiIconUrl.trim() || defaultAppIcon,
+    };
+    const result = await shareEmojiLinkWithAppImage(payload);
+    setEmojiLinkStatusMsg(
+      result.method === 'clipboard'
+        ? `Copied Emoji Link (${payload.emojiCode}) & App Icon URL to clipboard!`
+        : `Shared ${payload.emojiCode} with App Icon Image!`
+    );
+    setTimeout(() => setEmojiLinkStatusMsg(''), 4000);
+  };
+
+  const handleDownloadEmojiIconCard = async () => {
+    const file = await renderAppIconWithEmojiFile(
+      emojiIconUrl.trim() || defaultAppIcon,
+      emojiCodeInput.trim() || '🔐🟢💬✨🚀',
+      emojiLinkTitle.trim() || 'Choy Chat Live App'
+    );
+    if (!file) return;
+    const url = URL.createObjectURL(file);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = file.name;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
 
   const handleUnlockStudio = (e: React.FormEvent) => {
     e.preventDefault();
@@ -811,6 +1008,319 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
           <button type="button" onClick={() => setCacheStatus('')} className="text-emerald-700 dark:text-emerald-300 hover:text-emerald-950 dark:hover:text-white font-bold">✕</button>
         </div>
       )}
+
+      {/* 0. LIVE WEBSITE EMOJI LINK GENERATOR & APP ICON COMPOSER (AUTO PUSH & SYNC) */}
+      <div className="bg-white dark:bg-emerald-900/60 border-2 border-amber-400/60 dark:border-amber-400/50 rounded-2xl p-5 space-y-4 shadow-lg">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <Sparkles className="w-4 h-4 text-amber-500 dark:text-amber-300" />
+            <div>
+              <h3 className="text-sm font-black text-emerald-950 dark:text-white">
+                Live Website Emoji Link &amp; App Icon Share (Auto Push/Sync)
+              </h3>
+              <p className="text-[11px] text-emerald-700 dark:text-emerald-300">
+                Convert your live website link into emojis, attach it to the Choy Chat app icon image, share with image preview, and auto push/sync to all devices.
+              </p>
+            </div>
+          </div>
+          <span className="px-2.5 py-1 rounded-lg bg-emerald-500/20 border border-emerald-400/50 text-emerald-900 dark:text-emerald-200 font-mono text-[10px] font-bold">
+            Auto Push &amp; Sync Ready
+          </span>
+        </div>
+
+        {emojiLinkStatusMsg && (
+          <div className="px-3 py-2 rounded-xl bg-emerald-500/20 border border-emerald-400/50 text-emerald-950 dark:text-emerald-100 font-bold text-[11px]">
+            {emojiLinkStatusMsg}
+          </div>
+        )}
+        {emojiLinkError && (
+          <div className="px-3 py-2 rounded-xl bg-rose-500/15 border border-rose-400/50 text-rose-700 dark:text-rose-200 font-bold text-[11px]">
+            {emojiLinkError}
+          </div>
+        )}
+
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 items-start">
+          {/* Form Column */}
+          <form onSubmit={handleSaveEmojiLink} className="lg:col-span-2 space-y-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className="block text-[11px] font-bold text-emerald-800 dark:text-emerald-200 mb-1">
+                  Live Website Link (URL)
+                </label>
+                <input
+                  type="url"
+                  required
+                  value={emojiTargetUrl}
+                  onChange={(e) => setEmojiTargetUrl(e.target.value)}
+                  placeholder="https://chat-9-si9x.onrender.com"
+                  className="w-full p-2.5 bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 rounded-xl text-emerald-950 dark:text-white font-mono text-[11px]"
+                />
+              </div>
+              <div>
+                <label className="block text-[11px] font-bold text-emerald-800 dark:text-emerald-200 mb-1">
+                  App / Link Label
+                </label>
+                <input
+                  type="text"
+                  value={emojiLinkTitle}
+                  onChange={(e) => setEmojiLinkTitle(e.target.value)}
+                  placeholder="Choy Chat Live App"
+                  className="w-full p-2.5 bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 rounded-xl text-emerald-950 dark:text-white text-xs"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-[11px] font-bold text-emerald-800 dark:text-emerald-200 mb-1">
+                Generated Emoji Link Code
+              </label>
+              <div className="flex flex-wrap items-center gap-2">
+                <input
+                  type="text"
+                  required
+                  value={emojiCodeInput}
+                  onChange={(e) => setEmojiCodeInput(e.target.value)}
+                  placeholder="🔐🟢💬✨🚀"
+                  className="flex-1 min-w-[160px] p-2.5 bg-emerald-50 dark:bg-emerald-950 border border-amber-400/60 dark:border-amber-400/50 rounded-xl text-base tracking-widest text-emerald-950 dark:text-white"
+                />
+                <button
+                  type="button"
+                  onClick={() => setEmojiCodeInput(generateEmojiFromUrl(emojiTargetUrl))}
+                  className="px-3 py-2.5 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 font-bold text-[11px] inline-flex items-center gap-1 transition"
+                  title="Convert Website Link deterministically to Emoji"
+                >
+                  <Sparkles className="w-3.5 h-3.5" /> Link → Emoji
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setEmojiCodeInput(generateRandomEmojiCode(5))}
+                  className="px-3 py-2.5 rounded-xl bg-emerald-100 dark:bg-emerald-800 border border-emerald-300 dark:border-emerald-600 text-emerald-950 dark:text-white font-bold text-[11px] inline-flex items-center gap-1 hover:bg-emerald-200 dark:hover:bg-emerald-700 transition"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" /> Random
+                </button>
+              </div>
+              <div className="flex flex-wrap items-center gap-1.5 mt-2">
+                {['🔐🟢💬✨🚀', '💎📲👑🔥⚡', '🌐💚🛡️✨📡', '🗝️🌟💚🎉🤝'].map((preset) => (
+                  <button
+                    key={preset}
+                    type="button"
+                    onClick={() => setEmojiCodeInput(preset)}
+                    className={`px-2 py-1 rounded-lg text-xs border transition ${
+                      emojiCodeInput === preset
+                        ? 'bg-amber-400/25 border-amber-400 font-bold'
+                        : 'bg-emerald-50 dark:bg-emerald-950 border-emerald-200 dark:border-emerald-800 hover:border-emerald-400'
+                    }`}
+                  >
+                    {preset}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-[11px] font-bold text-emerald-800 dark:text-emerald-200 mb-1">
+                App Icon Image Path / URL
+              </label>
+              <input
+                type="text"
+                value={emojiIconUrl}
+                onChange={(e) => setEmojiIconUrl(e.target.value)}
+                placeholder="/assets/aistudio/image_20261121_145253_f477cbfa.webp"
+                className="w-full p-2 bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 rounded-xl text-emerald-950 dark:text-white font-mono text-[11px]"
+              />
+            </div>
+
+            <div className="flex flex-wrap items-center gap-4 pt-1 text-[11px]">
+              <label className="inline-flex items-center gap-2 cursor-pointer font-semibold text-emerald-950 dark:text-emerald-100">
+                <input
+                  type="checkbox"
+                  checked={pinToAppIconOnSave}
+                  onChange={(e) => setPinToAppIconOnSave(e.target.checked)}
+                  className="w-4 h-4 accent-emerald-500 rounded"
+                />
+                <span>Attach to App Icon Image across whole app</span>
+              </label>
+              <label className="inline-flex items-center gap-2 cursor-pointer font-semibold text-emerald-950 dark:text-emerald-100">
+                <input
+                  type="checkbox"
+                  checked={autoPushOnSave}
+                  onChange={(e) => setAutoPushOnSave(e.target.checked)}
+                  className="w-4 h-4 accent-amber-500 rounded"
+                />
+                <span>Auto Push &amp; Sync to all devices</span>
+              </label>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2 pt-1">
+              <button
+                type="submit"
+                disabled={isSavingEmojiLink}
+                className="px-4 py-2.5 rounded-xl bg-emerald-400 hover:bg-emerald-300 text-slate-950 font-black text-xs inline-flex items-center gap-1.5 shadow disabled:opacity-60 transition"
+              >
+                <Save className="w-3.5 h-3.5" />
+                <span>{isSavingEmojiLink ? 'Saving & Syncing...' : 'Save to Security Studio & Auto Sync'}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => handleShareCurrentEmojiWithImage()}
+                className="px-4 py-2.5 rounded-xl bg-cyan-400 hover:bg-cyan-300 text-slate-950 font-black text-xs inline-flex items-center gap-1.5 shadow transition"
+              >
+                <Share2 className="w-3.5 h-3.5" /> Share Link with App Image
+              </button>
+              <button
+                type="button"
+                onClick={handleDownloadEmojiIconCard}
+                className="px-3 py-2.5 rounded-xl bg-emerald-100 dark:bg-emerald-800 border border-emerald-300 dark:border-emerald-700 text-emerald-950 dark:text-white font-bold text-xs inline-flex items-center gap-1.5 hover:bg-emerald-200 dark:hover:bg-emerald-700 transition"
+              >
+                <Download className="w-3.5 h-3.5" /> Save Icon Card
+              </button>
+            </div>
+          </form>
+
+          {/* Live App Icon + Emoji Composite Preview */}
+          <div className="p-4 rounded-2xl bg-emerald-950 border border-amber-400/50 text-center space-y-3 shadow-inner">
+            <div className="text-[10px] font-bold uppercase tracking-wider text-amber-300">
+              App Icon Image Preview
+            </div>
+            <div className="relative inline-block mx-auto">
+              <div className="w-28 h-36 rounded-2xl overflow-hidden border-2 border-emerald-400 bg-emerald-900 p-1 shadow-xl mx-auto">
+                <img
+                  src={emojiIconUrl || defaultAppIcon}
+                  alt=""
+                  className="w-full h-full object-contain rounded-xl"
+                />
+              </div>
+              <div className="-mt-4 relative z-10 inline-flex items-center justify-center px-3 py-1 rounded-full bg-emerald-950 border-2 border-amber-400 text-sm tracking-widest shadow-lg">
+                {emojiCodeInput || '🔐🟢💬✨🚀'}
+              </div>
+            </div>
+            <div className="space-y-1">
+              <div className="text-xs font-black text-white truncate">{emojiLinkTitle || 'Choy Chat Live App'}</div>
+              <div className="p-2 rounded-lg bg-slate-950/80 border border-emerald-800 text-[10px] font-mono text-cyan-300 break-all">
+                {buildEmojiShareUrl(emojiCodeInput)}
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() =>
+                handleCopy(
+                  'generated_emoji_share_url',
+                  `${emojiCodeInput} ${buildEmojiShareUrl(emojiCodeInput)}`
+                )
+              }
+              className="w-full py-2 px-3 rounded-xl bg-emerald-400 hover:bg-emerald-300 text-slate-950 font-bold text-[11px] inline-flex items-center justify-center gap-1.5 transition"
+            >
+              {copiedKey === 'generated_emoji_share_url' ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+              <span>{copiedKey === 'generated_emoji_share_url' ? 'Copied Emoji + Link!' : 'Copy Emoji + Link'}</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Saved Emoji Links Vault */}
+        <div className="space-y-2 pt-2 border-t border-emerald-200 dark:border-emerald-800">
+          <div className="flex items-center justify-between text-xs">
+            <span className="font-bold text-emerald-950 dark:text-white flex items-center gap-1.5">
+              <Link2 className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+              Saved Emoji Links in Security Studio ({emojiLinksList.length})
+            </span>
+            <span className="text-[10px] text-emerald-700 dark:text-emerald-300">
+              Tap "Pin to Icon" to switch the active App Icon Link
+            </span>
+          </div>
+
+          {emojiLinksList.length === 0 ? (
+            <div className="p-4 rounded-xl bg-emerald-50 dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-800 text-center text-xs text-emerald-700 dark:text-emerald-300">
+              No saved emoji links yet. Generate and save one above to attach it to your App Icon Image!
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+              {emojiLinksList.map((item) => {
+                const shareUrl = buildEmojiShareUrl(item.emojiCode);
+                return (
+                  <div
+                    key={item.id}
+                    className={`p-3 rounded-xl border flex flex-col justify-between gap-2.5 ${
+                      item.pinnedToAppIcon
+                        ? 'bg-emerald-100/90 dark:bg-emerald-950 border-amber-400 dark:border-amber-400 shadow'
+                        : 'bg-emerald-50 dark:bg-emerald-950/70 border-emerald-200 dark:border-emerald-800'
+                    }`}
+                  >
+                    <div className="flex items-start gap-2.5 min-w-0">
+                      <div className="relative shrink-0">
+                        <img
+                          src={item.iconUrl || defaultAppIcon}
+                          alt=""
+                          className="w-11 h-14 rounded-lg object-contain bg-emerald-950 border border-emerald-400/60 p-0.5"
+                        />
+                        {item.pinnedToAppIcon && (
+                          <span className="absolute -top-1.5 -right-1.5 px-1 py-0.5 rounded bg-amber-400 text-slate-950 font-black text-[8px] shadow">
+                            ICON
+                          </span>
+                        )}
+                      </div>
+                      <div className="min-w-0 flex-1 space-y-0.5">
+                        <div className="flex items-center justify-between gap-1">
+                          <span className="text-sm tracking-wider">{item.emojiCode}</span>
+                          {item.pinnedToAppIcon && (
+                            <span className="px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-800 dark:text-emerald-300 text-[9px] font-bold">
+                              Active &amp; Synced ✓
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-xs font-bold text-emerald-950 dark:text-white truncate">{item.title}</div>
+                        <div className="text-[10px] font-mono text-emerald-700 dark:text-cyan-300 truncate">{item.targetUrl}</div>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => handleShareCurrentEmojiWithImage(item)}
+                        className="px-2.5 py-1 rounded-lg bg-cyan-400 hover:bg-cyan-300 text-slate-950 font-bold text-[10px] inline-flex items-center gap-1"
+                      >
+                        <Share2 className="w-3 h-3" /> Share w/ Image
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleCopy(`el_${item.id}`, `${item.emojiCode} ${shareUrl}`)}
+                        className="px-2.5 py-1 rounded-lg bg-white dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 text-emerald-900 dark:text-white font-bold text-[10px] inline-flex items-center gap-1"
+                      >
+                        {copiedKey === `el_${item.id}` ? <Check className="w-3 h-3 text-emerald-500" /> : <Copy className="w-3 h-3" />}
+                        {copiedKey === `el_${item.id}` ? 'Copied' : 'Copy'}
+                      </button>
+                      {!item.pinnedToAppIcon && (
+                        <button
+                          type="button"
+                          onClick={() => handlePinExistingEmojiLink(item.id)}
+                          className="px-2.5 py-1 rounded-lg bg-amber-400 hover:bg-amber-300 text-slate-950 font-bold text-[10px] inline-flex items-center gap-1"
+                        >
+                          <Pin className="w-3 h-3" /> Pin to Icon
+                        </button>
+                      )}
+                      <a
+                        href={shareUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="px-2.5 py-1 rounded-lg bg-emerald-400 hover:bg-emerald-300 text-slate-950 font-bold text-[10px] inline-flex items-center gap-1"
+                      >
+                        <ExternalLink className="w-3 h-3" /> Open
+                      </a>
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteExistingEmojiLink(item.id)}
+                        className="ml-auto p-1 rounded-lg text-rose-600 dark:text-rose-400 hover:bg-rose-500/15"
+                        title="Delete saved emoji link"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
 
       {/* 1. DIRECT LINKS: RENDER DOCKER & AI STUDIO */}
       <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-5 space-y-4 shadow">

@@ -19,6 +19,7 @@ import {
   timingSafeStringEqual,
   normalizePhone,
   sanitizeMediaUrl,
+  sanitizeWebsiteUrl,
   clampNum,
   type StoredUser,
 } from './src/server/choyStore.ts';
@@ -48,6 +49,15 @@ function getSafePushIcon(avatar?: string): string {
     return clean;
   }
   return DEFAULT_PROFILE_ICON;
+}
+
+function escapeHtml(raw: string): string {
+  return String(raw || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 const sseClients = new Set<SseClient>();
 const userLastSeenMap = new Map<string, number>();
@@ -940,6 +950,170 @@ app.get('/api/admin/gps/locations', requireAuth, async (req: AuthedRequest, res:
   }
 });
 
+// Emoji Link Vault & App Icon Auto-Sync Endpoints
+app.get('/api/choy/emoji-links', requireAuth, async (_req: AuthedRequest, res: Response) => {
+  try {
+    const emojiLinks = await store.listEmojiLinks();
+    const activeEmojiLink = emojiLinks.find((l) => l.pinnedToAppIcon) || emojiLinks[0] || null;
+    return res.json({ emojiLinks, activeEmojiLink });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to load emoji links' });
+  }
+});
+
+app.post('/api/choy/emoji-links', requireAuth, requireAdmin, async (req: AuthedRequest, res: Response) => {
+  try {
+    const user = req.choyUser!;
+    const rawEmoji = typeof req.body?.emojiCode === 'string' ? req.body.emojiCode.trim() : '';
+    const safeUrl = sanitizeWebsiteUrl(req.body?.targetUrl);
+    if (!rawEmoji || rawEmoji.length > 64) {
+      return res.status(400).json({ error: 'Valid emoji code (1–64 chars) is required' });
+    }
+    if (!safeUrl) {
+      return res.status(400).json({ error: 'Valid http:// or https:// live website URL is required' });
+    }
+    const rawTitle = typeof req.body?.title === 'string' ? req.body.title.trim() : '';
+    const title = (rawTitle || 'Choy Chat Live').slice(0, 80);
+    const iconUrl = sanitizeMediaUrl(req.body?.iconUrl) || DEFAULT_PROFILE_ICON;
+    const pinnedToAppIcon = req.body?.pinnedToAppIcon !== false;
+    const autoPush = req.body?.autoPush !== false;
+
+    const saved = await store.createEmojiLink({
+      emojiCode: rawEmoji,
+      targetUrl: safeUrl,
+      title,
+      iconUrl,
+      pinnedToAppIcon,
+      createdBy: user.name,
+    });
+    const emojiLinks = await store.listEmojiLinks();
+    const activeEmojiLink = emojiLinks.find((l) => l.pinnedToAppIcon) || emojiLinks[0] || null;
+
+    broadcastSync('emoji-links');
+    if (autoPush) {
+      sendWebPushToTarget('VIP Group', user.id, {
+        title: `${saved.emojiCode} ${saved.title}`,
+        body: 'Live app emoji link updated & synced to App Icon!',
+        url: `/go?e=${encodeURIComponent(saved.emojiCode)}`,
+        icon: getSafePushIcon(saved.iconUrl),
+        tag: 'choy-emoji-link',
+      }).catch(() => {});
+    }
+
+    return res.status(201).json({ link: saved, emojiLinks, activeEmojiLink });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to save emoji link' });
+  }
+});
+
+app.post('/api/choy/emoji-links/:id/pin', requireAuth, requireAdmin, async (req: AuthedRequest, res: Response) => {
+  try {
+    const user = req.choyUser!;
+    const pinned = await store.pinEmojiLink(req.params.id);
+    if (!pinned) {
+      return res.status(404).json({ error: 'Emoji link not found' });
+    }
+    const emojiLinks = await store.listEmojiLinks();
+    broadcastSync('emoji-links');
+    if (req.body?.autoPush !== false) {
+      sendWebPushToTarget('VIP Group', user.id, {
+        title: `${pinned.emojiCode} ${pinned.title}`,
+        body: 'App Icon Emoji Link pinned & synced across devices!',
+        url: `/go?e=${encodeURIComponent(pinned.emojiCode)}`,
+        icon: getSafePushIcon(pinned.iconUrl),
+        tag: 'choy-emoji-link',
+      }).catch(() => {});
+    }
+    return res.json({ link: pinned, emojiLinks, activeEmojiLink: pinned });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to pin emoji link' });
+  }
+});
+
+app.delete('/api/choy/emoji-links/:id', requireAuth, requireAdmin, async (req: AuthedRequest, res: Response) => {
+  try {
+    const ok = await store.deleteEmojiLink(req.params.id);
+    if (!ok) {
+      return res.status(404).json({ error: 'Emoji link not found' });
+    }
+    const emojiLinks = await store.listEmojiLinks();
+    const activeEmojiLink = emojiLinks.find((l) => l.pinnedToAppIcon) || emojiLinks[0] || null;
+    broadcastSync('emoji-links');
+    return res.json({ deleted: true, emojiLinks, activeEmojiLink });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to delete emoji link' });
+  }
+});
+
+// Public Rich Preview & Redirect for Shared Emoji Links (/go?e=...)
+app.get('/go', async (req: Request, res: Response) => {
+  try {
+    const codeParam = typeof req.query?.e === 'string' ? req.query.e.trim() : '';
+    const resolved = await store.resolveEmojiLink(codeParam);
+    const proto = String(req.headers['x-forwarded-proto'] || req.protocol || 'https').split(',')[0].trim();
+    const host = String(req.headers['x-forwarded-host'] || req.get('host') || 'chat-9-si9x.onrender.com').split(',')[0].trim();
+    const baseOrigin = `${proto}://${host}`;
+
+    const safeTargetUrl = sanitizeWebsiteUrl(resolved?.targetUrl) || baseOrigin;
+    const emojiCode = resolved?.emojiCode || codeParam || '🔐🟢💬✨🚀';
+    const title = resolved?.title || 'Choy Chat Live App';
+    const rawIcon = resolved?.iconUrl || DEFAULT_PROFILE_ICON;
+    const absoluteIconUrl =
+      rawIcon.startsWith('http://') || rawIcon.startsWith('https://')
+        ? rawIcon
+        : `${baseOrigin}${rawIcon.startsWith('/') ? rawIcon : '/' + rawIcon}`;
+
+    const escapedTitle = escapeHtml(`${emojiCode} ${title}`);
+    const escapedDesc = escapeHtml(`Tap to open ${title} (${emojiCode}) • Live App Link`);
+    const escapedIcon = escapeHtml(absoluteIconUrl);
+    const escapedTarget = escapeHtml(safeTargetUrl);
+    const escapedEmoji = escapeHtml(emojiCode);
+
+    return res
+      .status(200)
+      .setHeader('Content-Type', 'text/html; charset=utf-8')
+      .send(`<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>${escapedTitle}</title>
+    <meta name="description" content="${escapedDesc}" />
+    <meta property="og:title" content="${escapedTitle}" />
+    <meta property="og:description" content="${escapedDesc}" />
+    <meta property="og:image" content="${escapedIcon}" />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="${escapedTitle}" />
+    <meta name="twitter:description" content="${escapedDesc}" />
+    <meta name="twitter:image" content="${escapedIcon}" />
+  </head>
+  <body style="margin:0;min-height:100vh;background:#022c22;color:#ecfdf5;font-family:system-ui,-apple-system,sans-serif;display:flex;align-items:center;justify-content:center;padding:24px;">
+    <div style="max-width:380px;width:100%;background:#064e3b;border:1px solid rgba(52,211,153,0.45);border-radius:24px;padding:28px;text-align:center;box-shadow:0 20px 50px rgba(0,0,0,0.45);">
+      <div style="position:relative;display:inline-block;margin-bottom:16px;">
+        <img src="${escapedIcon}" alt="" style="width:128px;height:160px;object-fit:contain;border-radius:18px;border:2px solid #34d399;background:#022c22;padding:4px;" />
+        <div style="margin-top:-18px;display:inline-block;background:#022c22;border:2px solid #fbbf24;border-radius:999px;padding:6px 14px;font-size:22px;letter-spacing:2px;box-shadow:0 6px 18px rgba(0,0,0,0.4);">
+          ${escapedEmoji}
+        </div>
+      </div>
+      <h1 style="margin:8px 0 6px;font-size:18px;font-weight:800;color:#ffffff;">${escapeHtml(title)}</h1>
+      <p style="margin:0 0 18px;font-size:12px;color:#a7f3d0;">Redirecting to live website...</p>
+      <a href="${escapedTarget}" rel="noopener noreferrer" style="display:inline-block;width:100%;box-sizing:border-box;padding:12px 18px;border-radius:14px;background:#34d399;color:#022c22;font-weight:800;font-size:14px;text-decoration:none;">
+        Open Live Website →
+      </a>
+    </div>
+    <script>
+      setTimeout(function () {
+        window.location.replace(${JSON.stringify(safeTargetUrl)});
+      }, 450);
+    </script>
+  </body>
+</html>`);
+  } catch {
+    return res.redirect('/');
+  }
+});
+
 app.post('/api/choy/rtc/signal', requireAuth, async (req: AuthedRequest, res: Response) => {
   try {
     const user = req.choyUser!;
@@ -1016,13 +1190,15 @@ app.get('/api/choy/state', requireAuth, async (req: AuthedRequest, res: Response
     const user = req.choyUser!;
     touchUserPresence(user.name);
     const isAdmin = user.role === 'admin';
-    const [posts, allMessages, users, knowledge, leaderboard] = await Promise.all([
+    const [posts, allMessages, users, knowledge, leaderboard, emojiLinks] = await Promise.all([
       store.listPosts(),
       store.listMessages(),
       store.listUsers(isAdmin),
       store.listKnowledge(),
       store.getPublicLeaderboard(),
+      store.listEmojiLinks(),
     ]);
+    const activeEmojiLink = emojiLinks.find((l) => l.pinnedToAppIcon) || emojiLinks[0] || null;
 
     const myNameLower = user.name.trim().toLowerCase();
     const messages = isAdmin
@@ -1066,6 +1242,8 @@ app.get('/api/choy/state', requireAuth, async (req: AuthedRequest, res: Response
       users,
       knowledge,
       leaderboard,
+      emojiLinks,
+      activeEmojiLink,
       onlineUsers: getOnlineUserNames(),
       ...(isAdmin ? { ledger, settings } : {}),
     });

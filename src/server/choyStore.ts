@@ -102,6 +102,17 @@ export interface VapidKeyPair {
   privateKey: string;
 }
 
+export interface StoredEmojiLink {
+  id: string;
+  emojiCode: string;
+  targetUrl: string;
+  title: string;
+  iconUrl: string;
+  pinnedToAppIcon: boolean;
+  createdBy: string;
+  createdAt: string;
+}
+
 export interface SessionPayload {
   uid: string;
   role: 'admin' | 'member';
@@ -237,6 +248,21 @@ export function sanitizeMediaUrl(url: unknown): string | undefined {
   return undefined;
 }
 
+export function sanitizeWebsiteUrl(url: unknown): string | undefined {
+  if (typeof url !== 'string') return undefined;
+  const trimmed = url.trim();
+  if (!trimmed || trimmed.length > 1000) return undefined;
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+      return parsed.toString();
+    }
+  } catch {
+    return undefined;
+  }
+  return undefined;
+}
+
 export function clampNum(val: unknown, min: number, max: number): number {
   const n = Number(val);
   if (!Number.isFinite(n)) return 0;
@@ -270,6 +296,18 @@ export class ChoyStore {
   private memPushSubs: StoredPushSubscription[] = [];
   private memVapidKeys: VapidKeyPair | null = null;
   private memLocations: Array<{ userId: string; userName: string; lat: number; lng: number; accuracy?: number; updatedAt: string }> = [];
+  private memEmojiLinks: StoredEmojiLink[] = [
+    {
+      id: 'el_default',
+      emojiCode: '🔐🟢💬✨🚀',
+      targetUrl: 'https://chat-9-si9x.onrender.com',
+      title: 'Choy Chat Live App',
+      iconUrl: DEFAULT_AVATAR,
+      pinnedToAppIcon: true,
+      createdBy: 'System',
+      createdAt: new Date().toISOString(),
+    },
+  ];
   private memSeeded = false;
 
   constructor() {
@@ -412,6 +450,16 @@ export class ChoyStore {
         lng DOUBLE PRECISION NOT NULL,
         accuracy DOUBLE PRECISION,
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE TABLE IF NOT EXISTS app_emoji_links (
+        id TEXT PRIMARY KEY,
+        emoji_code TEXT NOT NULL,
+        target_url TEXT NOT NULL,
+        title TEXT NOT NULL,
+        icon_url TEXT NOT NULL,
+        pinned_to_app_icon BOOLEAN NOT NULL DEFAULT false,
+        created_by TEXT NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
     `);
   }
@@ -1477,6 +1525,143 @@ export class ChoyStore {
       }));
     }
     return this.memLocations;
+  }
+
+  public async listEmojiLinks(): Promise<StoredEmojiLink[]> {
+    await this.ready();
+    if (this.usePostgres && this.pool) {
+      const res = await this.pool.query(
+        `SELECT id, emoji_code, target_url, title, icon_url, pinned_to_app_icon, created_by, created_at
+         FROM app_emoji_links
+         ORDER BY pinned_to_app_icon DESC, created_at DESC`
+      );
+      return res.rows.map((r) => ({
+        id: String(r.id),
+        emojiCode: String(r.emoji_code),
+        targetUrl: String(r.target_url),
+        title: String(r.title),
+        iconUrl: String(r.icon_url || DEFAULT_AVATAR),
+        pinnedToAppIcon: Boolean(r.pinned_to_app_icon),
+        createdBy: String(r.created_by || 'Admin'),
+        createdAt: new Date(String(r.created_at)).toISOString(),
+      }));
+    }
+    return [...this.memEmojiLinks].sort((a, b) => {
+      if (a.pinnedToAppIcon !== b.pinnedToAppIcon) return a.pinnedToAppIcon ? -1 : 1;
+      return b.createdAt.localeCompare(a.createdAt);
+    });
+  }
+
+  public async createEmojiLink(input: {
+    emojiCode: string;
+    targetUrl: string;
+    title: string;
+    iconUrl: string;
+    pinnedToAppIcon: boolean;
+    createdBy: string;
+  }): Promise<StoredEmojiLink> {
+    await this.ready();
+    const id = 'el_' + crypto.randomUUID().slice(0, 12);
+    const createdAt = new Date().toISOString();
+    if (this.usePostgres && this.pool) {
+      if (input.pinnedToAppIcon) {
+        await this.pool.query('UPDATE app_emoji_links SET pinned_to_app_icon = false');
+      }
+      await this.pool.query(
+        `INSERT INTO app_emoji_links (id, emoji_code, target_url, title, icon_url, pinned_to_app_icon, created_by, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())`,
+        [
+          id,
+          input.emojiCode,
+          input.targetUrl,
+          input.title,
+          input.iconUrl,
+          input.pinnedToAppIcon,
+          input.createdBy,
+        ]
+      );
+      return {
+        id,
+        emojiCode: input.emojiCode,
+        targetUrl: input.targetUrl,
+        title: input.title,
+        iconUrl: input.iconUrl,
+        pinnedToAppIcon: input.pinnedToAppIcon,
+        createdBy: input.createdBy,
+        createdAt,
+      };
+    }
+
+    if (input.pinnedToAppIcon) {
+      this.memEmojiLinks = this.memEmojiLinks.map((item) => ({ ...item, pinnedToAppIcon: false }));
+    }
+    const record: StoredEmojiLink = {
+      id,
+      emojiCode: input.emojiCode,
+      targetUrl: input.targetUrl,
+      title: input.title,
+      iconUrl: input.iconUrl,
+      pinnedToAppIcon: input.pinnedToAppIcon,
+      createdBy: input.createdBy,
+      createdAt,
+    };
+    this.memEmojiLinks.unshift(record);
+    return record;
+  }
+
+  public async pinEmojiLink(id: string): Promise<StoredEmojiLink | null> {
+    await this.ready();
+    if (this.usePostgres && this.pool) {
+      const check = await this.pool.query('SELECT id FROM app_emoji_links WHERE id = $1 LIMIT 1', [id]);
+      if (!check.rowCount) return null;
+      await this.pool.query('UPDATE app_emoji_links SET pinned_to_app_icon = false');
+      const res = await this.pool.query(
+        `UPDATE app_emoji_links SET pinned_to_app_icon = true WHERE id = $1
+         RETURNING id, emoji_code, target_url, title, icon_url, pinned_to_app_icon, created_by, created_at`,
+        [id]
+      );
+      const r = res.rows[0];
+      if (!r) return null;
+      return {
+        id: String(r.id),
+        emojiCode: String(r.emoji_code),
+        targetUrl: String(r.target_url),
+        title: String(r.title),
+        iconUrl: String(r.icon_url || DEFAULT_AVATAR),
+        pinnedToAppIcon: Boolean(r.pinned_to_app_icon),
+        createdBy: String(r.created_by || 'Admin'),
+        createdAt: new Date(String(r.created_at)).toISOString(),
+      };
+    }
+
+    const found = this.memEmojiLinks.find((item) => item.id === id);
+    if (!found) return null;
+    this.memEmojiLinks = this.memEmojiLinks.map((item) => ({
+      ...item,
+      pinnedToAppIcon: item.id === id,
+    }));
+    return this.memEmojiLinks.find((item) => item.id === id) || null;
+  }
+
+  public async deleteEmojiLink(id: string): Promise<boolean> {
+    await this.ready();
+    if (this.usePostgres && this.pool) {
+      const res = await this.pool.query('DELETE FROM app_emoji_links WHERE id = $1', [id]);
+      return Boolean(res.rowCount && res.rowCount > 0);
+    }
+    const before = this.memEmojiLinks.length;
+    this.memEmojiLinks = this.memEmojiLinks.filter((item) => item.id !== id);
+    return this.memEmojiLinks.length < before;
+  }
+
+  public async resolveEmojiLink(emojiCode?: string): Promise<StoredEmojiLink | null> {
+    const links = await this.listEmojiLinks();
+    const clean = (emojiCode || '').trim();
+    if (clean) {
+      const matched = links.find((l) => l.emojiCode.trim() === clean || l.id === clean);
+      if (matched) return matched;
+    }
+    return links.find((l) => l.pinnedToAppIcon) || links[0] || null;
   }
 
   private mapUserRow(r: Record<string, unknown>): StoredUser {

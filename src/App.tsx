@@ -58,7 +58,11 @@ import {
   BellOff,
   Forward,
   Check,
-  ArrowLeft
+  ArrowLeft,
+  Music,
+  MapPin,
+  Copy,
+  ExternalLink
 } from 'lucide-react';
 import { PWAInstallButton } from './components/PWAInstallButton';
 import { OfflineIndicator } from './components/OfflineIndicator';
@@ -67,6 +71,12 @@ import { GitHubIntelligence } from './components/GitHubIntelligence';
 import { ChatVideoPlayer } from './components/ChatVideoPlayer';
 import { ImageZoomModal } from './components/ImageZoomModal';
 import { useThemePreferences } from './hooks/useThemePreferences';
+import {
+  type EmojiLinkItem,
+  buildEmojiShareUrl,
+  renderAppIconWithEmojiFile,
+  shareEmojiLinkWithAppImage,
+} from './utils/emojiLinkShare';
 
 interface CurrentUser {
   id: string;
@@ -123,6 +133,45 @@ interface Message {
   isMe?: boolean;
   reactions?: string[];
   isLocalOnly?: boolean;
+  isQueuedOffline?: boolean;
+}
+
+interface QueuedOfflineMessage {
+  localId: string;
+  userId: string;
+  senderName: string;
+  roomId: string;
+  text: string;
+  mediaUrl?: string;
+  mediaType: 'text' | 'image' | 'video' | 'audio' | 'file';
+  transcript?: string;
+  time: string;
+  createdAtMs: number;
+}
+
+const OFFLINE_MSG_QUEUE_KEY = 'choychat_offline_msg_queue_v1';
+
+function readOfflineMsgQueue(): QueuedOfflineMessage[] {
+  try {
+    const raw = localStorage.getItem(OFFLINE_MSG_QUEUE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (item): item is QueuedOfflineMessage =>
+        Boolean(item && typeof item.localId === 'string' && typeof item.userId === 'string' && typeof item.roomId === 'string')
+    );
+  } catch {
+    return [];
+  }
+}
+
+function writeOfflineMsgQueue(queue: QueuedOfflineMessage[]): void {
+  try {
+    localStorage.setItem(OFFLINE_MSG_QUEUE_KEY, JSON.stringify(queue));
+  } catch {
+    // ignore storage quota errors
+  }
 }
 
 interface LedgerRow {
@@ -199,6 +248,66 @@ function messageBelongsToRoom(m: Message, room: string, myName: string): boolean
   return (receiver === r && sender === me) || (sender === r && receiver === me);
 }
 
+function getMessageRoomLabel(m: Message, myName: string): string {
+  const receiver = (m.receiver || '').trim();
+  const sender = (m.sender || '').trim();
+  if (receiver.toLowerCase() === 'vip group') return 'VIP Group';
+  const me = myName.trim().toLowerCase();
+  if (me) {
+    if (sender.toLowerCase() === me) return receiver || 'Direct Chat';
+    if (receiver.toLowerCase() === me) return sender || 'Direct Chat';
+  }
+  return receiver || sender || 'VIP Group';
+}
+
+function messageMatchesFullText(m: Message, query: string, myName: string): boolean {
+  const trimmed = query.trim().toLowerCase();
+  if (!trimmed) return true;
+  const terms = trimmed.split(/\s+/).filter(Boolean);
+  if (terms.length === 0) return true;
+  const roomLabel = getMessageRoomLabel(m, myName);
+  const haystack = [
+    m.text || '',
+    m.transcript || '',
+    m.sender || '',
+    m.receiver || '',
+    roomLabel,
+    m.mediaType && m.mediaType !== 'text' ? m.mediaType : '',
+  ]
+    .join(' ')
+    .toLowerCase();
+  return terms.every((term) => haystack.includes(term));
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function highlightSearchMatches(text: string, query: string): React.ReactNode {
+  const trimmed = query.trim();
+  if (!text || !trimmed) return text;
+  const rawTerms = [trimmed, ...trimmed.split(/\s+/)].filter((t) => t.length > 0);
+  const uniqueTerms = Array.from(new Set(rawTerms.map((t) => t.toLowerCase())))
+    .sort((a, b) => b.length - a.length)
+    .map((t) => escapeRegExp(t));
+  if (uniqueTerms.length === 0) return text;
+  const regex = new RegExp(`(${uniqueTerms.join('|')})`, 'gi');
+  const parts = text.split(regex);
+  if (parts.length === 1) return text;
+  return parts.map((part, idx) =>
+    idx % 2 === 1 ? (
+      <mark
+        key={idx}
+        className="bg-amber-300 dark:bg-amber-400 text-slate-950 font-bold rounded px-0.5"
+      >
+        {part}
+      </mark>
+    ) : (
+      <React.Fragment key={idx}>{part}</React.Fragment>
+    )
+  );
+}
+
 function formatIsoTime(iso?: string): string {
   if (!iso) return 'Just now';
   try {
@@ -250,6 +359,17 @@ export default function App() {
   const [authSubmitting, setAuthSubmitting] = useState(false);
   const [loginError, setLoginError] = useState('');
   const [syncNotice, setSyncNotice] = useState('');
+  const [appPermissions, setAppPermissions] = useState<{
+    camera: 'prompt' | 'granted' | 'denied';
+    music: 'prompt' | 'granted' | 'denied';
+    location: 'prompt' | 'granted' | 'denied';
+  }>({
+    camera: 'prompt',
+    music: 'prompt',
+    location: 'prompt',
+  });
+  const [isRequestingPermissions, setIsRequestingPermissions] = useState(false);
+  const initialGpsRef = useRef<{ lat: number; lng: number; accuracy?: number } | null>(null);
 
   const isAdmin = currentUser?.role === 'admin';
 
@@ -370,10 +490,40 @@ export default function App() {
   const [selectedGalleryVideo, setSelectedGalleryVideo] = useState<Message | null>(null);
   const [cloudMessages, setCloudMessages] = useState<Message[]>([]);
   const [localMessages, setLocalMessages] = useState<Message[]>([]);
+  const [offlineQueue, setOfflineQueue] = useState<QueuedOfflineMessage[]>(() => readOfflineMsgQueue());
+  const [isOnline, setIsOnline] = useState<boolean>(() => (typeof navigator !== 'undefined' ? navigator.onLine : true));
+  const [isSyncingOfflineQueue, setIsSyncingOfflineQueue] = useState(false);
+  const isFlushingQueueRef = useRef(false);
   const [chatHeadBubbleEnabled, setChatHeadBubbleEnabled] = useState<boolean>(() => {
     return localStorage.getItem('choychat_chat_head_bubble_v1') !== 'false';
   });
   const [activeChatHeadMessage, setActiveChatHeadMessage] = useState<Message | null>(null);
+  const [chatHeadPos, setChatHeadPos] = useState<{ x: number; y: number } | null>(() => {
+    try {
+      const saved = localStorage.getItem('choychat_chat_head_pos_v1');
+      if (saved) {
+        const parsed = JSON.parse(saved) as { x?: unknown; y?: unknown };
+        if (typeof parsed.x === 'number' && typeof parsed.y === 'number') {
+          return { x: parsed.x, y: parsed.y };
+        }
+      }
+    } catch {
+      // ignore invalid saved coordinates
+    }
+    return null;
+  });
+  const [isDraggingChatHead, setIsDraggingChatHead] = useState(false);
+  const chatHeadRef = useRef<HTMLDivElement | null>(null);
+  const chatHeadDragRef = useRef<{
+    active: boolean;
+    pointerId: number;
+    startX: number;
+    startY: number;
+    originLeft: number;
+    originTop: number;
+    moved: boolean;
+  }>({ active: false, pointerId: -1, startX: 0, startY: 0, originLeft: 0, originTop: 0, moved: false });
+  const chatHeadJustDraggedRef = useRef(false);
   const lastSeenMsgIdRef = useRef<string>('');
   const [seenRoomMap, setSeenRoomMap] = useState<Record<string, string>>(() => {
     try {
@@ -384,13 +534,34 @@ export default function App() {
     }
   });
 
+  const queuedMessagesForUi: Message[] = currentUser
+    ? offlineQueue
+        .filter((q) => q.userId === currentUser.id)
+        .map((q) => ({
+          id: q.localId,
+          senderId: q.userId,
+          sender: q.senderName,
+          receiver: q.roomId,
+          text: q.text,
+          mediaUrl: q.mediaUrl,
+          mediaType: q.mediaType,
+          transcript: q.transcript,
+          time: q.time,
+          createdAtMs: q.createdAtMs,
+          isMe: true,
+          reactions: [],
+          isLocalOnly: true,
+          isQueuedOffline: true,
+        }))
+    : [];
+
   const getLatestMessageForRoom = useCallback((room: string) => {
-    const roomMsgs = [...cloudMessages, ...localMessages].filter((m) =>
+    const roomMsgs = [...cloudMessages, ...localMessages, ...queuedMessagesForUi].filter((m) =>
       messageBelongsToRoom(m, room, currentUser?.name || '')
     );
     if (roomMsgs.length === 0) return null;
     return roomMsgs[roomMsgs.length - 1];
-  }, [cloudMessages, localMessages, currentUser]);
+  }, [cloudMessages, localMessages, queuedMessagesForUi, currentUser]);
 
   const markRoomSeen = useCallback((room: string) => {
     const latest = getLatestMessageForRoom(room);
@@ -408,6 +579,24 @@ export default function App() {
       markRoomSeen(activeChat);
     }
   }, [activeChat, markRoomSeen]);
+
+  useEffect(() => {
+    const clampToViewport = () => {
+      setChatHeadPos((prev) => {
+        if (!prev || typeof window === 'undefined') return prev;
+        const rect = chatHeadRef.current?.getBoundingClientRect();
+        const w = rect?.width || 280;
+        const h = rect?.height || 72;
+        const clampedX = Math.max(8, Math.min(window.innerWidth - w - 8, prev.x));
+        const clampedY = Math.max(8, Math.min(window.innerHeight - h - 8, prev.y));
+        if (clampedX === prev.x && clampedY === prev.y) return prev;
+        return { x: clampedX, y: clampedY };
+      });
+    };
+    clampToViewport();
+    window.addEventListener('resize', clampToViewport);
+    return () => window.removeEventListener('resize', clampToViewport);
+  }, [activeChatHeadMessage?.id]);
 
   useEffect(() => {
     if (!chatHeadBubbleEnabled || !currentUser) return;
@@ -440,6 +629,8 @@ export default function App() {
   const [msgLinkDraft, setMsgLinkDraft] = useState('');
   const [msgLinkType, setMsgLinkType] = useState<'video' | 'image' | 'audio'>('video');
   const [msgSearchQuery, setMsgSearchQuery] = useState('');
+  const [msgSearchScope, setMsgSearchScope] = useState<'all' | 'room'>('all');
+  const [highlightedMsgId, setHighlightedMsgId] = useState<string | null>(null);
   const msgFileInputRef = useRef<HTMLInputElement>(null);
   const msgImageInputRef = useRef<HTMLInputElement>(null);
   const [isRecordingAudio, setIsRecordingAudio] = useState(false);
@@ -468,6 +659,10 @@ export default function App() {
 
   const [isChoyAIPopupOpen, setIsChoyAIPopupOpen] = useState(false);
   const [shareCopied, setShareCopied] = useState(false);
+  const [emojiLinks, setEmojiLinks] = useState<EmojiLinkItem[]>([]);
+  const [activeEmojiLink, setActiveEmojiLink] = useState<EmojiLinkItem | null>(null);
+  const [isAppIconShareModalOpen, setIsAppIconShareModalOpen] = useState(false);
+  const [appIconShareNotice, setAppIconShareNotice] = useState('');
   const [deletingUserIds, setDeletingUserIds] = useState<string[]>([]);
   const [confirmDeleteUserId, setConfirmDeleteUserId] = useState<string | null>(null);
   const [showDeleteAccountSetup, setShowDeleteAccountSetup] = useState(false);
@@ -841,6 +1036,16 @@ export default function App() {
       if (Array.isArray(data.leaderboard)) {
         setLeaderboard(data.leaderboard);
       }
+      if (Array.isArray(data.emojiLinks)) {
+        setEmojiLinks(data.emojiLinks);
+      }
+      if (data.activeEmojiLink !== undefined) {
+        setActiveEmojiLink(data.activeEmojiLink || null);
+      } else if (Array.isArray(data.emojiLinks)) {
+        setActiveEmojiLink(
+          data.emojiLinks.find((l: EmojiLinkItem) => l.pinnedToAppIcon) || data.emojiLinks[0] || null
+        );
+      }
       if (Array.isArray(data.onlineUsers)) {
         setOnlineUsers(data.onlineUsers.map((u: unknown) => String(u || '').trim().toLowerCase()));
       }
@@ -1096,13 +1301,125 @@ export default function App() {
     }
   }, [authToken, currentUser?.id, subscribeToBackgroundPush]);
 
-  // Auto-detect when user turns mobile data / Wi-Fi ON -> immediately broadcast presence, sync messages & check active calls
+  const enqueueOfflineMessage = useCallback(
+    (payload: {
+      roomId: string;
+      text: string;
+      mediaUrl?: string;
+      mediaType: 'text' | 'image' | 'video' | 'audio' | 'file';
+      transcript?: string;
+    }) => {
+      if (!currentUser) return null;
+      const now = Date.now();
+      const item: QueuedOfflineMessage = {
+        localId: `offline_${now}_${Math.random().toString(36).slice(2, 7)}`,
+        userId: currentUser.id,
+        senderName: currentUser.name,
+        roomId: payload.roomId,
+        text: payload.text,
+        mediaUrl: payload.mediaUrl,
+        mediaType: payload.mediaType,
+        transcript: payload.transcript,
+        time: new Date(now).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        createdAtMs: now,
+      };
+      setOfflineQueue((prev) => {
+        const next = [...prev, item];
+        writeOfflineMsgQueue(next);
+        return next;
+      });
+      return item;
+    },
+    [currentUser]
+  );
+
+  const flushOfflineQueue = useCallback(async () => {
+    if (!authToken || !currentUser || !navigator.onLine || isFlushingQueueRef.current) return 0;
+    const allQueued = readOfflineMsgQueue();
+    const myQueued = allQueued.filter((q) => q.userId === currentUser.id);
+    if (myQueued.length === 0) return 0;
+
+    isFlushingQueueRef.current = true;
+    setIsSyncingOfflineQueue(true);
+    let sentCount = 0;
+
+    try {
+      for (const item of myQueued) {
+        if (!navigator.onLine) break;
+        try {
+          await apiFetch('/api/choy/messages', {
+            method: 'POST',
+            body: JSON.stringify({
+              roomId: item.roomId,
+              text: item.text,
+              mediaUrl: item.mediaUrl || undefined,
+              mediaType: item.mediaUrl ? item.mediaType : 'text',
+              transcript: item.mediaType === 'audio' ? item.transcript || 'Voice message transcription' : undefined,
+            }),
+          });
+          sentCount += 1;
+          setOfflineQueue((prev) => {
+            const next = prev.filter((q) => q.localId !== item.localId);
+            writeOfflineMsgQueue(next);
+            return next;
+          });
+        } catch (err) {
+          const msg = err instanceof Error ? err.message.toLowerCase() : '';
+          const isNetworkErr =
+            !navigator.onLine ||
+            err instanceof TypeError ||
+            msg.includes('failed to fetch') ||
+            msg.includes('network') ||
+            msg.includes('load failed');
+          if (isNetworkErr) {
+            break;
+          }
+          setOfflineQueue((prev) => {
+            const next = prev.filter((q) => q.localId !== item.localId);
+            writeOfflineMsgQueue(next);
+            return next;
+          });
+        }
+      }
+
+      if (sentCount > 0) {
+        await fetchSyncedState();
+        showNotice(`Synced ${sentCount} offline message${sentCount > 1 ? 's' : ''}!`);
+      }
+      return sentCount;
+    } finally {
+      isFlushingQueueRef.current = false;
+      setIsSyncingOfflineQueue(false);
+    }
+  }, [authToken, currentUser, apiFetch, fetchSyncedState]);
+
+  // Auto-detect when user turns mobile data / Wi-Fi ON or OFF -> update online status, flush offline queue & sync
+  useEffect(() => {
+    const updateOnlineState = () => setIsOnline(navigator.onLine);
+    window.addEventListener('online', updateOnlineState);
+    window.addEventListener('offline', updateOnlineState);
+    return () => {
+      window.removeEventListener('online', updateOnlineState);
+      window.removeEventListener('offline', updateOnlineState);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!authToken || !currentUser || !isOnline) return;
+    const hasMyQueued = offlineQueue.some((q) => q.userId === currentUser.id);
+    if (hasMyQueued) {
+      void flushOfflineQueue();
+    }
+  }, [authToken, currentUser, isOnline, offlineQueue, flushOfflineQueue]);
+
   useEffect(() => {
     if (!authToken) return;
     const handleReconnectOnline = async () => {
+      setIsOnline(navigator.onLine);
       if (!navigator.onLine) return;
       try {
         await apiFetch('/api/choy/presence', { method: 'POST', body: JSON.stringify({}) }).catch(() => {});
+        await flushOfflineQueue();
         await fetchSyncedState();
         const rtcData = await apiFetch(`/api/choy/rtc/poll?since=${lastRtcSeqRef.current}&_t=${Date.now()}`).catch(
           () => null
@@ -1127,8 +1444,10 @@ export default function App() {
     window.addEventListener('online', handleReconnectOnline);
     const navConn = (navigator as unknown as { connection?: EventTarget }).connection;
     const handleConnChange = () => {
+      setIsOnline(navigator.onLine);
       if (navigator.onLine) {
         void apiFetch('/api/choy/presence', { method: 'POST', body: JSON.stringify({}) }).catch(() => {});
+        void flushOfflineQueue();
         void fetchSyncedState();
       }
     };
@@ -1141,7 +1460,7 @@ export default function App() {
       window.removeEventListener('online', handleReconnectOnline);
       navConn?.removeEventListener?.('change', handleConnChange);
     };
-  }, [authToken, apiFetch, fetchSyncedState, subscribeToBackgroundPush]);
+  }, [authToken, apiFetch, fetchSyncedState, subscribeToBackgroundPush, flushOfflineQueue]);
 
   // Periodic GPS location ping for admin tracking when mobile data / online is active
   useEffect(() => {
@@ -1245,7 +1564,9 @@ export default function App() {
     };
   }, [authToken, currentUser, apiFetch, fetchSyncedState]);
 
-  const messages = [...cloudMessages, ...localMessages].sort((a, b) => a.createdAtMs - b.createdAtMs);
+  const messages = [...cloudMessages, ...localMessages, ...queuedMessagesForUi].sort(
+    (a, b) => a.createdAtMs - b.createdAtMs
+  );
   const chatRoomsList = (() => {
     const seen = new Set<string>();
     const rooms: string[] = [];
@@ -1799,10 +2120,40 @@ export default function App() {
     messageBelongsToRoom(m, activeChat, currentUser?.name || '')
   ).length;
   useEffect(() => {
-    if (activeTab === 'messages') {
+    if (activeTab === 'messages' && !highlightedMsgId && !msgSearchQuery.trim()) {
       messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
     }
-  }, [activeTab, activeChat, activeRoomMessageCount]);
+  }, [activeTab, activeChat, activeRoomMessageCount, highlightedMsgId, msgSearchQuery]);
+
+  useEffect(() => {
+    if (!highlightedMsgId || activeTab !== 'messages') return;
+    const scrollTimer = window.setTimeout(() => {
+      const el = document.getElementById(`chat-msg-${highlightedMsgId}`);
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    }, 90);
+    const clearTimer = window.setTimeout(() => {
+      setHighlightedMsgId(null);
+    }, 3500);
+    return () => {
+      window.clearTimeout(scrollTimer);
+      window.clearTimeout(clearTimer);
+    };
+  }, [highlightedMsgId, activeTab, activeChat, activeChatMobileView]);
+
+  const jumpToSearchResultMessage = useCallback(
+    (m: Message) => {
+      const targetRoom = getMessageRoomLabel(m, currentUser?.name || '');
+      setActiveChat(targetRoom);
+      setActiveChatMobileView(true);
+      setMsgSearchScope('room');
+      setMsgSearchQuery('');
+      setHighlightedMsgId(m.id);
+      markRoomSeen(targetRoom);
+    },
+    [currentUser, markRoomSeen]
+  );
 
   // Bind live MediaStreams whenever the Video Call modal mounts/updates
   useEffect(() => {
@@ -1882,11 +2233,152 @@ export default function App() {
     }
   };
 
+  const requestRequiredAppPermissions = useCallback(async () => {
+    setIsRequestingPermissions(true);
+    let camStatus: 'prompt' | 'granted' | 'denied' = 'prompt';
+    let musicStatus: 'prompt' | 'granted' | 'denied' = 'prompt';
+    let locStatus: 'prompt' | 'granted' | 'denied' = 'prompt';
+
+    // 1. Unlock Audio / Music Playback Context
+    try {
+      const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+      if (AudioCtx) {
+        if (!soundCtxRef.current) {
+          soundCtxRef.current = new AudioCtx();
+        }
+        if (soundCtxRef.current.state === 'suspended') {
+          await soundCtxRef.current.resume().catch(() => {});
+        }
+      }
+    } catch {
+      // ignore audio context init errors
+    }
+
+    // 2. Request Camera & Music/Audio (Microphone) permissions together first
+    if (typeof navigator !== 'undefined' && navigator.mediaDevices?.getUserMedia) {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        stream.getTracks().forEach((t) => t.stop());
+        camStatus = 'granted';
+        musicStatus = 'granted';
+      } catch {
+        // Probe camera and music/audio individually to accurately detect each permission
+        try {
+          const vStream = await navigator.mediaDevices.getUserMedia({ video: true });
+          vStream.getTracks().forEach((t) => t.stop());
+          camStatus = 'granted';
+        } catch (vErr) {
+          const vName = vErr instanceof DOMException ? vErr.name : '';
+          camStatus = vName === 'NotAllowedError' || vName === 'PermissionDeniedError' ? 'denied' : 'granted';
+        }
+        try {
+          const aStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          aStream.getTracks().forEach((t) => t.stop());
+          musicStatus = 'granted';
+        } catch (aErr) {
+          const aName = aErr instanceof DOMException ? aErr.name : '';
+          musicStatus = aName === 'NotAllowedError' || aName === 'PermissionDeniedError' ? 'denied' : 'granted';
+        }
+      }
+    } else {
+      camStatus = 'granted';
+      musicStatus = 'granted';
+    }
+
+    // 3. Request Location (GPS) permission
+    if (typeof navigator !== 'undefined' && 'geolocation' in navigator) {
+      locStatus = await new Promise<'prompt' | 'granted' | 'denied'>((resolve) => {
+        navigator.geolocation.getCurrentPosition(
+          (pos) => {
+            initialGpsRef.current = {
+              lat: pos.coords.latitude,
+              lng: pos.coords.longitude,
+              accuracy: pos.coords.accuracy,
+            };
+            resolve('granted');
+          },
+          async (err) => {
+            if (err.code === err.PERMISSION_DENIED) {
+              resolve('denied');
+            } else {
+              try {
+                if (navigator.permissions?.query) {
+                  const p = await navigator.permissions.query({ name: 'geolocation' as PermissionName });
+                  if (p.state === 'granted') {
+                    resolve('granted');
+                    return;
+                  }
+                  if (p.state === 'denied') {
+                    resolve('denied');
+                    return;
+                  }
+                }
+              } catch {
+                // ignore permissions query unsupported errors
+              }
+              resolve(err.code === err.POSITION_UNAVAILABLE ? 'granted' : 'prompt');
+            }
+          },
+          { enableHighAccuracy: false, timeout: 15000, maximumAge: 120000 }
+        );
+      });
+    } else {
+      locStatus = 'granted';
+    }
+
+    const result = { camera: camStatus, music: musicStatus, location: locStatus };
+    setAppPermissions(result);
+    setIsRequestingPermissions(false);
+    return result;
+  }, []);
+
+  useEffect(() => {
+    if (authMode !== 'register' || typeof navigator === 'undefined' || !navigator.permissions?.query) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const [cam, mic, geo] = await Promise.all([
+          navigator.permissions.query({ name: 'camera' as PermissionName }).catch(() => null),
+          navigator.permissions.query({ name: 'microphone' as PermissionName }).catch(() => null),
+          navigator.permissions.query({ name: 'geolocation' as PermissionName }).catch(() => null),
+        ]);
+        if (cancelled) return;
+        setAppPermissions((prev) => ({
+          camera: cam?.state === 'granted' ? 'granted' : cam?.state === 'denied' ? 'denied' : prev.camera,
+          music: mic?.state === 'granted' ? 'granted' : mic?.state === 'denied' ? 'denied' : prev.music,
+          location: geo?.state === 'granted' ? 'granted' : geo?.state === 'denied' ? 'denied' : prev.location,
+        }));
+      } catch {
+        // ignore unsupported browser queries
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [authMode]);
+
   const handleAuthSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoginError('');
     setAuthSubmitting(true);
     try {
+      if (authMode === 'register') {
+        const needsPrompt =
+          appPermissions.camera !== 'granted' ||
+          appPermissions.music !== 'granted' ||
+          appPermissions.location !== 'granted';
+        const perms = needsPrompt ? await requestRequiredAppPermissions() : appPermissions;
+        if (perms.camera !== 'granted' || perms.music !== 'granted' || perms.location !== 'granted') {
+          const missing: string[] = [];
+          if (perms.camera !== 'granted') missing.push('Camera');
+          if (perms.music !== 'granted') missing.push('Music & Audio');
+          if (perms.location !== 'granted') missing.push('Location');
+          throw new Error(
+            `Required app permissions (${missing.join(', ')}) must be Allowed to create your account.`
+          );
+        }
+      }
+
       const endpoint = authMode === 'register' ? '/api/auth/register' : '/api/auth/login';
       const body =
         authMode === 'register'
@@ -1904,6 +2396,16 @@ export default function App() {
       setCurrentUser(data.user);
       setAuthPin('');
       setActiveTab('feed');
+      if (initialGpsRef.current && data.token) {
+        fetch('/api/choy/gps/ping', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${data.token}`,
+          },
+          body: JSON.stringify(initialGpsRef.current),
+        }).catch(() => {});
+      }
     } catch (err) {
       setLoginError(err instanceof Error ? err.message : 'Authentication failed');
     } finally {
@@ -2580,21 +3082,56 @@ export default function App() {
           }
 
           if (action === 'send') {
-            await apiFetch('/api/choy/messages', {
-              method: 'POST',
-              body: JSON.stringify({
+            if (!navigator.onLine) {
+              enqueueOfflineMessage({
                 roomId: activeChat,
                 text: msgInput.trim() || 'Voice message',
                 mediaUrl,
                 mediaType: 'audio',
-                transcript: transcript || 'Voice message transcription'
-              })
-            });
-            setMsgInput('');
-            setMsgMediaUrl('');
-            setMsgTranscript('');
-            setMsgMediaType('text');
-            await fetchSyncedState();
+                transcript: transcript || 'Voice message transcription',
+              });
+              setMsgInput('');
+              setMsgMediaUrl('');
+              setMsgTranscript('');
+              setMsgMediaType('text');
+              showNotice('Offline: Voice message queued and will auto-sync when online.');
+            } else {
+              try {
+                await apiFetch('/api/choy/messages', {
+                  method: 'POST',
+                  body: JSON.stringify({
+                    roomId: activeChat,
+                    text: msgInput.trim() || 'Voice message',
+                    mediaUrl,
+                    mediaType: 'audio',
+                    transcript: transcript || 'Voice message transcription'
+                  })
+                });
+                setMsgInput('');
+                setMsgMediaUrl('');
+                setMsgTranscript('');
+                setMsgMediaType('text');
+                await fetchSyncedState();
+              } catch (sendErr) {
+                const errMsg = sendErr instanceof Error ? sendErr.message.toLowerCase() : '';
+                if (!navigator.onLine || sendErr instanceof TypeError || errMsg.includes('failed to fetch')) {
+                  enqueueOfflineMessage({
+                    roomId: activeChat,
+                    text: msgInput.trim() || 'Voice message',
+                    mediaUrl,
+                    mediaType: 'audio',
+                    transcript: transcript || 'Voice message transcription',
+                  });
+                  setMsgInput('');
+                  setMsgMediaUrl('');
+                  setMsgTranscript('');
+                  setMsgMediaType('text');
+                  showNotice('Connection dropped: Voice message queued for auto-sync.');
+                } else {
+                  throw sendErr;
+                }
+              }
+            }
           } else {
             setMsgMediaType('audio');
             setMsgMediaUrl(mediaUrl);
@@ -2718,6 +3255,22 @@ export default function App() {
       return;
     }
 
+    if (!navigator.onLine) {
+      enqueueOfflineMessage({
+        roomId: activeChat,
+        text: msgInput.trim(),
+        mediaUrl: msgMediaUrl || undefined,
+        mediaType: msgMediaUrl ? msgMediaType : 'text',
+        transcript: msgMediaType === 'audio' ? msgTranscript || 'Voice message transcription' : undefined,
+      });
+      setMsgInput('');
+      setMsgMediaUrl('');
+      setMsgTranscript('');
+      setMsgMediaType('text');
+      showNotice('Offline: Message queued locally and will send automatically when back online.');
+      return;
+    }
+
     setIsSendingMsg(true);
     try {
       await apiFetch('/api/choy/messages', {
@@ -2736,7 +3289,29 @@ export default function App() {
       setMsgMediaType('text');
       await fetchSyncedState();
     } catch (err) {
-      showNotice(err instanceof Error ? err.message : 'Failed to send message');
+      const errMsg = err instanceof Error ? err.message.toLowerCase() : '';
+      const isNetworkErr =
+        !navigator.onLine ||
+        err instanceof TypeError ||
+        errMsg.includes('failed to fetch') ||
+        errMsg.includes('network') ||
+        errMsg.includes('load failed');
+      if (isNetworkErr) {
+        enqueueOfflineMessage({
+          roomId: activeChat,
+          text: msgInput.trim(),
+          mediaUrl: msgMediaUrl || undefined,
+          mediaType: msgMediaUrl ? msgMediaType : 'text',
+          transcript: msgMediaType === 'audio' ? msgTranscript || 'Voice message transcription' : undefined,
+        });
+        setMsgInput('');
+        setMsgMediaUrl('');
+        setMsgTranscript('');
+        setMsgMediaType('text');
+        showNotice('Offline: Message queued locally and will send automatically when connection is restored.');
+      } else {
+        showNotice(err instanceof Error ? err.message : 'Failed to send message');
+      }
     } finally {
       setIsSendingMsg(false);
     }
@@ -3163,14 +3738,17 @@ export default function App() {
   };
 
   const handleShareApp = async () => {
-    if (navigator.share) {
-      try {
-        await navigator.share({ title: 'Choy Chat', url: window.location.href });
-      } catch {
-        // User cancelled
-      }
-    } else {
-      navigator.clipboard?.writeText(window.location.href).catch(() => {});
+    const emojiCode = activeEmojiLink?.emojiCode || '🔐🟢💬✨🚀';
+    const title = activeEmojiLink?.title || 'Choy Chat Live App';
+    const targetUrl = activeEmojiLink?.targetUrl || window.location.href;
+    const iconUrl = activeEmojiLink?.iconUrl || DEFAULT_AVATAR;
+    const result = await shareEmojiLinkWithAppImage({
+      emojiCode,
+      title,
+      targetUrl,
+      iconUrl,
+    });
+    if (result.method === 'clipboard') {
       setShareCopied(true);
       setTimeout(() => setShareCopied(false), 2000);
     }
@@ -3381,6 +3959,7 @@ export default function App() {
                   onClick={() => {
                     setAuthMode('register');
                     setLoginError('');
+                    void requestRequiredAppPermissions();
                   }}
                   className={`py-2 rounded-lg font-bold flex items-center justify-center gap-1.5 transition ${
                     authMode === 'register' ? 'bg-emerald-400 text-slate-950 shadow' : 'text-emerald-800 dark:text-emerald-200'
@@ -3439,9 +4018,53 @@ export default function App() {
                     </button>
                   </div>
                 </div>
+                {authMode === 'register' && (
+                  <div className="p-3 rounded-xl bg-emerald-50/90 dark:bg-emerald-950/80 border border-emerald-300 dark:border-emerald-700/80 space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[11px] font-black uppercase tracking-wide text-emerald-900 dark:text-emerald-200 flex items-center gap-1.5">
+                        <ShieldCheck className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+                        Required App Permissions
+                      </span>
+                      <button
+                        type="button"
+                        disabled={isRequestingPermissions}
+                        onClick={() => void requestRequiredAppPermissions()}
+                        className="px-2 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 dark:bg-emerald-400 dark:hover:bg-emerald-300 text-white dark:text-slate-950 text-[10px] font-bold transition disabled:opacity-60"
+                      >
+                        {isRequestingPermissions ? 'Requesting...' : 'Allow All'}
+                      </button>
+                    </div>
+                    <div className="grid grid-cols-3 gap-1.5">
+                      {[
+                        { key: 'camera', label: 'Camera', icon: <Camera className="w-3 h-3" />, status: appPermissions.camera },
+                        { key: 'music', label: 'Music & Audio', icon: <Music className="w-3 h-3" />, status: appPermissions.music },
+                        { key: 'location', label: 'Location', icon: <MapPin className="w-3 h-3" />, status: appPermissions.location },
+                      ].map((item) => (
+                        <div
+                          key={item.key}
+                          className={`p-1.5 rounded-lg border text-center space-y-1 ${
+                            item.status === 'granted'
+                              ? 'bg-emerald-100/90 dark:bg-emerald-900/70 border-emerald-400 text-emerald-900 dark:text-emerald-100'
+                              : item.status === 'denied'
+                              ? 'bg-rose-50 dark:bg-rose-950/60 border-rose-400 text-rose-700 dark:text-rose-200'
+                              : 'bg-white dark:bg-slate-900 border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-slate-300'
+                          }`}
+                        >
+                          <div className="flex items-center justify-center gap-1 text-[10px] font-bold">
+                            {item.icon}
+                            <span className="truncate">{item.label}</span>
+                          </div>
+                          <div className="text-[9px] font-black uppercase">
+                            {item.status === 'granted' ? '✓ Allowed' : item.status === 'denied' ? '✕ Denied' : '• Required'}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
                 <button
                   type="submit"
-                  disabled={authSubmitting}
+                  disabled={authSubmitting || isRequestingPermissions}
                   className="w-full py-3 bg-emerald-400 hover:bg-emerald-300 text-slate-950 font-bold rounded-xl shadow transition disabled:opacity-60"
                 >
                   {authSubmitting ? 'Please wait...' : authMode === 'register' ? 'Create Account' : 'Login'}
@@ -3945,10 +4568,22 @@ export default function App() {
       {/* SIDEBAR / MOBILE SWIPEABLE NAV BAR */}
       <aside className="w-full md:w-60 bg-white/95 dark:bg-emerald-900/90 border-b md:border-b-0 md:border-r border-emerald-200 dark:border-emerald-800 p-2.5 md:p-3 flex flex-row md:flex-col justify-between shrink-0 overflow-x-auto md:overflow-x-hidden md:overflow-y-auto touch-pan-x md:touch-pan-y overscroll-x-contain [-webkit-overflow-scrolling:touch]">
         <div className="flex md:flex-col items-center md:items-stretch gap-1.5 w-max md:w-full">
-          <div className="hidden md:flex items-center gap-2 px-2 py-2 mb-2">
-            <div className="w-9 h-12 rounded-lg overflow-hidden border border-emerald-400 bg-emerald-50 dark:bg-emerald-950 p-0.5 shrink-0">
-              <img src={DEFAULT_AVATAR} alt="" className="w-full h-full object-contain rounded" />
-            </div>
+          <div className="hidden md:flex items-center gap-2.5 px-2 py-2 mb-2">
+            <button
+              type="button"
+              onClick={() => setIsAppIconShareModalOpen(true)}
+              className="relative w-10 h-13 rounded-lg border-2 border-emerald-400 bg-emerald-50 dark:bg-emerald-950 p-0.5 shrink-0 hover:scale-105 transition shadow cursor-pointer group"
+              title={`Open App Icon Emoji Link (${activeEmojiLink?.emojiCode || '🔐🟢💬✨🚀'})`}
+            >
+              <img
+                src={activeEmojiLink?.iconUrl || DEFAULT_AVATAR}
+                alt="Choy Chat App Icon"
+                className="w-full h-full object-contain rounded"
+              />
+              <span className="absolute -bottom-1.5 left-1/2 -translate-x-1/2 px-1.5 py-0.5 rounded-full bg-emerald-950 border border-amber-400 text-[9px] leading-none whitespace-nowrap shadow">
+                {activeEmojiLink?.emojiCode || '🔐🟢💬'}
+              </span>
+            </button>
             <div className="min-w-0">
               <div className="text-sm font-bold text-emerald-950 dark:text-white truncate">Choy Chat</div>
               <div className="text-[10px] text-emerald-700 dark:text-emerald-300 flex items-center gap-1">
@@ -4215,6 +4850,21 @@ export default function App() {
 
           {/* Action & Search Row */}
           <div className="flex items-center gap-2 w-full">
+            <button
+              type="button"
+              onClick={() => setIsAppIconShareModalOpen(true)}
+              className="flex items-center gap-1.5 px-2 py-1 rounded-xl bg-white dark:bg-emerald-900 border border-amber-400/70 dark:border-amber-400/60 hover:bg-emerald-50 dark:hover:bg-emerald-800 transition shrink-0 shadow-xs"
+              title="Share Emoji Link with App Icon Image"
+            >
+              <img
+                src={activeEmojiLink?.iconUrl || DEFAULT_AVATAR}
+                alt="App Icon"
+                className="w-6 h-7 rounded-md object-contain bg-emerald-950 border border-emerald-400/60 shrink-0"
+              />
+              <span className="text-xs leading-none tracking-tight">
+                {activeEmojiLink?.emojiCode || '🔐🟢💬✨🚀'}
+              </span>
+            </button>
             <div ref={searchContainerRef} className="relative flex-1 min-w-0 z-30">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-emerald-700 dark:text-emerald-300 pointer-events-none" />
               <input
@@ -5044,11 +5694,110 @@ export default function App() {
               <div className={`bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-3 flex flex-col space-y-2 shrink-0 ${
                 activeChatMobileView ? 'hidden md:flex' : 'flex'
               }`}>
-                <div className="text-xs font-bold text-emerald-700 dark:text-emerald-300 uppercase">Chats</div>
+                <div className="flex items-center justify-between gap-2">
+                  <div className="text-xs font-bold text-emerald-700 dark:text-emerald-300 uppercase">Chats</div>
+                  {msgSearchQuery.trim() && (
+                    <button
+                      type="button"
+                      onClick={() => setMsgSearchQuery('')}
+                      className="md:hidden text-[10px] font-bold text-emerald-700 dark:text-emerald-300 hover:underline"
+                    >
+                      Clear search
+                    </button>
+                  )}
+                </div>
+                <div className="relative md:hidden">
+                  <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-emerald-700 dark:text-emerald-300 pointer-events-none" />
+                  <input
+                    type="text"
+                    placeholder="Search all chat history..."
+                    value={msgSearchQuery}
+                    onChange={(e) => {
+                      setMsgSearchQuery(e.target.value);
+                      setMsgSearchScope('all');
+                    }}
+                    className="w-full pl-8 pr-7 py-1.5 bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 rounded-xl text-[11px] text-emerald-950 dark:text-white placeholder-emerald-600/60 dark:placeholder-emerald-400 focus:outline-none focus:border-emerald-500"
+                  />
+                  {msgSearchQuery && (
+                    <button
+                      type="button"
+                      onClick={() => setMsgSearchQuery('')}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 p-0.5 rounded text-emerald-700 dark:text-emerald-300 hover:bg-emerald-200/70 dark:hover:bg-emerald-800"
+                      aria-label="Clear chat history search"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  )}
+                </div>
+                {msgSearchQuery.trim() ? (
+                  <div className="md:hidden flex flex-col gap-2 overflow-y-auto max-h-[520px] touch-pan-y pr-1">
+                    {(() => {
+                      const q = msgSearchQuery.trim();
+                      const hits = messages
+                        .filter((m) => !blockedUsers.includes(m.sender))
+                        .filter((m) => messageMatchesFullText(m, q, currentUser?.name || ''))
+                        .slice()
+                        .sort((a, b) => b.createdAtMs - a.createdAtMs);
+                      if (hits.length === 0) {
+                        return (
+                          <div className="px-3 py-4 text-center text-[11px] text-emerald-700 dark:text-emerald-300">
+                            No messages matched "{q}" across your chat history.
+                          </div>
+                        );
+                      }
+                      return (
+                        <>
+                          <div className="text-[10px] font-bold text-emerald-700 dark:text-emerald-300 px-1">
+                            {hits.length} match{hits.length === 1 ? '' : 'es'} across all chats
+                          </div>
+                          {hits.map((m) => {
+                            const roomLabel = getMessageRoomLabel(m, currentUser?.name || '');
+                            const bodyText = m.text || m.transcript || (m.mediaType !== 'text' ? `[${m.mediaType}]` : '');
+                            return (
+                              <button
+                                key={`sidebar-hit-${m.id}`}
+                                type="button"
+                                onClick={() => jumpToSearchResultMessage(m)}
+                                className="p-2.5 rounded-xl bg-emerald-50/90 dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-800 hover:border-emerald-400 dark:hover:border-amber-400 text-left space-y-1 transition w-full"
+                              >
+                                <div className="flex items-center justify-between gap-1.5 text-[10px]">
+                                  <span className="px-1.5 py-0.5 rounded bg-emerald-200/80 dark:bg-emerald-800 text-emerald-950 dark:text-emerald-100 font-bold truncate">
+                                    {highlightSearchMatches(roomLabel, q)}
+                                  </span>
+                                  <span className="text-emerald-600 dark:text-emerald-400 shrink-0">{m.time}</span>
+                                </div>
+                                <div className="text-[11px] font-bold text-emerald-900 dark:text-emerald-200">
+                                  {highlightSearchMatches(m.sender, q)}
+                                </div>
+                                {bodyText && (
+                                  <div className="text-[11px] text-emerald-950 dark:text-slate-100 line-clamp-2 break-words">
+                                    {highlightSearchMatches(bodyText, q)}
+                                  </div>
+                                )}
+                              </button>
+                            );
+                          })}
+                        </>
+                      );
+                    })()}
+                  </div>
+                ) : (
                 <div className="flex flex-col gap-2 overflow-y-auto max-h-[520px] touch-pan-y pr-1">
                   {filteredChatRooms.length === 0 ? (
-                    <div className="px-3 py-2 text-[11px] text-emerald-700 dark:text-emerald-300">
-                      No chats match "{searchQuery.trim()}"
+                    <div className="px-3 py-2 space-y-2 text-[11px] text-emerald-700 dark:text-emerald-300">
+                      <div>No chats match "{searchQuery.trim()}"</div>
+                      {searchQuery.trim() && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setMsgSearchQuery(searchQuery.trim());
+                            setMsgSearchScope('all');
+                          }}
+                          className="w-full px-2.5 py-1.5 rounded-lg bg-emerald-200 dark:bg-emerald-800 text-emerald-950 dark:text-white font-bold text-[10px] hover:bg-emerald-300 dark:hover:bg-emerald-700 transition"
+                        >
+                          Search message history for "{searchQuery.trim()}"
+                        </button>
+                      )}
                     </div>
                   ) : (
                     filteredChatRooms.map((room) => {
@@ -5076,7 +5825,7 @@ export default function App() {
                           }}
                           className={`p-2.5 rounded-xl text-xs flex items-center justify-between gap-2 transition w-full text-left ${
                             isActive
-                              ? 'bg-emerald-400 text-slate-950 font-bold shadow'
+                              ? 'bg-emerald-200/90 dark:bg-emerald-800 text-emerald-950 dark:text-white border-2 border-emerald-500 dark:border-amber-400 font-bold shadow-md'
                               : 'bg-emerald-50/80 dark:bg-emerald-950 text-emerald-900 dark:text-emerald-200 border border-emerald-200 dark:border-emerald-800 hover:bg-emerald-100 dark:hover:bg-emerald-800'
                           }`}
                         >
@@ -5102,14 +5851,30 @@ export default function App() {
                             )}
                             <div className="min-w-0 flex-1">
                               <div className="flex items-center justify-between gap-1">
-                                <span className={`truncate ${isUnread && !isActive ? 'font-black text-amber-600 dark:text-amber-400' : ''}`}>
+                                <span
+                                  className={`truncate ${
+                                    isActive
+                                      ? 'font-black text-emerald-950 dark:text-white'
+                                      : isUnread
+                                      ? 'font-black text-amber-600 dark:text-amber-400'
+                                      : 'font-bold text-emerald-950 dark:text-white'
+                                  }`}
+                                >
                                   {room}
                                 </span>
                                 {isUnread && !isActive && (
                                   <span className="w-2 h-2 rounded-full bg-amber-500 shrink-0 animate-ping"></span>
                                 )}
                               </div>
-                              <div className={`text-[10px] truncate ${isUnread && !isActive ? 'font-bold text-emerald-950 dark:text-white' : 'text-emerald-700 dark:text-emerald-300'}`}>
+                              <div
+                                className={`text-[10px] truncate ${
+                                  isActive
+                                    ? 'font-semibold text-emerald-900 dark:text-emerald-100'
+                                    : isUnread
+                                    ? 'font-bold text-emerald-950 dark:text-white'
+                                    : 'text-emerald-700 dark:text-emerald-300'
+                                }`}
+                              >
                                 {shortSnippet}
                               </div>
                             </div>
@@ -5119,6 +5884,7 @@ export default function App() {
                     })
                   )}
                 </div>
+                )}
               </div>
 
               <div className={`md:col-span-2 bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl flex flex-col min-h-[430px] md:min-h-0 md:h-full overflow-hidden ${
@@ -5237,37 +6003,177 @@ export default function App() {
                       </button>
                     </div>
                   </div>
-                  <div className="relative w-full">
-                    <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-emerald-700 dark:text-emerald-300" />
-                    <input
-                      type="text"
-                      placeholder={`Search messages in ${activeChat}...`}
-                      value={msgSearchQuery}
-                      onChange={(e) => setMsgSearchQuery(e.target.value)}
-                      className="w-full pl-8 pr-3 py-1.5 bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 rounded-lg text-[11px] font-normal text-emerald-950 dark:text-white placeholder-emerald-600/60 dark:placeholder-emerald-400 focus:outline-none"
-                    />
+                  <div className="space-y-1.5 w-full">
+                    <div className="flex flex-wrap items-center gap-1.5 w-full">
+                      <div className="relative flex-1 min-w-[180px]">
+                        <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-emerald-700 dark:text-emerald-300 pointer-events-none" />
+                        <input
+                          type="text"
+                          placeholder={
+                            msgSearchScope === 'all'
+                              ? 'Search all chat history (messages, transcripts, senders)...'
+                              : `Search messages in ${activeChat}...`
+                          }
+                          value={msgSearchQuery}
+                          onChange={(e) => setMsgSearchQuery(e.target.value)}
+                          className="w-full pl-8 pr-7 py-1.5 bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 rounded-lg text-[11px] font-normal text-emerald-950 dark:text-white placeholder-emerald-600/60 dark:placeholder-emerald-400 focus:outline-none focus:border-emerald-500"
+                        />
+                        {msgSearchQuery && (
+                          <button
+                            type="button"
+                            onClick={() => setMsgSearchQuery('')}
+                            className="absolute right-2 top-1/2 -translate-y-1/2 p-0.5 rounded text-emerald-700 dark:text-emerald-300 hover:bg-emerald-200/70 dark:hover:bg-emerald-800 transition"
+                            aria-label="Clear message search"
+                            title="Clear search"
+                          >
+                            <X className="w-3 h-3" />
+                          </button>
+                        )}
+                      </div>
+                      <div className="inline-flex rounded-lg bg-emerald-100/80 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 p-0.5 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => setMsgSearchScope('all')}
+                          className={`px-2 py-1 rounded-md text-[10px] font-bold transition ${
+                            msgSearchScope === 'all'
+                              ? 'bg-emerald-400 text-slate-950 shadow-2xs'
+                              : 'text-emerald-800 dark:text-emerald-300 hover:text-emerald-950 dark:hover:text-white'
+                          }`}
+                        >
+                          All Chats
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setMsgSearchScope('room')}
+                          className={`px-2 py-1 rounded-md text-[10px] font-bold transition ${
+                            msgSearchScope === 'room'
+                              ? 'bg-emerald-400 text-slate-950 shadow-2xs'
+                              : 'text-emerald-800 dark:text-emerald-300 hover:text-emerald-950 dark:hover:text-white'
+                          }`}
+                        >
+                          This Chat
+                        </button>
+                      </div>
+                    </div>
+                    {msgSearchQuery.trim() && (() => {
+                      const q = msgSearchQuery.trim();
+                      const matchCount = messages
+                        .filter((m) => !blockedUsers.includes(m.sender))
+                        .filter((m) =>
+                          msgSearchScope === 'all' ? true : messageBelongsToRoom(m, activeChat, currentUser?.name || '')
+                        )
+                        .filter((m) => messageMatchesFullText(m, q, currentUser?.name || '')).length;
+                      return (
+                        <div className="flex items-center justify-between gap-2 px-1 text-[10px] font-normal text-emerald-700 dark:text-emerald-300">
+                          <span>
+                            Found <span className="font-bold text-emerald-950 dark:text-white">{matchCount}</span> match
+                            {matchCount === 1 ? '' : 'es'}{' '}
+                            {msgSearchScope === 'all' ? 'across all chat history (newest first)' : `in ${activeChat}`}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => setMsgSearchQuery('')}
+                            className="font-bold text-emerald-800 dark:text-amber-300 hover:underline shrink-0"
+                          >
+                            Clear
+                          </button>
+                        </div>
+                      );
+                    })()}
                   </div>
                 </div>
 
                 <div className="flex-1 overflow-y-auto overscroll-y-auto touch-pan-y [-webkit-overflow-scrolling:touch] p-3 space-y-3 min-h-[240px] max-h-[55dvh] md:max-h-none">
-                  {messages
-                    .filter((m) => messageBelongsToRoom(m, activeChat, currentUser?.name || ''))
-                    .filter((m) => !blockedUsers.includes(m.sender))
-                    .filter((m) => (m.text || '').toLowerCase().includes(msgSearchQuery.toLowerCase()))
-                    .map((m) => (
-                      <div key={m.id} className={`flex flex-col ${m.isMe ? 'items-end' : 'items-start'}`}>
-                        <div className="text-[10px] text-emerald-700 dark:text-emerald-300 px-1 mb-0.5 flex items-center gap-1">
+                  {(() => {
+                    const trimmedMsgQuery = msgSearchQuery.trim();
+                    const isCrossRoomSearch = Boolean(trimmedMsgQuery) && msgSearchScope === 'all';
+                    const filteredMsgs = messages
+                      .filter((m) => !blockedUsers.includes(m.sender))
+                      .filter((m) =>
+                        isCrossRoomSearch ? true : messageBelongsToRoom(m, activeChat, currentUser?.name || '')
+                      )
+                      .filter((m) =>
+                        !trimmedMsgQuery || messageMatchesFullText(m, trimmedMsgQuery, currentUser?.name || '')
+                      );
+                    const displayedMsgs = isCrossRoomSearch
+                      ? [...filteredMsgs].sort((a, b) => b.createdAtMs - a.createdAtMs)
+                      : filteredMsgs;
+
+                    if (displayedMsgs.length === 0 && trimmedMsgQuery) {
+                      return (
+                        <div className="py-10 px-4 text-center space-y-2.5">
+                          <div className="text-xs font-bold text-emerald-950 dark:text-white">
+                            No messages matched "{trimmedMsgQuery}"
+                            {msgSearchScope === 'room' ? ` in ${activeChat}` : ' across all chat history'}
+                          </div>
+                          <p className="text-[11px] text-emerald-700 dark:text-emerald-300">
+                            Full-text search checks message text, voice transcripts, sender names, and chat rooms.
+                          </p>
+                          <div className="flex items-center justify-center gap-2 pt-1">
+                            {msgSearchScope === 'room' && (
+                              <button
+                                type="button"
+                                onClick={() => setMsgSearchScope('all')}
+                                className="px-3 py-1.5 rounded-xl bg-emerald-400 hover:bg-emerald-300 text-slate-950 text-[11px] font-bold transition"
+                              >
+                                Search All Chats
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => setMsgSearchQuery('')}
+                              className="px-3 py-1.5 rounded-xl bg-emerald-100 dark:bg-emerald-800 text-emerald-950 dark:text-white text-[11px] font-bold border border-emerald-300 dark:border-emerald-700 transition"
+                            >
+                              Clear Search
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    }
+
+                    return displayedMsgs.map((m) => {
+                      const roomLabel = getMessageRoomLabel(m, currentUser?.name || '');
+                      const isJumpHighlighted = highlightedMsgId === m.id;
+                      return (
+                      <div
+                        key={m.id}
+                        id={`chat-msg-${m.id}`}
+                        className={`flex flex-col ${isCrossRoomSearch ? 'items-start' : m.isMe ? 'items-end' : 'items-start'}`}
+                      >
+                        <div className="text-[10px] text-emerald-700 dark:text-emerald-300 px-1 mb-0.5 flex flex-wrap items-center gap-1.5">
+                          {isCrossRoomSearch && (
+                            <button
+                              type="button"
+                              onClick={() => jumpToSearchResultMessage(m)}
+                              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-emerald-200/90 dark:bg-emerald-800 text-emerald-950 dark:text-amber-200 font-bold hover:bg-emerald-300 dark:hover:bg-emerald-700 transition"
+                              title={`Open ${roomLabel} chat at this message`}
+                            >
+                              <span>{highlightSearchMatches(roomLabel, trimmedMsgQuery)}</span>
+                              <span className="text-[9px] opacity-80">→ View</span>
+                            </button>
+                          )}
                           <button
                             type="button"
                             onClick={() => openUserProfile({ id: m.senderId, name: m.sender })}
                             className="font-bold hover:text-emerald-950 dark:hover:text-white hover:underline transition"
                             title={`View ${m.sender}'s profile`}
                           >
-                            {m.sender}
+                            {trimmedMsgQuery ? highlightSearchMatches(m.sender, trimmedMsgQuery) : m.sender}
                           </button>
                           <span>• {m.time}</span>
+                          {m.isQueuedOffline && (
+                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-500/20 text-amber-800 dark:text-amber-300 font-bold text-[9px] border border-amber-300/70 dark:border-amber-500/40">
+                              <Clock className="w-2.5 h-2.5" /> Queued (Offline)
+                            </span>
+                          )}
                         </div>
-                        <div className="p-3 rounded-2xl text-xs bg-emerald-50 dark:bg-emerald-950 text-emerald-950 dark:text-slate-100 space-y-2 max-w-[85%]">
+                        <div
+                          className={`p-3 rounded-2xl text-xs bg-emerald-50 dark:bg-emerald-950 text-emerald-950 dark:text-slate-100 space-y-2 max-w-[85%] transition-all ${
+                            m.isQueuedOffline ? 'border border-amber-400/80 opacity-90' : ''
+                          } ${
+                            isJumpHighlighted ? 'ring-2 ring-amber-400 dark:ring-amber-300 shadow-lg' : ''
+                          }`}
+                        >
                           {m.mediaType === 'image' && m.mediaUrl && (
                             <button
                               type="button"
@@ -5293,7 +6199,12 @@ export default function App() {
                                   <span>Voice Transcription:</span>
                                 </div>
                                 <p className="italic text-emerald-950 dark:text-slate-100 break-words leading-relaxed">
-                                  {m.transcript || m.text || 'Voice message transcription'}
+                                  {trimmedMsgQuery
+                                    ? highlightSearchMatches(
+                                        m.transcript || m.text || 'Voice message transcription',
+                                        trimmedMsgQuery
+                                      )
+                                    : m.transcript || m.text || 'Voice message transcription'}
                                 </p>
                               </div>
                             </div>
@@ -5301,7 +6212,11 @@ export default function App() {
                           {m.mediaType === 'file' && (
                             <div className="text-amber-700 dark:text-amber-300 text-[10px]">📎 File Attachment</div>
                           )}
-                          {m.text && <div className="break-words">{m.text}</div>}
+                          {m.text && (
+                            <div className="break-words">
+                              {trimmedMsgQuery ? highlightSearchMatches(m.text, trimmedMsgQuery) : m.text}
+                            </div>
+                          )}
 
                           {m.reactions && m.reactions.length > 0 && (
                             <div className="flex flex-wrap gap-1 pt-1">
@@ -5317,33 +6232,70 @@ export default function App() {
                           )}
                         </div>
 
-                        <div className="flex flex-wrap items-center gap-1 mt-1 px-1">
-                          {(['❤️', '👍', '🔥', '😄'] as const).map((emoji) => (
+                        {!m.isQueuedOffline && (
+                          <div className="flex flex-wrap items-center gap-1 mt-1 px-1">
+                            {(['❤️', '👍', '🔥', '😄'] as const).map((emoji) => (
+                              <button
+                                key={emoji}
+                                type="button"
+                                onClick={() => addReactionToMessage(m, emoji)}
+                                className="text-[11px] px-1.5 py-0.5 rounded bg-emerald-50 dark:bg-emerald-950 hover:bg-emerald-100 dark:hover:bg-emerald-800 text-emerald-800 dark:text-slate-300 transition"
+                              >
+                                {emoji}
+                              </button>
+                            ))}
                             <button
-                              key={emoji}
                               type="button"
-                              onClick={() => addReactionToMessage(m, emoji)}
-                              className="text-[11px] px-1.5 py-0.5 rounded bg-emerald-50 dark:bg-emerald-950 hover:bg-emerald-100 dark:hover:bg-emerald-800 text-emerald-800 dark:text-slate-300 transition"
+                              onClick={() => openForwardDialog(m)}
+                              className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded bg-emerald-50 dark:bg-emerald-950 hover:bg-emerald-200 dark:hover:bg-emerald-800 text-emerald-800 dark:text-emerald-200 border border-emerald-200 dark:border-emerald-800/80 transition"
+                              title="Forward message to another user or room"
                             >
-                              {emoji}
+                              <Forward className="w-3 h-3" />
+                              <span>Forward</span>
                             </button>
-                          ))}
-                          <button
-                            type="button"
-                            onClick={() => openForwardDialog(m)}
-                            className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded bg-emerald-50 dark:bg-emerald-950 hover:bg-emerald-200 dark:hover:bg-emerald-800 text-emerald-800 dark:text-emerald-200 border border-emerald-200 dark:border-emerald-800/80 transition"
-                            title="Forward message to another user or room"
-                          >
-                            <Forward className="w-3 h-3" />
-                            <span>Forward</span>
-                          </button>
-                        </div>
+                          </div>
+                        )}
                       </div>
-                    ))}
+                      );
+                    });
+                  })()}
                   <div ref={messagesEndRef} />
                 </div>
 
                 <div className="p-3 border-t border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950 space-y-2">
+                  {(() => {
+                    const myQueuedCount = currentUser
+                      ? offlineQueue.filter((q) => q.userId === currentUser.id).length
+                      : 0;
+                    if (isOnline && myQueuedCount === 0) return null;
+                    return (
+                      <div className="flex items-center justify-between gap-2 px-3 py-1.5 rounded-xl bg-amber-100/90 dark:bg-amber-950/60 border border-amber-300 dark:border-amber-600/60 text-[11px] text-amber-950 dark:text-amber-200">
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <Clock className="w-3.5 h-3.5 shrink-0 text-amber-700 dark:text-amber-400" />
+                          <span className="truncate font-semibold">
+                            {!isOnline
+                              ? myQueuedCount > 0
+                                ? `Offline Mode · ${myQueuedCount} message${myQueuedCount > 1 ? 's' : ''} queued for auto-sync`
+                                : 'Offline Mode · Messages sent now will be queued and synced when back online'
+                              : isSyncingOfflineQueue
+                              ? `Syncing ${myQueuedCount} queued message${myQueuedCount > 1 ? 's' : ''}...`
+                              : `${myQueuedCount} queued message${myQueuedCount > 1 ? 's' : ''} ready to sync`}
+                          </span>
+                        </div>
+                        {isOnline && myQueuedCount > 0 && (
+                          <button
+                            type="button"
+                            disabled={isSyncingOfflineQueue}
+                            onClick={() => void flushOfflineQueue()}
+                            className="px-2 py-0.5 rounded-lg bg-amber-400 hover:bg-amber-300 text-slate-950 font-bold text-[10px] shrink-0 flex items-center gap-1 disabled:opacity-60"
+                          >
+                            <RefreshCw className={`w-3 h-3 ${isSyncingOfflineQueue ? 'animate-spin' : ''}`} />
+                            <span>Sync</span>
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })()}
                   <input
                     type="file"
                     ref={msgImageInputRef}
@@ -6138,6 +7090,12 @@ export default function App() {
               ledgerCount={ledgerRows.length}
               ledgerTotalValue={ledgerRows.reduce((sum, r) => sum + calculateRowTotal(r), 0)}
               knowledgeCount={knowledgeBase.length}
+              emojiLinks={emojiLinks}
+              onEmojiLinksChanged={(links) => {
+                setEmojiLinks(links);
+                setActiveEmojiLink(links.find((l) => l.pinnedToAppIcon) || links[0] || null);
+              }}
+              defaultAppIcon={DEFAULT_AVATAR}
             />
           )}
 
@@ -6616,6 +7574,146 @@ export default function App() {
             </div>
           );
         })()}
+
+      {/* APP ICON EMOJI LINK & SHARE MODAL */}
+      {isAppIconShareModalOpen && (() => {
+        const currentCode = activeEmojiLink?.emojiCode || '🔐🟢💬✨🚀';
+        const currentTitle = activeEmojiLink?.title || 'Choy Chat Live App';
+        const currentTarget = activeEmojiLink?.targetUrl || window.location.origin;
+        const currentIcon = activeEmojiLink?.iconUrl || DEFAULT_AVATAR;
+        const shareUrl = buildEmojiShareUrl(currentCode);
+
+        return (
+          <div
+            className="fixed inset-0 z-50 bg-slate-950/75 backdrop-blur-sm flex items-center justify-center p-4"
+            onClick={() => setIsAppIconShareModalOpen(false)}
+            role="dialog"
+            aria-modal="true"
+            aria-label="App Icon Emoji Link Share"
+          >
+            <div
+              className="w-full max-w-sm rounded-3xl bg-white dark:bg-emerald-950 border-2 border-amber-400/70 p-5 shadow-2xl space-y-4 text-center"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-xs font-black uppercase tracking-wider text-emerald-900 dark:text-amber-300 flex items-center gap-1.5">
+                  <Sparkles className="w-4 h-4 text-amber-500 dark:text-amber-300" />
+                  <span>App Icon Emoji Link</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setIsAppIconShareModalOpen(false)}
+                  className="p-1.5 rounded-xl bg-emerald-100 dark:bg-emerald-900 text-emerald-900 dark:text-white hover:bg-emerald-200 dark:hover:bg-emerald-800"
+                  aria-label="Close modal"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <div className="relative inline-block mx-auto">
+                <div className="w-28 h-36 rounded-2xl overflow-hidden border-2 border-emerald-400 bg-emerald-900 p-1 shadow-xl mx-auto">
+                  <img src={currentIcon} alt="App Icon" className="w-full h-full object-contain rounded-xl" />
+                </div>
+                <div className="-mt-4 relative z-10 inline-flex items-center justify-center px-3.5 py-1 rounded-full bg-emerald-950 border-2 border-amber-400 text-base tracking-widest shadow-lg">
+                  {currentCode}
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                <div className="text-sm font-black text-emerald-950 dark:text-white">{currentTitle}</div>
+                <div className="text-[10px] font-mono text-emerald-700 dark:text-emerald-300 truncate">{currentTarget}</div>
+                <div className="p-2 rounded-xl bg-emerald-50 dark:bg-emerald-900/70 border border-emerald-200 dark:border-emerald-700 text-[10px] font-mono text-emerald-900 dark:text-cyan-300 break-all">
+                  {shareUrl}
+                </div>
+              </div>
+
+              {appIconShareNotice && (
+                <div className="px-3 py-1.5 rounded-xl bg-emerald-500/20 border border-emerald-400/50 text-[11px] font-bold text-emerald-900 dark:text-emerald-200">
+                  {appIconShareNotice}
+                </div>
+              )}
+
+              <div className="space-y-2">
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const result = await shareEmojiLinkWithAppImage({
+                      emojiCode: currentCode,
+                      title: currentTitle,
+                      targetUrl: currentTarget,
+                      iconUrl: currentIcon,
+                    });
+                    setAppIconShareNotice(
+                      result.method === 'clipboard'
+                        ? 'Emoji link & preview URL copied!'
+                        : 'Shared App Icon Image & Emoji Link!'
+                    );
+                    setTimeout(() => setAppIconShareNotice(''), 3500);
+                  }}
+                  className="w-full py-2.5 px-4 rounded-xl bg-cyan-400 hover:bg-cyan-300 text-slate-950 font-black text-xs inline-flex items-center justify-center gap-2 shadow transition"
+                >
+                  <Share2 className="w-4 h-4" />
+                  <span>Share Link with App Image</span>
+                </button>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      navigator.clipboard?.writeText(`${currentCode} ${shareUrl}`).catch(() => {});
+                      setAppIconShareNotice('Copied Emoji Link!');
+                      setTimeout(() => setAppIconShareNotice(''), 2500);
+                    }}
+                    className="py-2 px-3 rounded-xl bg-emerald-100 dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 text-emerald-950 dark:text-white font-bold text-[11px] inline-flex items-center justify-center gap-1.5"
+                  >
+                    <Copy className="w-3.5 h-3.5" /> Copy Link
+                  </button>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      const file = await renderAppIconWithEmojiFile(currentIcon, currentCode, currentTitle);
+                      if (!file) return;
+                      const url = URL.createObjectURL(file);
+                      const a = document.createElement('a');
+                      a.href = url;
+                      a.download = file.name;
+                      document.body.appendChild(a);
+                      a.click();
+                      document.body.removeChild(a);
+                      URL.revokeObjectURL(url);
+                    }}
+                    className="py-2 px-3 rounded-xl bg-emerald-100 dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 text-emerald-950 dark:text-white font-bold text-[11px] inline-flex items-center justify-center gap-1.5"
+                  >
+                    <Download className="w-3.5 h-3.5" /> Save Icon
+                  </button>
+                </div>
+
+                <a
+                  href={shareUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="w-full py-2 px-4 rounded-xl bg-emerald-400 hover:bg-emerald-300 text-slate-950 font-bold text-xs inline-flex items-center justify-center gap-1.5 transition"
+                >
+                  <ExternalLink className="w-3.5 h-3.5" /> Open Live Website
+                </a>
+
+                {isAdmin && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsAppIconShareModalOpen(false);
+                      setActiveTab('admin_security');
+                    }}
+                    className="w-full py-2 px-3 rounded-xl bg-indigo-600/90 hover:bg-indigo-600 text-white font-bold text-[11px] inline-flex items-center justify-center gap-1.5 transition"
+                  >
+                    <Key className="w-3.5 h-3.5" /> Edit / Save in Security Studio
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* 3-DOTS / SIDEBAR MENU & SETTINGS DRAWER */}
       {isMenuDrawerOpen && (
@@ -7220,13 +8318,103 @@ export default function App() {
         />
       )}
 
-      {/* FLOATING CHAT HEAD BUBBLE POPUP */}
+      {/* FLOATING CHAT HEAD BUBBLE POPUP (DRAGGABLE) */}
       {chatHeadBubbleEnabled && activeChatHeadMessage && (
-        <div className="fixed bottom-20 right-5 z-50 animate-bounce transition-all duration-300">
+        <div
+          ref={chatHeadRef}
+          style={
+            chatHeadPos
+              ? { left: `${chatHeadPos.x}px`, top: `${chatHeadPos.y}px`, touchAction: 'none' }
+              : { touchAction: 'none' }
+          }
+          className={`fixed z-50 select-none ${
+            chatHeadPos ? '' : 'bottom-20 right-5'
+          } ${isDraggingChatHead ? 'scale-105 cursor-grabbing' : 'animate-bounce transition-transform duration-200'}`}
+          onPointerDown={(e) => {
+            if ((e.target as HTMLElement).closest('button')) return;
+            const rect = e.currentTarget.getBoundingClientRect();
+            chatHeadDragRef.current = {
+              active: true,
+              pointerId: e.pointerId,
+              startX: e.clientX,
+              startY: e.clientY,
+              originLeft: rect.left,
+              originTop: rect.top,
+              moved: false,
+            };
+            chatHeadJustDraggedRef.current = false;
+            try {
+              e.currentTarget.setPointerCapture(e.pointerId);
+            } catch {
+              // ignore pointer capture fallback
+            }
+          }}
+          onPointerMove={(e) => {
+            const drag = chatHeadDragRef.current;
+            if (!drag.active || drag.pointerId !== e.pointerId) return;
+            const dx = e.clientX - drag.startX;
+            const dy = e.clientY - drag.startY;
+            if (!drag.moved && Math.hypot(dx, dy) > 5) {
+              drag.moved = true;
+              setIsDraggingChatHead(true);
+            }
+            if (!drag.moved) return;
+            const rect = e.currentTarget.getBoundingClientRect();
+            const maxX = Math.max(8, window.innerWidth - rect.width - 8);
+            const maxY = Math.max(8, window.innerHeight - rect.height - 8);
+            const nextX = Math.max(8, Math.min(maxX, drag.originLeft + dx));
+            const nextY = Math.max(8, Math.min(maxY, drag.originTop + dy));
+            setChatHeadPos({ x: nextX, y: nextY });
+          }}
+          onPointerUp={(e) => {
+            const drag = chatHeadDragRef.current;
+            if (!drag.active || drag.pointerId !== e.pointerId) return;
+            drag.active = false;
+            if (e.currentTarget.hasPointerCapture?.(e.pointerId)) {
+              try {
+                e.currentTarget.releasePointerCapture(e.pointerId);
+              } catch {
+                // ignore
+              }
+            }
+            if (drag.moved) {
+              chatHeadJustDraggedRef.current = true;
+              setIsDraggingChatHead(false);
+              setChatHeadPos((latest) => {
+                if (latest) {
+                  try {
+                    localStorage.setItem('choychat_chat_head_pos_v1', JSON.stringify(latest));
+                  } catch {
+                    // ignore storage quota errors
+                  }
+                }
+                return latest;
+              });
+            }
+          }}
+          onPointerCancel={(e) => {
+            if (chatHeadDragRef.current.pointerId === e.pointerId) {
+              chatHeadDragRef.current.active = false;
+              setIsDraggingChatHead(false);
+            }
+          }}
+        >
           <div
-            className="flex items-center gap-3 p-3 rounded-2xl bg-gradient-to-r from-emerald-900 to-teal-900 text-white shadow-2xl border-2 border-amber-400 max-w-xs cursor-pointer group hover:scale-105"
+            className={`flex items-center gap-3 p-3 rounded-2xl bg-gradient-to-r from-emerald-900 to-teal-900 text-white shadow-2xl border-2 border-amber-400 max-w-xs group ${
+              isDraggingChatHead ? 'cursor-grabbing ring-4 ring-amber-400/30' : 'cursor-grab hover:scale-105'
+            }`}
+            title="Drag anywhere to move · Tap to open chat"
             onClick={() => {
-              const room = activeChatHeadMessage.receiver.trim().toLowerCase() === 'vip group' ? 'VIP Group' : (activeChatHeadMessage.sender === currentUser.name ? activeChatHeadMessage.receiver : activeChatHeadMessage.sender);
+              if (chatHeadJustDraggedRef.current) {
+                chatHeadJustDraggedRef.current = false;
+                return;
+              }
+              const room =
+                activeChatHeadMessage.receiver.trim().toLowerCase() === 'vip group'
+                  ? 'VIP Group'
+                  : activeChatHeadMessage.sender === currentUser.name
+                  ? activeChatHeadMessage.receiver
+                  : activeChatHeadMessage.sender;
               setActiveChat(room);
               setActiveTab('messages');
               setActiveChatHeadMessage(null);
@@ -7236,7 +8424,8 @@ export default function App() {
               <img
                 src={getUserAvatar({ name: activeChatHeadMessage.sender })}
                 alt=""
-                className="w-12 h-12 rounded-full object-cover border-2 border-amber-400 shadow"
+                draggable={false}
+                className="w-12 h-12 rounded-full object-cover border-2 border-amber-400 shadow pointer-events-none"
               />
               <span className="absolute -top-1 -right-1 w-3.5 h-3.5 bg-emerald-400 rounded-full border-2 border-emerald-950 animate-ping"></span>
             </div>
