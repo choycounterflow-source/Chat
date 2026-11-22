@@ -402,6 +402,10 @@ export default function App() {
   const [deletingMyAccount, setDeletingMyAccount] = useState(false);
   const [selectedProfileUser, setSelectedProfileUser] = useState<ViewedProfile | null>(null);
   const [isUpdatingAvatar, setIsUpdatingAvatar] = useState(false);
+  const [isEditingName, setIsEditingName] = useState(false);
+  const [nameDraft, setNameDraft] = useState('');
+  const [isUpdatingName, setIsUpdatingName] = useState(false);
+  const [nameEditError, setNameEditError] = useState('');
   const profileAvatarInputRef = useRef<HTMLInputElement | null>(null);
   const syncSeqRef = useRef(0);
 
@@ -1983,6 +1987,84 @@ export default function App() {
       showNotice(err instanceof Error ? err.message : 'Failed to reset profile picture');
     } finally {
       setIsUpdatingAvatar(false);
+    }
+  };
+
+  const openNameEditor = () => {
+    if (!currentUser) return;
+    setNameDraft(currentUser.name);
+    setNameEditError('');
+    setIsEditingName(true);
+  };
+
+  const cancelNameEditor = () => {
+    setIsEditingName(false);
+    setNameEditError('');
+    setNameDraft('');
+  };
+
+  const handleSaveProfileName = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!currentUser || isUpdatingName) return;
+    const cleanName = nameDraft.replace(/\s+/g, ' ').trim();
+    if (cleanName.length < 2 || cleanName.length > 60) {
+      setNameEditError('Name must be between 2 and 60 characters.');
+      return;
+    }
+    if (cleanName === currentUser.name.trim()) {
+      cancelNameEditor();
+      return;
+    }
+
+    setIsUpdatingName(true);
+    setNameEditError('');
+    try {
+      const resp = (await apiFetch('/api/auth/name', {
+        method: 'POST',
+        body: JSON.stringify({ name: cleanName }),
+      })) as { ok?: boolean; name?: string; previousName?: string };
+
+      const savedName = typeof resp.name === 'string' && resp.name.trim() ? resp.name.trim() : cleanName;
+      const previousName =
+        typeof resp.previousName === 'string' && resp.previousName.trim()
+          ? resp.previousName.trim()
+          : currentUser.name;
+      const prevLower = previousName.trim().toLowerCase();
+      const myId = currentUser.id;
+      const nextHandle = `@${savedName.toLowerCase().replace(/[^a-z0-9]+/g, '').slice(0, 18) || 'member'}`;
+
+      setCurrentUser((prev) => (prev ? { ...prev, name: savedName } : prev));
+      setUsersList((prev) =>
+        prev.map((u) =>
+          u.id === myId || u.name.trim().toLowerCase() === prevLower ? { ...u, name: savedName } : u
+        )
+      );
+      setPosts((prev) =>
+        prev.map((p) =>
+          p.authorId === myId || p.author.name.trim().toLowerCase() === prevLower
+            ? { ...p, author: { ...p.author, name: savedName, handle: nextHandle } }
+            : p
+        )
+      );
+      const renameMsgList = (prev: Message[]) =>
+        prev.map((m) => ({
+          ...m,
+          sender: m.senderId === myId || m.sender.trim().toLowerCase() === prevLower ? savedName : m.sender,
+          receiver:
+            prevLower !== 'vip group' && m.receiver.trim().toLowerCase() === prevLower
+              ? savedName
+              : m.receiver,
+        }));
+      setCloudMessages(renameMsgList);
+      setLocalMessages(renameMsgList);
+      setSelectedProfileUser((prev) => (prev && prev.isSelf ? { ...prev, name: savedName } : prev));
+      setIsEditingName(false);
+      setNameDraft('');
+      showNotice(`Name changed to ${savedName}!`);
+    } catch (err) {
+      setNameEditError(err instanceof Error ? err.message : 'Failed to change name');
+    } finally {
+      setIsUpdatingName(false);
     }
   };
 
@@ -4307,7 +4389,7 @@ export default function App() {
                           </span>
                         </div>
 
-                        {/* Add / Change Profile Picture Actions */}
+                        {/* Add / Change Profile Picture & Name Actions */}
                         <div className="flex flex-wrap items-center justify-center sm:justify-start gap-2 pt-1.5">
                           <button
                             type="button"
@@ -4328,6 +4410,15 @@ export default function App() {
                                 : 'Add Profile Pic'}
                             </span>
                           </button>
+                          <button
+                            type="button"
+                            disabled={isUpdatingName}
+                            onClick={() => (isEditingName ? cancelNameEditor() : openNameEditor())}
+                            className="px-3.5 py-2 rounded-xl border border-emerald-300 dark:border-emerald-700 bg-emerald-50 dark:bg-emerald-950/70 text-emerald-900 dark:text-emerald-100 hover:bg-emerald-100 dark:hover:bg-emerald-800 text-xs font-bold inline-flex items-center gap-1.5 transition disabled:opacity-60"
+                          >
+                            <Edit3 className="w-3.5 h-3.5" />
+                            <span>{isEditingName ? 'Cancel' : 'Change Name'}</span>
+                          </button>
                           {hasCustomPhoto && (
                             <button
                               type="button"
@@ -4339,6 +4430,55 @@ export default function App() {
                             </button>
                           )}
                         </div>
+
+                        {isEditingName && (
+                          <form
+                            onSubmit={handleSaveProfileName}
+                            className="mt-3 p-3 rounded-xl bg-emerald-50/90 dark:bg-emerald-950/80 border border-emerald-300 dark:border-emerald-700/80 space-y-2 text-left"
+                          >
+                            <label className="block text-[11px] font-bold text-emerald-800 dark:text-emerald-200">
+                              New Display Name
+                            </label>
+                            {nameEditError && (
+                              <div
+                                role="alert"
+                                className="p-2 rounded-lg bg-rose-50 dark:bg-rose-950/80 border border-rose-300 dark:border-rose-700 text-[11px] text-rose-700 dark:text-rose-200"
+                              >
+                                {nameEditError}
+                              </div>
+                            )}
+                            <div className="flex flex-col sm:flex-row gap-2">
+                              <input
+                                type="text"
+                                required
+                                minLength={2}
+                                maxLength={60}
+                                value={nameDraft}
+                                onChange={(e) => setNameDraft(e.target.value)}
+                                placeholder="Enter new name..."
+                                className="flex-1 min-h-[38px] px-3 py-2 rounded-xl bg-white dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 text-xs text-emerald-950 dark:text-white placeholder-emerald-500/70 focus:outline-none focus:border-emerald-500"
+                              />
+                              <div className="flex items-center gap-1.5">
+                                <button
+                                  type="submit"
+                                  disabled={isUpdatingName || nameDraft.trim().length < 2}
+                                  className="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 dark:bg-emerald-400 dark:hover:bg-emerald-300 text-white dark:text-slate-950 text-xs font-bold inline-flex items-center gap-1.5 transition disabled:opacity-50"
+                                >
+                                  {isUpdatingName && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                                  <span>{isUpdatingName ? 'Saving...' : 'Save Name'}</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={isUpdatingName}
+                                  onClick={cancelNameEditor}
+                                  className="px-3 py-2 rounded-xl border border-emerald-300 dark:border-emerald-700 bg-white dark:bg-emerald-900 text-emerald-800 dark:text-emerald-200 text-xs font-semibold hover:bg-emerald-100 dark:hover:bg-emerald-800 transition"
+                                >
+                                  Cancel
+                                </button>
+                              </div>
+                            </div>
+                          </form>
+                        )}
                       </div>
                     </div>
 
@@ -5686,26 +5826,72 @@ export default function App() {
                           <span>Last Active: {viewed.loginDate || 'Active recently'}</span>
                         </div>
                         {viewed.isSelf && (
-                          <div className="pt-1.5">
-                            <button
-                              type="button"
-                              disabled={isUpdatingAvatar}
-                              onClick={() => profileAvatarInputRef.current?.click()}
-                              className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 dark:bg-emerald-400 dark:hover:bg-emerald-300 text-white dark:text-slate-950 text-[11px] font-bold inline-flex items-center gap-1.5 shadow-sm transition disabled:opacity-60"
-                            >
-                              {isUpdatingAvatar ? (
-                                <Loader2 className="w-3 h-3 animate-spin" />
-                              ) : (
-                                <Camera className="w-3 h-3" />
-                              )}
-                              <span>
-                                {isUpdatingAvatar
-                                  ? 'Saving...'
-                                  : isCustomAvatar(getUserAvatar(viewed))
-                                  ? 'Change Profile Pic'
-                                  : 'Add Profile Pic'}
-                              </span>
-                            </button>
+                          <div className="pt-1.5 space-y-2">
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              <button
+                                type="button"
+                                disabled={isUpdatingAvatar}
+                                onClick={() => profileAvatarInputRef.current?.click()}
+                                className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 dark:bg-emerald-400 dark:hover:bg-emerald-300 text-white dark:text-slate-950 text-[11px] font-bold inline-flex items-center gap-1.5 shadow-sm transition disabled:opacity-60"
+                              >
+                                {isUpdatingAvatar ? (
+                                  <Loader2 className="w-3 h-3 animate-spin" />
+                                ) : (
+                                  <Camera className="w-3 h-3" />
+                                )}
+                                <span>
+                                  {isUpdatingAvatar
+                                    ? 'Saving...'
+                                    : isCustomAvatar(getUserAvatar(viewed))
+                                    ? 'Change Profile Pic'
+                                    : 'Add Profile Pic'}
+                                </span>
+                              </button>
+                              <button
+                                type="button"
+                                disabled={isUpdatingName}
+                                onClick={() => (isEditingName ? cancelNameEditor() : openNameEditor())}
+                                className="px-3 py-1.5 rounded-xl border border-emerald-300 dark:border-emerald-700 bg-white dark:bg-emerald-900 text-emerald-900 dark:text-emerald-100 hover:bg-emerald-100 dark:hover:bg-emerald-800 text-[11px] font-bold inline-flex items-center gap-1.5 transition disabled:opacity-60"
+                              >
+                                <Edit3 className="w-3 h-3" />
+                                <span>{isEditingName ? 'Cancel' : 'Change Name'}</span>
+                              </button>
+                            </div>
+
+                            {isEditingName && (
+                              <form
+                                onSubmit={handleSaveProfileName}
+                                className="p-2.5 rounded-xl bg-white/95 dark:bg-emerald-900/90 border border-emerald-300 dark:border-emerald-700 space-y-2"
+                              >
+                                {nameEditError && (
+                                  <div
+                                    role="alert"
+                                    className="p-1.5 rounded-lg bg-rose-50 dark:bg-rose-950 border border-rose-300 dark:border-rose-700 text-[10px] text-rose-700 dark:text-rose-200"
+                                  >
+                                    {nameEditError}
+                                  </div>
+                                )}
+                                <div className="flex items-center gap-1.5">
+                                  <input
+                                    type="text"
+                                    required
+                                    minLength={2}
+                                    maxLength={60}
+                                    value={nameDraft}
+                                    onChange={(e) => setNameDraft(e.target.value)}
+                                    placeholder="New display name..."
+                                    className="flex-1 min-w-0 px-2.5 py-1.5 rounded-lg bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 text-xs text-emerald-950 dark:text-white focus:outline-none focus:border-emerald-500"
+                                  />
+                                  <button
+                                    type="submit"
+                                    disabled={isUpdatingName || nameDraft.trim().length < 2}
+                                    className="px-2.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 dark:bg-emerald-400 dark:hover:bg-emerald-300 text-white dark:text-slate-950 text-[11px] font-bold shrink-0 disabled:opacity-50"
+                                  >
+                                    {isUpdatingName ? 'Saving...' : 'Save'}
+                                  </button>
+                                </div>
+                              </form>
+                            )}
                           </div>
                         )}
                       </div>

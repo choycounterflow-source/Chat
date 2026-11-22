@@ -685,6 +685,68 @@ app.post('/api/auth/avatar', requireAuth, async (req: AuthedRequest, res: Respon
   }
 });
 
+app.post('/api/auth/name', requireAuth, async (req: AuthedRequest, res: Response) => {
+  try {
+    const hasBearer = Boolean(req.headers.authorization?.startsWith('Bearer '));
+    if (!hasBearer) {
+      const origin = req.headers.origin;
+      const expectedHost = (req.headers['x-forwarded-host'] || req.headers.host || '').toString().split(',')[0].trim();
+      const hasRequestedWith = req.headers['x-requested-with'] === 'XMLHttpRequest';
+      let originMatches = false;
+      if (typeof origin === 'string' && expectedHost) {
+        try {
+          originMatches = new URL(origin).host === expectedHost;
+        } catch {
+          originMatches = false;
+        }
+      }
+      if (!originMatches && !hasRequestedWith) {
+        return res.status(403).json({ error: 'Cross-origin request blocked' });
+      }
+    }
+
+    const user = req.choyUser!;
+    const rawName = typeof req.body?.name === 'string' ? req.body.name.replace(/\s+/g, ' ').trim() : '';
+    if (!rawName || rawName.length < 2 || rawName.length > 60 || /[\x00-\x1f\x7f]/.test(rawName)) {
+      return res.status(400).json({ error: 'Name must be between 2 and 60 characters.' });
+    }
+    const reserved = new Set(['vip group', 'all', 'everyone', 'system', 'member']);
+    if (reserved.has(rawName.toLowerCase())) {
+      return res.status(400).json({ error: 'That name is reserved. Please choose another display name.' });
+    }
+
+    const result = await store.updateUserName(user.id, rawName);
+    if (!result.ok) {
+      return res.status(result.code === 'conflict' ? 409 : 404).json({ error: result.error });
+    }
+
+    // Keep live SSE sessions & online presence map synchronized with the new name
+    const oldKey = result.previousName.trim().toLowerCase();
+    const newKey = result.user.name.trim().toLowerCase();
+    if (oldKey && oldKey !== newKey && userLastSeenMap.has(oldKey)) {
+      userLastSeenMap.delete(oldKey);
+    }
+    userLastSeenMap.set(newKey, Date.now());
+    for (const client of sseClients) {
+      if (client.userId === user.id) {
+        client.userName = result.user.name;
+      }
+    }
+
+    broadcastSync('users');
+    broadcastSync('posts');
+    broadcastSync('messages');
+
+    return res.json({
+      ok: true,
+      name: result.user.name,
+      previousName: result.previousName,
+    });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to update name' });
+  }
+});
+
 const handleSelfDeleteAccount = async (req: AuthedRequest, res: Response) => {
   try {
     // CSRF guard when authenticated via session cookie

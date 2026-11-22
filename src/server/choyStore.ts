@@ -708,6 +708,99 @@ export class ChoyStore {
     return found;
   }
 
+  public async updateUserName(
+    userId: string,
+    newName: string
+  ): Promise<
+    | { ok: true; user: StoredUser; previousName: string }
+    | { ok: false; code: 'not_found' | 'conflict'; error: string }
+  > {
+    await this.ready();
+    const cleanName = newName.trim().slice(0, 60);
+    const cleanLower = cleanName.toLowerCase();
+    const nextHandle = `@${cleanLower.replace(/[^a-z0-9]+/g, '').slice(0, 18) || 'member'}`;
+
+    if (this.usePostgres && this.pool) {
+      const existingRes = await this.pool.query('SELECT * FROM app_users WHERE id = $1 LIMIT 1', [userId]);
+      if (existingRes.rows.length === 0) {
+        return { ok: false, code: 'not_found', error: 'Account not found' };
+      }
+      const current = this.mapUserRow(existingRes.rows[0]);
+      const previousName = current.name;
+
+      const conflictRes = await this.pool.query(
+        'SELECT id FROM app_users WHERE id <> $1 AND LOWER(TRIM(name)) = $2 LIMIT 1',
+        [userId, cleanLower]
+      );
+      if (conflictRes.rows.length > 0) {
+        return { ok: false, code: 'conflict', error: 'That name is already used by another account.' };
+      }
+
+      const updatedRes = await this.pool.query(
+        'UPDATE app_users SET name = $1, updated_at = NOW() WHERE id = $2 RETURNING *',
+        [cleanName, userId]
+      );
+      const updatedUser = this.mapUserRow(updatedRes.rows[0]);
+
+      await this.pool.query(
+        'UPDATE app_posts SET author_name = $1, author_handle = $2 WHERE author_id = $3',
+        [cleanName, nextHandle, userId]
+      );
+      await this.pool.query('UPDATE app_messages SET sender_name = $1 WHERE sender_id = $2', [
+        cleanName,
+        userId,
+      ]);
+      if (previousName.trim().toLowerCase() !== 'vip group') {
+        await this.pool.query(
+          'UPDATE app_messages SET room_id = $1 WHERE LOWER(TRIM(room_id)) = $2',
+          [cleanName, previousName.trim().toLowerCase()]
+        );
+      }
+      await this.pool.query(
+        'UPDATE app_push_subscriptions SET user_name = $1, updated_at = NOW() WHERE user_id = $2',
+        [cleanName, userId]
+      );
+      return { ok: true, user: updatedUser, previousName };
+    }
+
+    const found = this.memUsers.find((u) => u.id === userId);
+    if (!found) {
+      return { ok: false, code: 'not_found', error: 'Account not found' };
+    }
+    const conflict = this.memUsers.find(
+      (u) => u.id !== userId && u.name.trim().toLowerCase() === cleanLower
+    );
+    if (conflict) {
+      return { ok: false, code: 'conflict', error: 'That name is already used by another account.' };
+    }
+    const previousName = found.name;
+    const prevLower = previousName.trim().toLowerCase();
+    found.name = cleanName;
+    found.updatedAt = new Date().toISOString();
+
+    for (const p of this.memPosts) {
+      if (p.authorId === userId) {
+        p.authorName = cleanName;
+        p.authorHandle = nextHandle;
+      }
+    }
+    for (const m of this.memMessages) {
+      if (m.senderId === userId) {
+        m.senderName = cleanName;
+      }
+      if (prevLower !== 'vip group' && m.roomId.trim().toLowerCase() === prevLower) {
+        m.roomId = cleanName;
+      }
+    }
+    for (const s of this.memPushSubs) {
+      if (s.userId === userId) {
+        s.userName = cleanName;
+        s.updatedAt = found.updatedAt;
+      }
+    }
+    return { ok: true, user: found, previousName };
+  }
+
   public async updateUserStatus(userId: string, status: 'pending' | 'approved'): Promise<boolean> {
     await this.ready();
     if (this.usePostgres && this.pool) {
