@@ -57,7 +57,8 @@ import {
   Bell,
   BellOff,
   Forward,
-  Check
+  Check,
+  ArrowLeft
 } from 'lucide-react';
 import { PWAInstallButton } from './components/PWAInstallButton';
 import { OfflineIndicator } from './components/OfflineIndicator';
@@ -353,6 +354,7 @@ export default function App() {
   const postFileInputRef = useRef<HTMLInputElement>(null);
 
   const [activeChat, setActiveChat] = useState<string>('VIP Group');
+  const [activeChatMobileView, setActiveChatMobileView] = useState(false);
   const [galleryFilter, setGalleryFilter] = useState<'all' | 'image' | 'video' | 'audio'>('all');
   const [galleryScope, setGalleryScope] = useState<'chat' | 'all'>('chat');
   const [selectedGalleryVideo, setSelectedGalleryVideo] = useState<Message | null>(null);
@@ -572,6 +574,7 @@ export default function App() {
     if (!cleanName) return;
     setActiveChat(cleanName);
     setSelectedProfileUser(null);
+    setActiveChatMobileView(true);
     setActiveTab('messages');
   }, []);
 
@@ -4830,8 +4833,10 @@ export default function App() {
                   </div>
                 )}
 
-            <div className="flex flex-col md:grid md:grid-cols-3 gap-3 md:gap-4 md:h-[580px]">
-              <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-3 flex flex-col space-y-2 shrink-0">
+            <div className={`flex flex-col md:grid md:grid-cols-3 gap-3 md:gap-4 md:h-[580px]`}>
+              <div className={`bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-3 flex flex-col space-y-2 shrink-0 ${
+                activeChatMobileView ? 'hidden md:flex' : 'flex'
+              }`}>
                 <div className="text-xs font-bold text-emerald-700 dark:text-emerald-300 uppercase">Chats</div>
                 <div className="flex md:flex-col gap-2 overflow-x-auto touch-pan-x overscroll-x-contain [-webkit-overflow-scrolling:touch] md:overflow-visible pb-1.5 md:pb-0">
                   {filteredChatRooms.length === 0 ? (
@@ -4850,7 +4855,10 @@ export default function App() {
                       <button
                         key={room}
                         type="button"
-                        onClick={() => setActiveChat(room)}
+                        onClick={() => {
+                          setActiveChat(room);
+                          setActiveChatMobileView(true);
+                        }}
                         className={`px-3 py-2 rounded-xl text-xs flex items-center justify-between gap-2 transition whitespace-nowrap shrink-0 md:w-full text-left ${
                           isActive
                             ? 'bg-emerald-400 text-slate-950 font-bold shadow'
@@ -4888,31 +4896,44 @@ export default function App() {
                 </div>
               </div>
 
-              <div className="md:col-span-2 bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl flex flex-col min-h-[430px] md:min-h-0 md:h-full overflow-hidden">
+              <div className={`md:col-span-2 bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl flex flex-col min-h-[430px] md:min-h-0 md:h-full overflow-hidden ${
+                activeChatMobileView ? 'flex' : 'hidden md:flex'
+              }`}>
                 {/* Responsive Swipeable Chat Header */}
                 <div className="p-3 border-b border-emerald-200 dark:border-emerald-800 space-y-2 text-xs font-bold text-emerald-950 dark:text-white shrink-0">
                   <div className="flex items-center justify-between gap-2">
-                    {activeChat === 'VIP Group' ? (
-                      <span className="text-sm font-black text-emerald-950 dark:text-white truncate">{activeChat}</span>
-                    ) : (
+                    <div className="flex items-center gap-2 min-w-0">
                       <button
                         type="button"
-                        onClick={() => openUserProfile({ name: activeChat })}
-                        className="group flex items-center gap-2 min-w-0 text-left rounded-lg px-1.5 py-1 -ml-1.5 hover:bg-emerald-50 dark:hover:bg-emerald-800/60 transition"
-                        title={`View ${activeChat}'s profile`}
+                        onClick={() => setActiveChatMobileView(false)}
+                        className="md:hidden p-1.5 rounded-lg bg-emerald-100 dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 text-emerald-900 dark:text-emerald-100 hover:bg-emerald-200 dark:hover:bg-emerald-800 transition shrink-0"
+                        title="Back to chats list"
+                        aria-label="Back to chats list"
                       >
-                        <img
-                          src={getUserAvatar({ name: activeChat })}
-                          alt=""
-                          className={`w-6 h-7 rounded-md bg-emerald-50 dark:bg-emerald-950 border border-emerald-500/50 shrink-0 ${
-                            isCustomAvatar(getUserAvatar({ name: activeChat })) ? 'object-cover' : 'object-contain'
-                          }`}
-                        />
-                        <span className="text-sm font-black text-emerald-950 dark:text-white truncate group-hover:text-emerald-700 dark:group-hover:text-emerald-300 group-hover:underline">
-                          {activeChat}
-                        </span>
+                        <ArrowLeft className="w-4 h-4" />
                       </button>
-                    )}
+                      {activeChat === 'VIP Group' ? (
+                        <span className="text-sm font-black text-emerald-950 dark:text-white truncate">{activeChat}</span>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => openUserProfile({ name: activeChat })}
+                          className="group flex items-center gap-2 min-w-0 text-left rounded-lg px-1.5 py-1 -ml-1 hover:bg-emerald-50 dark:hover:bg-emerald-800/60 transition"
+                          title={`View ${activeChat}'s profile`}
+                        >
+                          <img
+                            src={getUserAvatar({ name: activeChat })}
+                            alt=""
+                            className={`w-6 h-7 rounded-md bg-emerald-50 dark:bg-emerald-950 border border-emerald-500/50 shrink-0 ${
+                              isCustomAvatar(getUserAvatar({ name: activeChat })) ? 'object-cover' : 'object-contain'
+                            }`}
+                          />
+                          <span className="text-sm font-black text-emerald-950 dark:text-white truncate group-hover:text-emerald-700 dark:group-hover:text-emerald-300 group-hover:underline">
+                            {activeChat}
+                          </span>
+                        </button>
+                      )}
+                    </div>
                     <div className="flex items-center gap-1.5 overflow-x-auto touch-pan-x overscroll-x-contain [-webkit-overflow-scrolling:touch] max-w-[68%] sm:max-w-none pb-0.5">
                       <button
                         type="button"
