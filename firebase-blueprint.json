@@ -1,0 +1,181 @@
+{
+  "entities": {
+    "PublicUser": {
+      "title": "PublicUser",
+      "description": "Publicly visible user profile without PII.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "displayName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "photoURL": { "type": "string", "maxLength": 500 },
+        "status": { "type": "string", "enum": ["pending", "approved"] },
+        "visibility": { "type": "string", "enum": ["public"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "displayName", "status", "visibility", "createdAt", "updatedAt"]
+    },
+    "PrivateUserInfo": {
+      "title": "PrivateUserInfo",
+      "description": "Owner-only and admin-only private user PII and preferences.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "email": { "type": "string", "format": "email", "maxLength": 160 },
+        "phone": { "type": "string", "maxLength": 32 },
+        "blockedUsers": { "type": "array", "description": "List of blocked user display names (max 100)." },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "blockedUsers", "createdAt", "updatedAt"]
+    },
+    "Post": {
+      "title": "Post",
+      "description": "Public newsfeed post shared across all devices.",
+      "type": "object",
+      "properties": {
+        "authorId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "authorName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "authorHandle": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "authorAvatar": { "type": "string", "maxLength": 500 },
+        "content": { "type": "string", "minLength": 1, "maxLength": 2000 },
+        "mediaUrl": { "type": "string", "maxLength": 1000 },
+        "mediaType": { "type": "string", "enum": ["text", "image", "video"] },
+        "category": { "type": "string", "enum": ["feed", "myday", "video"] },
+        "visibility": { "type": "string", "enum": ["public"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["authorId", "authorName", "authorHandle", "authorAvatar", "content", "mediaType", "category", "visibility", "createdAt"]
+    },
+    "Message": {
+      "title": "Message",
+      "description": "Real-time chat message synced across all connected devices.",
+      "type": "object",
+      "properties": {
+        "senderId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "senderName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "roomId": { "type": "string", "enum": ["VIP Group", "Choy Admin", "Maria Santos"] },
+        "text": { "type": "string", "maxLength": 2000 },
+        "mediaUrl": { "type": "string", "maxLength": 1000 },
+        "mediaType": { "type": "string", "enum": ["text", "image", "video", "audio", "file"] },
+        "reactions": { "type": "array", "description": "Emoji reaction list (max 20)." },
+        "visibility": { "type": "string", "enum": ["members"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["senderId", "senderName", "roomId", "text", "mediaType", "reactions", "visibility", "createdAt", "updatedAt"]
+    },
+    "LedgerRow": {
+      "title": "LedgerRow",
+      "description": "Admin-only milestone spreadsheet record.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "fiveH": { "type": "number" },
+        "fiveHType": { "type": "string", "enum": ["blue", "red"] },
+        "bulig": { "type": "number" },
+        "point5": { "type": "number" },
+        "halfSack": { "type": "number" },
+        "oneSack": { "type": "number" },
+        "bal": { "type": "number" },
+        "updatedBy": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "fiveH", "fiveHType", "bulig", "point5", "halfSack", "oneSack", "bal", "updatedBy", "createdAt", "updatedAt"]
+    },
+    "KnowledgeQA": {
+      "title": "KnowledgeQA",
+      "description": "Choy AI Brain Q&A managed by admin and readable by all signed-in users.",
+      "type": "object",
+      "properties": {
+        "question": { "type": "string", "minLength": 1, "maxLength": 300 },
+        "answer": { "type": "string", "minLength": 1, "maxLength": 2000 },
+        "visibility": { "type": "string", "enum": ["public"] },
+        "createdBy": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["question", "answer", "visibility", "createdBy", "createdAt"]
+    },
+    "AdminSetting": {
+      "title": "AdminSetting",
+      "description": "Admin-only synced configuration such as unit prices, default quantities, and storage settings.",
+      "type": "object",
+      "properties": {
+        "fiveH": { "type": "number" },
+        "bulig": { "type": "number" },
+        "point5": { "type": "number" },
+        "halfSack": { "type": "number" },
+        "oneSack": { "type": "number" },
+        "defFiveH": { "type": "number" },
+        "defBulig": { "type": "number" },
+        "defPoint5": { "type": "number" },
+        "defHalfSack": { "type": "number" },
+        "defOneSack": { "type": "number" },
+        "updatedBy": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["fiveH", "bulig", "point5", "halfSack", "oneSack", "defFiveH", "defBulig", "defPoint5", "defHalfSack", "defOneSack", "updatedBy", "updatedAt"]
+    },
+    "LeaderboardEntry": {
+      "title": "LeaderboardEntry",
+      "description": "Public top earner summary synced by admin (no PII).",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "total": { "type": "number" },
+        "visibility": { "type": "string", "enum": ["public"] },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "total", "visibility", "updatedAt"]
+    },
+    "AdminRecord": {
+      "title": "AdminRecord",
+      "description": "Trusted admin role assignment document.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/PublicUser" },
+      "description": "Public user profiles (no PII)."
+    },
+    "/users/{userId}/private/{docId}": {
+      "schema": { "$ref": "#/entities/PrivateUserInfo" },
+      "description": "Owner/Admin-only private PII and blockedUsers list."
+    },
+    "/posts/{postId}": {
+      "schema": { "$ref": "#/entities/Post" },
+      "description": "Community newsfeed posts synced across all devices."
+    },
+    "/messages/{messageId}": {
+      "schema": { "$ref": "#/entities/Message" },
+      "description": "Real-time chat messages synced across all devices."
+    },
+    "/ledger/{rowId}": {
+      "schema": { "$ref": "#/entities/LedgerRow" },
+      "description": "Admin-only milestone spreadsheet ledger rows."
+    },
+    "/knowledge/{qaId}": {
+      "schema": { "$ref": "#/entities/KnowledgeQA" },
+      "description": "Choy AI Brain Q&A pairs managed by admin."
+    },
+    "/settings/{settingId}": {
+      "schema": { "$ref": "#/entities/AdminSetting" },
+      "description": "Admin-only synced unit prices and default quantities."
+    },
+    "/leaderboard/{entryId}": {
+      "schema": { "$ref": "#/entities/LeaderboardEntry" },
+      "description": "Public top earner summaries without PII."
+    },
+    "/admins/{userId}": {
+      "schema": { "$ref": "#/entities/AdminRecord" },
+      "description": "Admin role registry."
+    }
+  }
+}

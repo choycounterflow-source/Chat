@@ -38,6 +38,10 @@ export interface KeyValueItem {
 interface SecurityStudioProps {
   usersList: SecurityUserAccount[];
   setUsersList: React.Dispatch<React.SetStateAction<SecurityUserAccount[]>>;
+  onAddUser?: (name: string, phone: string) => Promise<void> | void;
+  onToggleUserStatus?: (user: SecurityUserAccount) => Promise<void> | void;
+  onDeleteUser?: (userId: string) => Promise<void> | void;
+  isCloudSynced?: boolean;
   blockedUsers: string[];
   postsCount: number;
   mediaPostsCount: number;
@@ -82,6 +86,10 @@ const AUTO_DOCKER_DEFAULTS = [
 export const SecurityStudio: React.FC<SecurityStudioProps> = ({
   usersList,
   setUsersList,
+  onAddUser,
+  onToggleUserStatus,
+  onDeleteUser,
+  isCloudSynced = false,
   blockedUsers,
   postsCount,
   mediaPostsCount,
@@ -370,7 +378,14 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
             <ShieldCheck className="w-5 h-5" />
           </div>
           <div>
-            <h2 className="text-base font-black text-white uppercase tracking-wide">Security Studio</h2>
+            <div className="flex items-center gap-2">
+              <h2 className="text-base font-black text-white uppercase tracking-wide">Security Studio</h2>
+              {isCloudSynced && (
+                <span className="px-2 py-0.5 rounded-md bg-emerald-500/20 border border-emerald-400/50 text-emerald-300 text-[10px] font-bold">
+                  Cloud Sync Active
+                </span>
+              )}
+            </div>
             <p className="text-[11px] text-emerald-300">Simple Admin Hub — Render Docker, AI Studio, Keys, Storage & Cache</p>
           </div>
         </div>
@@ -843,17 +858,21 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
         <form
           onSubmit={(e) => {
             e.preventDefault();
-            if (!newUserName.trim() || !newUserPhone.trim()) return;
-            setUsersList([
-              ...usersList,
-              {
-                id: 'u_' + Date.now(),
-                name: newUserName.trim(),
-                phone: newUserPhone.trim(),
-                status: 'approved',
-                loginDate: new Date().toISOString().slice(0, 16).replace('T', ' '),
-              },
-            ]);
+            if (!newUserName.trim()) return;
+            if (onAddUser) {
+              onAddUser(newUserName.trim(), newUserPhone.trim());
+            } else {
+              setUsersList([
+                ...usersList,
+                {
+                  id: 'u_' + Date.now(),
+                  name: newUserName.trim(),
+                  phone: newUserPhone.trim() || 'Member',
+                  status: 'approved',
+                  loginDate: new Date().toISOString().slice(0, 16).replace('T', ' '),
+                },
+              ]);
+            }
             setNewUserName('');
             setNewUserPhone('');
           }}
@@ -909,21 +928,31 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
                   <td className="p-3 text-right space-x-2">
                     <button
                       type="button"
-                      onClick={() =>
-                        setUsersList(
-                          usersList.map((item) =>
-                            item.id === u.id ? { ...item, status: item.status === 'approved' ? 'pending' : 'approved' } : item
-                          )
-                        )
-                      }
+                      onClick={() => {
+                        if (onToggleUserStatus) {
+                          onToggleUserStatus(u);
+                        } else {
+                          setUsersList(
+                            usersList.map((item) =>
+                              item.id === u.id ? { ...item, status: item.status === 'approved' ? 'pending' : 'approved' } : item
+                            )
+                          );
+                        }
+                      }}
                       className="px-2.5 py-1 rounded bg-emerald-800 text-emerald-100 hover:bg-emerald-700 font-semibold"
                     >
                       {u.status === 'approved' ? 'Set Pending' : 'Approve'}
                     </button>
-                    {u.phone !== '09361223978' && (
+                    {u.phone !== '09361223978' && u.phone !== 'choyjiez07@gmail.com' && (
                       <button
                         type="button"
-                        onClick={() => setUsersList(usersList.filter((item) => item.id !== u.id))}
+                        onClick={() => {
+                          if (onDeleteUser) {
+                            onDeleteUser(u.id);
+                          } else {
+                            setUsersList(usersList.filter((item) => item.id !== u.id));
+                          }
+                        }}
                         className="p-1 text-red-400 hover:text-red-200 align-middle"
                         title="Remove User"
                       >
