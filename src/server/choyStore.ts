@@ -135,6 +135,17 @@ export function timingSafeStringEqual(a: string, b: string): boolean {
   return crypto.timingSafeEqual(aBuf, bBuf);
 }
 
+export function normalizePhone(raw: string): string {
+  const stripped = raw.trim().replace(/[\s\-().]/g, '');
+  if (/^\+639\d{9}$/.test(stripped)) {
+    return '0' + stripped.slice(3);
+  }
+  if (/^639\d{9}$/.test(stripped)) {
+    return '0' + stripped.slice(2);
+  }
+  return stripped;
+}
+
 export function signSessionToken(uid: string, role: 'admin' | 'member'): string {
   const payload: SessionPayload = {
     uid,
@@ -503,17 +514,24 @@ export class ChoyStore {
 
   public async getUserByPhone(phone: string): Promise<StoredUser | null> {
     await this.ready();
+    const norm = normalizePhone(phone);
     if (this.usePostgres && this.pool) {
-      const res = await this.pool.query('SELECT * FROM app_users WHERE phone = $1 LIMIT 1', [phone]);
+      const res = await this.pool.query(
+        'SELECT * FROM app_users WHERE phone = $1 OR phone = $2 LIMIT 1',
+        [norm, phone.trim()]
+      );
       if (!res.rowCount) return null;
       return this.mapUserRow(res.rows[0]);
     }
-    return this.memUsers.find((u) => u.phone === phone) || null;
+    return (
+      this.memUsers.find((u) => normalizePhone(u.phone) === norm || u.phone === phone.trim()) || null
+    );
   }
 
   public async ensureEnvAdminUser(phone: string): Promise<StoredUser> {
     await this.ready();
-    const existing = await this.getUserByPhone(phone);
+    const normPhone = normalizePhone(phone);
+    const existing = await this.getUserByPhone(normPhone);
     if (existing) {
       if (existing.role !== 'admin' || existing.status !== 'approved') {
         if (this.usePostgres && this.pool) {
@@ -534,7 +552,7 @@ export class ChoyStore {
     const user: StoredUser = {
       id,
       name: 'Choy Admin',
-      phone,
+      phone: normPhone,
       pinHash: hashPin(crypto.randomBytes(16).toString('hex')),
       role: 'admin',
       status: 'approved',
@@ -567,7 +585,7 @@ export class ChoyStore {
     const user: StoredUser = {
       id,
       name: params.name.slice(0, 80),
-      phone: params.phone.slice(0, 40),
+      phone: normalizePhone(params.phone).slice(0, 40),
       pinHash: hashPin(params.pin),
       role: params.role,
       status: params.status,

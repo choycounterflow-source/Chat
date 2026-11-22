@@ -36,7 +36,9 @@ import {
   LogIn,
   ZoomIn,
   Square,
-  Send
+  Send,
+  Eye,
+  EyeOff
 } from 'lucide-react';
 import { PWAInstallButton } from './components/PWAInstallButton';
 import { OfflineIndicator } from './components/OfflineIndicator';
@@ -137,6 +139,7 @@ export default function App() {
   const [authName, setAuthName] = useState('');
   const [authPhone, setAuthPhone] = useState('');
   const [authPin, setAuthPin] = useState('');
+  const [showAuthPin, setShowAuthPin] = useState(false);
   const [authSubmitting, setAuthSubmitting] = useState(false);
   const [loginError, setLoginError] = useState('');
   const [syncNotice, setSyncNotice] = useState('');
@@ -262,7 +265,7 @@ export default function App() {
       if (options.body && !headers['Content-Type']) {
         headers['Content-Type'] = 'application/json';
       }
-      const res = await fetch(url, { ...options, headers });
+      const res = await fetch(url, { ...options, headers, credentials: 'same-origin' });
       const data = await res.json().catch(() => ({}));
       if (res.status === 401 && authToken) {
         setAuthToken(null);
@@ -277,14 +280,24 @@ export default function App() {
     [authToken]
   );
 
-  // 1. Check backend auth/database status on mount
+  // 1. Check backend auth/database status & restore verified HttpOnly PWA session on mount
   const checkAuthStatus = useCallback(async () => {
     try {
-      const res = await fetch('/api/auth/status');
-      const data = await res.json();
+      const [statusRes, sessionRes] = await Promise.all([
+        fetch('/api/auth/status', { credentials: 'same-origin' }),
+        fetch('/api/auth/session', { credentials: 'same-origin' })
+      ]);
+      const data = await statusRes.json().catch(() => ({}));
       setNeedsAdminSetup(Boolean(data.needsAdminSetup));
       if (data.storageMode === 'postgres' || data.storageMode === 'memory') {
         setStorageMode(data.storageMode);
+      }
+      if (sessionRes.ok) {
+        const sessionData = await sessionRes.json().catch(() => ({}));
+        if (sessionData.authenticated && sessionData.token && sessionData.user) {
+          setAuthToken(sessionData.token);
+          setCurrentUser(sessionData.user);
+        }
       }
     } catch {
       // Keep defaults if temporarily offline
@@ -450,6 +463,7 @@ export default function App() {
     try {
       const res = await fetch('/api/auth/setup-admin', {
         method: 'POST',
+        credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           name: authName.trim() || 'Choy Admin',
@@ -483,6 +497,7 @@ export default function App() {
           : { phone: authPhone.trim(), pin: authPin.trim() };
       const res = await fetch(endpoint, {
         method: 'POST',
+        credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body)
       });
@@ -500,6 +515,7 @@ export default function App() {
   };
 
   const handleLogout = () => {
+    fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' }).catch(() => {});
     setAuthToken(null);
     setCurrentUser(null);
     setPosts([]);
@@ -1252,6 +1268,8 @@ export default function App() {
                 <label className="block text-slate-300 mb-1">Admin Phone Number</label>
                 <input
                   type="text"
+                  inputMode="tel"
+                  autoComplete="tel"
                   required
                   placeholder="09361223978"
                   value={authPhone}
@@ -1261,15 +1279,25 @@ export default function App() {
               </div>
               <div>
                 <label className="block text-slate-300 mb-1">Create Admin PIN (min. 4 chars)</label>
-                <input
-                  type="password"
-                  required
-                  minLength={4}
-                  placeholder="Enter your secret PIN..."
-                  value={authPin}
-                  onChange={(e) => setAuthPin(e.target.value)}
-                  className="w-full p-2.5 bg-slate-900 border border-slate-700 rounded-xl text-white"
-                />
+                <div className="relative">
+                  <input
+                    type={showAuthPin ? 'text' : 'password'}
+                    required
+                    minLength={4}
+                    placeholder="Enter your secret PIN..."
+                    value={authPin}
+                    onChange={(e) => setAuthPin(e.target.value)}
+                    className="w-full p-2.5 pr-10 bg-slate-900 border border-slate-700 rounded-xl text-white"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowAuthPin((v) => !v)}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white p-1"
+                    title={showAuthPin ? 'Hide PIN' : 'Show PIN'}
+                  >
+                    {showAuthPin ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
               </div>
               <button
                 type="submit"
@@ -1327,6 +1355,8 @@ export default function App() {
                   <label className="block text-slate-300 mb-1">Phone</label>
                   <input
                     type="text"
+                    inputMode="tel"
+                    autoComplete="tel"
                     required
                     placeholder="09..."
                     value={authPhone}
@@ -1336,15 +1366,25 @@ export default function App() {
                 </div>
                 <div>
                   <label className="block text-slate-300 mb-1">PIN</label>
-                  <input
-                    type="password"
-                    required
-                    minLength={4}
-                    placeholder="Enter PIN..."
-                    value={authPin}
-                    onChange={(e) => setAuthPin(e.target.value)}
-                    className="w-full p-2.5 bg-slate-900 border border-slate-700 rounded-xl text-white"
-                  />
+                  <div className="relative">
+                    <input
+                      type={showAuthPin ? 'text' : 'password'}
+                      required
+                      minLength={4}
+                      placeholder="Enter PIN..."
+                      value={authPin}
+                      onChange={(e) => setAuthPin(e.target.value)}
+                      className="w-full p-2.5 pr-10 bg-slate-900 border border-slate-700 rounded-xl text-white"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowAuthPin((v) => !v)}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white p-1"
+                      title={showAuthPin ? 'Hide PIN' : 'Show PIN'}
+                    >
+                      {showAuthPin ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                  </div>
                 </div>
                 <button
                   type="submit"

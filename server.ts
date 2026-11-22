@@ -12,6 +12,7 @@ import {
   verifySessionToken,
   verifyPin,
   timingSafeStringEqual,
+  normalizePhone,
   sanitizeMediaUrl,
   clampNum,
   type StoredUser,
@@ -34,13 +35,58 @@ function broadcastSync(topic: string) {
   }
 }
 
+const SESSION_COOKIE_NAME = 'choy_session';
+
+function readSessionCookie(req: Request): string {
+  const raw = req.headers.cookie || '';
+  if (!raw) return '';
+  for (const part of raw.split(';')) {
+    const idx = part.indexOf('=');
+    if (idx === -1) continue;
+    const key = part.slice(0, idx).trim();
+    if (key === SESSION_COOKIE_NAME) {
+      return decodeURIComponent(part.slice(idx + 1).trim());
+    }
+  }
+  return '';
+}
+
+function setSessionCookie(req: Request, res: Response, token: string) {
+  const isHttps = req.secure || req.headers['x-forwarded-proto'] === 'https' || process.env.NODE_ENV === 'production';
+  const attrs = [
+    `${SESSION_COOKIE_NAME}=${encodeURIComponent(token)}`,
+    'Path=/',
+    'HttpOnly',
+    'SameSite=Lax',
+    `Max-Age=${60 * 60 * 24 * 7}`,
+  ];
+  if (isHttps) attrs.push('Secure');
+  res.setHeader('Set-Cookie', attrs.join('; '));
+}
+
+function clearSessionCookie(req: Request, res: Response) {
+  const isHttps = req.secure || req.headers['x-forwarded-proto'] === 'https' || process.env.NODE_ENV === 'production';
+  const attrs = [`${SESSION_COOKIE_NAME}=`, 'Path=/', 'HttpOnly', 'SameSite=Lax', 'Max-Age=0'];
+  if (isHttps) attrs.push('Secure');
+  res.setHeader('Set-Cookie', attrs.join('; '));
+}
+
+function stripOuterQuotes(val: string): string {
+  const t = val.trim();
+  if ((t.startsWith('"') && t.endsWith('"')) || (t.startsWith("'") && t.endsWith("'"))) {
+    return t.slice(1, -1).trim();
+  }
+  return t;
+}
+
 interface AuthedRequest extends Request {
   choyUser?: StoredUser;
 }
 
 async function requireAuth(req: AuthedRequest, res: Response, next: NextFunction) {
   const authHeader = req.headers.authorization || '';
-  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+  const bearerToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+  const token = bearerToken || readSessionCookie(req);
   if (!token) {
     return res.status(401).json({ error: 'Authentication required' });
   }
@@ -115,6 +161,47 @@ app.get('/api/admin/env-status', requireAuth, requireAdmin, async (_req, res) =>
   });
 });
 
+app.get('/api/auth/session', async (req, res) => {
+  await store.ready();
+  const authHeader = req.headers.authorization || '';
+  const bearerToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+  const token = bearerToken || readSessionCookie(req);
+  if (!token) {
+    return res.json({ authenticated: false });
+  }
+  const session = verifySessionToken(token);
+  if (!session) {
+    clearSessionCookie(req, res);
+    return res.json({ authenticated: false });
+  }
+  try {
+    const user = await store.getUserById(session.uid);
+    if (!user) {
+      clearSessionCookie(req, res);
+      return res.json({ authenticated: false });
+    }
+    return res.json({
+      authenticated: true,
+      token,
+      user: {
+        id: user.id,
+        name: user.name,
+        phone: user.phone,
+        role: user.role,
+        status: user.status,
+        blockedUsers: user.blockedUsers,
+      },
+    });
+  } catch {
+    return res.json({ authenticated: false });
+  }
+});
+
+app.post('/api/auth/logout', (req, res) => {
+  clearSessionCookie(req, res);
+  return res.json({ ok: true });
+});
+
 let adminSetupLock = false;
 app.post('/api/auth/setup-admin', async (req, res) => {
   if (adminSetupLock) {
@@ -127,7 +214,7 @@ app.post('/api/auth/setup-admin', async (req, res) => {
       return res.status(409).json({ error: 'Admin account is already configured. Please log in.' });
     }
     const name = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
-    const phone = typeof req.body?.phone === 'string' ? req.body.phone.trim() : '';
+    const phone = typeof req.body?.phone === 'string' ? normalizePhone(req.body.phone) : '';
     const pin = typeof req.body?.pin === 'string' ? req.body.pin.trim() : '';
     if (!name || name.length > 80) {
       return res.status(400).json({ error: 'Valid admin name is required' });
@@ -146,6 +233,7 @@ app.post('/api/auth/setup-admin', async (req, res) => {
       status: 'approved',
     });
     const token = signSessionToken(user.id, user.role);
+    setSessionCookie(req, res, token);
     broadcastSync('users');
     return res.status(201).json({
       token,
@@ -169,7 +257,7 @@ app.post('/api/auth/register', async (req, res) => {
   try {
     await store.ready();
     const name = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
-    const phone = typeof req.body?.phone === 'string' ? req.body.phone.trim() : '';
+    const phone = typeof req.body?.phone === 'string' ? normalizePhone(req.body.phone) : '';
     const pin = typeof req.body?.pin === 'string' ? req.body.pin.trim() : '';
     if (!name || name.length > 80) {
       return res.status(400).json({ error: 'Name is required (max 80 chars)' });
@@ -192,6 +280,7 @@ app.post('/api/auth/register', async (req, res) => {
       status: 'pending',
     });
     const token = signSessionToken(user.id, user.role);
+    setSessionCookie(req, res, token);
     broadcastSync('users');
     return res.status(201).json({
       token,
@@ -212,18 +301,19 @@ app.post('/api/auth/register', async (req, res) => {
 app.post('/api/auth/login', async (req, res) => {
   try {
     await store.ready();
-    const phone = typeof req.body?.phone === 'string' ? req.body.phone.trim() : '';
+    const phone = typeof req.body?.phone === 'string' ? normalizePhone(req.body.phone) : '';
     const pin = typeof req.body?.pin === 'string' ? req.body.pin.trim() : '';
     if (!phone || !pin) {
       return res.status(400).json({ error: 'Phone and PIN are required' });
     }
 
     // Check configured process.env ADMIN_PIN override first
-    const envAdminPin = (process.env.ADMIN_PIN || '').trim();
-    const envAdminPhone = (process.env.ADMIN_PHONE || '09361223978').trim();
+    const envAdminPin = stripOuterQuotes(process.env.ADMIN_PIN || '');
+    const envAdminPhone = normalizePhone(stripOuterQuotes(process.env.ADMIN_PHONE || '09361223978'));
     if (envAdminPin && timingSafeStringEqual(phone, envAdminPhone) && timingSafeStringEqual(pin, envAdminPin)) {
       const adminUser = await store.ensureEnvAdminUser(envAdminPhone);
       const token = signSessionToken(adminUser.id, 'admin');
+      setSessionCookie(req, res, token);
       return res.json({
         token,
         user: {
@@ -242,6 +332,7 @@ app.post('/api/auth/login', async (req, res) => {
       return res.status(401).json({ error: 'Invalid phone or PIN' });
     }
     const token = signSessionToken(user.id, user.role);
+    setSessionCookie(req, res, token);
     return res.json({
       token,
       user: {
