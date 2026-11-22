@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   Home,
   MessageSquare,
@@ -31,44 +31,33 @@ import {
   Sparkles,
   Cloud,
   Link2,
-  Loader2
+  Loader2,
+  UserPlus,
+  LogIn,
+  ZoomIn,
+  Square,
+  Send
 } from 'lucide-react';
-import {
-  collection,
-  doc,
-  getDoc,
-  setDoc,
-  addDoc,
-  updateDoc,
-  deleteDoc,
-  onSnapshot,
-  query,
-  where,
-  serverTimestamp,
-  type Timestamp
-} from 'firebase/firestore';
-import {
-  auth,
-  db,
-  googleProvider,
-  signInWithPopup,
-  signOut,
-  onAuthStateChanged,
-  BOOTSTRAPPED_ADMIN_EMAIL,
-  handleFirestoreError,
-  OperationType,
-  type User
-} from './firebase';
 import { PWAInstallButton } from './components/PWAInstallButton';
 import { OfflineIndicator } from './components/OfflineIndicator';
 import { SecurityStudio } from './components/SecurityStudio';
 import { ChatVideoPlayer } from './components/ChatVideoPlayer';
+import { ImageZoomModal } from './components/ImageZoomModal';
+
+interface CurrentUser {
+  id: string;
+  name: string;
+  phone: string;
+  role: 'admin' | 'member';
+  status: 'pending' | 'approved';
+  blockedUsers: string[];
+}
 
 interface UserAccount {
   id: string;
   name: string;
   phone: string;
-  avatar?: string;
+  role?: 'admin' | 'member';
   status: 'pending' | 'approved';
   loginDate: string;
 }
@@ -81,7 +70,6 @@ interface Post {
   mediaUrl?: string;
   mediaType?: 'text' | 'image' | 'video';
   timestamp: string;
-  createdAtMs: number;
   category: 'feed' | 'myday' | 'video';
 }
 
@@ -127,47 +115,33 @@ interface KnowledgeQA {
 const DEFAULT_AVATAR = '/assets/aistudio/image_20261121_145253_f477cbfa.webp';
 const CHAT_ROOMS = ['VIP Group', 'Choy Admin', 'Maria Santos'] as const;
 
-function clampNumber(val: number, min: number, max: number): number {
-  if (!Number.isFinite(val)) return 0;
-  return Math.max(min, Math.min(max, val));
-}
-
-function formatTimestamp(ts?: Timestamp | null): string {
-  if (!ts || typeof ts.toDate !== 'function') return 'Just now';
+function formatIsoTime(iso?: string): string {
+  if (!iso) return 'Just now';
   try {
-    const d = ts.toDate();
-    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   } catch {
     return 'Just now';
   }
 }
 
-function formatDateTime(ts?: Timestamp | null): string {
-  if (!ts || typeof ts.toDate !== 'function') return new Date().toISOString().slice(0, 16).replace('T', ' ');
-  try {
-    return ts.toDate().toISOString().slice(0, 16).replace('T', ' ');
-  } catch {
-    return '';
-  }
-}
-
 export default function App() {
-  const [firebaseUser, setFirebaseUser] = useState<User | null>(null);
-  const [authReady, setAuthReady] = useState(false);
-  const [hasAdminDoc, setHasAdminDoc] = useState(false);
-  const [isSigningIn, setIsSigningIn] = useState(false);
+  // Auth state (Bearer session token held strictly in JS/React memory)
+  const [authToken, setAuthToken] = useState<string | null>(null);
+  const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
+  const [authChecked, setAuthChecked] = useState(false);
+  const [needsAdminSetup, setNeedsAdminSetup] = useState(false);
+  const [storageMode, setStorageMode] = useState<'postgres' | 'memory'>('memory');
+
+  // Auth form fields
+  const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
+  const [authName, setAuthName] = useState('');
+  const [authPhone, setAuthPhone] = useState('');
+  const [authPin, setAuthPin] = useState('');
+  const [authSubmitting, setAuthSubmitting] = useState(false);
   const [loginError, setLoginError] = useState('');
-  const [fatalError, setFatalError] = useState<Error | null>(null);
   const [syncNotice, setSyncNotice] = useState('');
 
-  if (fatalError) {
-    throw fatalError;
-  }
-
-  const isBootstrappedAdmin =
-    Boolean(firebaseUser?.emailVerified) &&
-    firebaseUser?.email?.toLowerCase() === BOOTSTRAPPED_ADMIN_EMAIL.toLowerCase();
-  const isAdmin = isBootstrappedAdmin || hasAdminDoc;
+  const isAdmin = currentUser?.role === 'admin';
 
   const [activeTab, setActiveTab] = useState<
     | 'feed'
@@ -222,18 +196,15 @@ export default function App() {
     }
   ]);
 
-  const [profile, setProfile] = useState({
-    name: 'Choy Member',
-    handle: '@choychat',
-    avatar: DEFAULT_AVATAR,
-    isFriend: false
-  });
-
+  const [isFriend, setIsFriend] = useState(false);
   const [posts, setPosts] = useState<Post[]>([]);
   const [newPostText, setNewPostText] = useState('');
   const [newPostMedia, setNewPostMedia] = useState('');
-  const [newPostType, setNewPostType] = useState<'text' | 'image' | 'video'>('image');
+  const [newPostMediaName, setNewPostMediaName] = useState('');
+  const [newPostType, setNewPostType] = useState<'text' | 'image' | 'video'>('text');
   const [newPostCategory, setNewPostCategory] = useState<'feed' | 'myday' | 'video'>('feed');
+  const [isProcessingPostMedia, setIsProcessingPostMedia] = useState(false);
+  const postFileInputRef = useRef<HTMLInputElement>(null);
 
   const [activeChat, setActiveChat] = useState<string>('VIP Group');
   const [galleryFilter, setGalleryFilter] = useState<'all' | 'image' | 'video' | 'audio'>('all');
@@ -249,9 +220,18 @@ export default function App() {
   const [msgLinkType, setMsgLinkType] = useState<'video' | 'image' | 'audio'>('video');
   const [msgSearchQuery, setMsgSearchQuery] = useState('');
   const msgFileInputRef = useRef<HTMLInputElement>(null);
+  const [isRecordingAudio, setIsRecordingAudio] = useState(false);
+  const [recordingSeconds, setRecordingSeconds] = useState(0);
+  const [isProcessingAudio, setIsProcessingAudio] = useState(false);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const recordingStreamRef = useRef<MediaStream | null>(null);
+  const recordingTimerRef = useRef<number | null>(null);
+  const recordingActionRef = useRef<'attach' | 'send' | 'cancel'>('attach');
 
   const [isPhotoEditorOpen, setIsPhotoEditorOpen] = useState(false);
   const [isMediaGalleryOpen, setIsMediaGalleryOpen] = useState(false);
+  const [zoomedImage, setZoomedImage] = useState<{ src: string; caption?: string } | null>(null);
   const [blockedUsers, setBlockedUsers] = useState<string[]>([]);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [isDrawing, setIsDrawing] = useState(false);
@@ -264,434 +244,187 @@ export default function App() {
 
   const [isChoyAIPopupOpen, setIsChoyAIPopupOpen] = useState(false);
   const [shareCopied, setShareCopied] = useState(false);
-  const seededOnceRef = useRef(false);
-
-  const reportError = (error: unknown, op: OperationType, path: string | null) => {
-    try {
-      handleFirestoreError(error, op, path);
-    } catch (wrapped) {
-      setFatalError(wrapped instanceof Error ? wrapped : new Error(String(wrapped)));
-    }
-  };
 
   const showNotice = (msg: string) => {
     setSyncNotice(msg);
     setTimeout(() => setSyncNotice(''), 3500);
   };
 
-  const calculateRowTotalWithPrices = (row: LedgerRow, prices = unitPrices) => {
-    return (
-      row.fiveH * prices.fiveH +
-      row.bulig * prices.bulig +
-      row.point5 * prices.point5 +
-      row.halfSack * prices.halfSack +
-      row.oneSack * prices.oneSack +
-      row.bal
-    );
-  };
-
-  const calculateRowTotal = (row: LedgerRow) => calculateRowTotalWithPrices(row, unitPrices);
-
-  // 1. Firebase Auth state listener
-  useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
-      setFirebaseUser(user);
-      if (user) {
-        const displayName = user.displayName || user.email?.split('@')[0] || 'Choy Member';
-        setProfile((prev) => ({
-          ...prev,
-          name: displayName,
-          handle: user.email || '@choychat',
-          avatar: user.photoURL || DEFAULT_AVATAR
-        }));
-      } else {
-        setHasAdminDoc(false);
-        setPosts([]);
-        setCloudMessages([]);
-        setLocalMessages([]);
-        setUsersList([]);
-        setKnowledgeBase([]);
-        setLedgerRows([]);
-        setLeaderboard([]);
-        setBlockedUsers([]);
+  // Authenticated fetch helper using in-memory Bearer token
+  const apiFetch = useCallback(
+    async (url: string, options: RequestInit = {}) => {
+      const headers: Record<string, string> = {
+        ...(options.headers as Record<string, string> | undefined),
+      };
+      if (authToken) {
+        headers['Authorization'] = `Bearer ${authToken}`;
       }
-      setAuthReady(true);
-    });
-    return () => unsubscribe();
+      if (options.body && !headers['Content-Type']) {
+        headers['Content-Type'] = 'application/json';
+      }
+      const res = await fetch(url, { ...options, headers });
+      const data = await res.json().catch(() => ({}));
+      if (res.status === 401 && authToken) {
+        setAuthToken(null);
+        setCurrentUser(null);
+        setLoginError('Session expired. Please sign in again.');
+      }
+      if (!res.ok) {
+        throw new Error(data.error || `Request failed (${res.status})`);
+      }
+      return data;
+    },
+    [authToken]
+  );
+
+  // 1. Check backend auth/database status on mount
+  const checkAuthStatus = useCallback(async () => {
+    try {
+      const res = await fetch('/api/auth/status');
+      const data = await res.json();
+      setNeedsAdminSetup(Boolean(data.needsAdminSetup));
+      if (data.storageMode === 'postgres' || data.storageMode === 'memory') {
+        setStorageMode(data.storageMode);
+      }
+    } catch {
+      // Keep defaults if temporarily offline
+    } finally {
+      setAuthChecked(true);
+    }
   }, []);
 
-  // 2. Sync signed-in user profile + private info + optional initial seed (admin first boot)
   useEffect(() => {
-    if (!authReady || !firebaseUser) return;
-    let cancelled = false;
+    checkAuthStatus();
+  }, [checkAuthStatus]);
 
-    const syncProfileAndBootstrap = async () => {
+  // 2. Sync full state from backend database
+  const fetchSyncedState = useCallback(async () => {
+    if (!authToken) return;
+    try {
+      const data = await apiFetch('/api/choy/state');
+      if (data.storageMode) setStorageMode(data.storageMode);
+      if (data.user) {
+        setCurrentUser(data.user);
+        setBlockedUsers(Array.isArray(data.user.blockedUsers) ? data.user.blockedUsers : []);
+      }
+      if (Array.isArray(data.posts)) {
+        setPosts(
+          data.posts.map((p: Record<string, unknown>) => ({
+            id: String(p.id),
+            authorId: String(p.authorId || ''),
+            author: {
+              name: String(p.authorName || 'Choy User'),
+              handle: String(p.authorHandle || '@choychat'),
+              avatar: String(p.authorAvatar || DEFAULT_AVATAR)
+            },
+            content: String(p.content || ''),
+            mediaUrl: typeof p.mediaUrl === 'string' ? p.mediaUrl : undefined,
+            mediaType: (p.mediaType as 'text' | 'image' | 'video') || 'text',
+            timestamp: formatIsoTime(typeof p.createdAt === 'string' ? p.createdAt : undefined),
+            category: (p.category as 'feed' | 'myday' | 'video') || 'feed'
+          }))
+        );
+      }
+      if (Array.isArray(data.messages)) {
+        const myId = data.user?.id;
+        setCloudMessages(
+          data.messages.map((m: Record<string, unknown>) => ({
+            id: String(m.id),
+            senderId: String(m.senderId || ''),
+            sender: String(m.senderName || 'Member'),
+            receiver: String(m.roomId || 'VIP Group'),
+            text: String(m.text || ''),
+            mediaUrl: typeof m.mediaUrl === 'string' ? m.mediaUrl : undefined,
+            mediaType: (m.mediaType as Message['mediaType']) || 'text',
+            time: formatIsoTime(typeof m.createdAt === 'string' ? m.createdAt : undefined),
+            createdAtMs: typeof m.createdAt === 'string' ? new Date(m.createdAt).getTime() : Date.now(),
+            isMe: m.senderId === myId,
+            reactions: Array.isArray(m.reactions) ? (m.reactions as string[]) : []
+          }))
+        );
+      }
+      if (Array.isArray(data.users)) {
+        setUsersList(data.users);
+      }
+      if (Array.isArray(data.knowledge)) {
+        setKnowledgeBase(data.knowledge);
+      }
+      if (Array.isArray(data.leaderboard)) {
+        setLeaderboard(data.leaderboard);
+      }
+      if (Array.isArray(data.ledger)) {
+        setLedgerRows(data.ledger);
+      }
+      if (data.settings) {
+        setUnitPrices({
+          fiveH: Number(data.settings.fiveH) || 0,
+          bulig: Number(data.settings.bulig) || 0,
+          point5: Number(data.settings.point5) || 0,
+          halfSack: Number(data.settings.halfSack) || 0,
+          oneSack: Number(data.settings.oneSack) || 0
+        });
+        setDefaultQuantities({
+          fiveH: Number(data.settings.defFiveH) || 0,
+          bulig: Number(data.settings.defBulig) || 0,
+          point5: Number(data.settings.defPoint5) || 0,
+          halfSack: Number(data.settings.defHalfSack) || 0,
+          oneSack: Number(data.settings.defOneSack) || 0
+        });
+      }
+    } catch (err) {
+      console.error('Sync refresh error:', err);
+    }
+  }, [authToken, apiFetch]);
+
+  // 3. Initial sync + Real-Time SSE stream + fallback polling
+  useEffect(() => {
+    if (!authToken) return;
+    fetchSyncedState();
+
+    const abortController = new AbortController();
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const connectSSE = async () => {
       try {
-        const bootstrapped =
-          Boolean(firebaseUser.emailVerified) &&
-          firebaseUser.email?.toLowerCase() === BOOTSTRAPPED_ADMIN_EMAIL.toLowerCase();
-
-        let adminRole = bootstrapped;
-        if (!bootstrapped) {
-          try {
-            const adminSnap = await getDoc(doc(db, 'admins', firebaseUser.uid));
-            adminRole = adminSnap.exists();
-          } catch {
-            adminRole = false;
+        const res = await fetch('/api/choy/stream', {
+          headers: { Authorization: `Bearer ${authToken}` },
+          signal: abortController.signal
+        });
+        if (!res.ok || !res.body) return;
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          if (buffer.includes('event: sync')) {
+            buffer = '';
+            fetchSyncedState();
           }
         }
-        if (!cancelled) setHasAdminDoc(adminRole);
-
-        // Step A: Ensure /users/{uid} exists FIRST (required by private subcollection rule)
-        const userRef = doc(db, 'users', firebaseUser.uid);
-        const userSnap = await getDoc(userRef);
-        const safeName = (firebaseUser.displayName || firebaseUser.email?.split('@')[0] || 'Choy Member').slice(0, 80);
-        const safePhoto =
-          firebaseUser.photoURL && firebaseUser.photoURL.length <= 500 ? firebaseUser.photoURL : undefined;
-
-        if (!userSnap.exists()) {
-          const createPayload: Record<string, unknown> = {
-            uid: firebaseUser.uid,
-            displayName: safeName,
-            status: adminRole ? 'approved' : 'pending',
-            visibility: 'public',
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp()
-          };
-          if (safePhoto) createPayload.photoURL = safePhoto;
-          await setDoc(userRef, createPayload);
-        } else {
-          const updatePayload: Record<string, unknown> = {
-            displayName: safeName,
-            updatedAt: serverTimestamp()
-          };
-          if (safePhoto) updatePayload.photoURL = safePhoto;
-          if (adminRole && userSnap.data().status !== 'approved') {
-            updatePayload.status = 'approved';
-          }
-          await updateDoc(userRef, updatePayload);
-        }
-
-        // Step B: Ensure /users/{uid}/private/info exists AFTER parent /users/{uid}
-        const privRef = doc(db, 'users', firebaseUser.uid, 'private', 'info');
-        const privSnap = await getDoc(privRef);
-        const safeEmail = (firebaseUser.email || 'user@choychat.app').slice(0, 160);
-
-        if (!privSnap.exists()) {
-          await setDoc(privRef, {
-            uid: firebaseUser.uid,
-            email: safeEmail,
-            blockedUsers: [],
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp()
-          });
-        } else if (privSnap.data().email !== safeEmail) {
-          await updateDoc(privRef, {
-            email: safeEmail,
-            updatedAt: serverTimestamp()
-          });
-        }
-
-        // Step C: One-time initial seed when Admin logs in on a brand-new database
-        if (adminRole && !seededOnceRef.current) {
-          seededOnceRef.current = true;
-          const settingsRef = doc(db, 'settings', 'prices');
-          const settingsSnap = await getDoc(settingsRef);
-          if (!settingsSnap.exists()) {
-            await setDoc(settingsRef, {
-              fiveH: 50,
-              bulig: 100,
-              point5: 150,
-              halfSack: 200,
-              oneSack: 400,
-              defFiveH: 0,
-              defBulig: 0,
-              defPoint5: 0,
-              defHalfSack: 0,
-              defOneSack: 0,
-              updatedBy: firebaseUser.uid,
-              updatedAt: serverTimestamp()
-            });
-
-            await addDoc(collection(db, 'posts'), {
-              authorId: firebaseUser.uid,
-              authorName: 'Choy Chat Official',
-              authorHandle: '@choychat',
-              authorAvatar: DEFAULT_AVATAR,
-              content: 'Welcome to Choy Chat! Real-time cloud sync is now active across all your devices.',
-              mediaUrl: DEFAULT_AVATAR,
-              mediaType: 'image',
-              category: 'feed',
-              visibility: 'public',
-              createdAt: serverTimestamp()
-            });
-
-            await addDoc(collection(db, 'messages'), {
-              senderId: firebaseUser.uid,
-              senderName: safeName,
-              roomId: 'VIP Group',
-              text: 'Welcome to VIP Group! Messages now sync in real time across all devices.',
-              mediaType: 'text',
-              reactions: ['❤️', '👍'],
-              visibility: 'members',
-              createdAt: serverTimestamp(),
-              updatedAt: serverTimestamp()
-            });
-
-            await addDoc(collection(db, 'messages'), {
-              senderId: firebaseUser.uid,
-              senderName: safeName,
-              roomId: 'VIP Group',
-              text: 'Shared group video clip (tap Play with Sound).',
-              mediaType: 'video',
-              mediaUrl: 'https://www.w3schools.com/html/mov_bbb.mp4',
-              reactions: ['🔥'],
-              visibility: 'members',
-              createdAt: serverTimestamp(),
-              updatedAt: serverTimestamp()
-            });
-
-            await addDoc(collection(db, 'knowledge'), {
-              question: 'What is Choy Chat?',
-              answer: 'Choy Chat is a cloud-synced social media, entertainment, and milestone ledger platform.',
-              visibility: 'public',
-              createdBy: firebaseUser.uid,
-              createdAt: serverTimestamp()
-            });
-
-            await addDoc(collection(db, 'knowledge'), {
-              question: 'How does the ledger work?',
-              answer:
-                'The Milestone Ledger tracks 5H, Bulig, Point 5, Half Sack, and One Sack quantities with automatic cloud sync.',
-              visibility: 'public',
-              createdBy: firebaseUser.uid,
-              createdAt: serverTimestamp()
-            });
-
-            const starterRows: Omit<LedgerRow, 'id'>[] = [
-              { name: 'Choy Admin', fiveH: 5, fiveHType: 'blue', bulig: 3, point5: 2, halfSack: 4, oneSack: 2, bal: 500 },
-              { name: 'Maria Vibe', fiveH: 4, fiveHType: 'red', bulig: 5, point5: 3, halfSack: 2, oneSack: 3, bal: -200 }
-            ];
-            for (const row of starterRows) {
-              const rowRef = await addDoc(collection(db, 'ledger'), {
-                ...row,
-                updatedBy: firebaseUser.uid,
-                createdAt: serverTimestamp(),
-                updatedAt: serverTimestamp()
-              });
-              const total =
-                row.fiveH * 50 + row.bulig * 100 + row.point5 * 150 + row.halfSack * 200 + row.oneSack * 400 + row.bal;
-              await setDoc(doc(db, 'leaderboard', rowRef.id), {
-                name: row.name,
-                total,
-                visibility: 'public',
-                updatedAt: serverTimestamp()
-              });
-            }
-          }
-        }
-      } catch (err) {
-        if (!cancelled) {
-          reportError(err, OperationType.WRITE, `users/${firebaseUser.uid}`);
-        }
+      } catch {
+        // Ignore abort / reconnect cleanly
+      }
+      if (!abortController.signal.aborted) {
+        reconnectTimer = setTimeout(connectSSE, 4000);
       }
     };
 
-    syncProfileAndBootstrap();
-    return () => {
-      cancelled = true;
-    };
-  }, [authReady, firebaseUser]);
-
-  // 3. Real-time Firestore listeners for ALL verified users
-  useEffect(() => {
-    if (!authReady || !firebaseUser) return;
-
-    const unsubPosts = onSnapshot(
-      query(collection(db, 'posts'), where('visibility', '==', 'public')),
-      (snapshot) => {
-        const list: Post[] = snapshot.docs.map((d) => {
-          const data = d.data();
-          const ts = data.createdAt as Timestamp | null;
-          return {
-            id: d.id,
-            authorId: data.authorId || '',
-            author: {
-              name: data.authorName || 'Choy User',
-              handle: data.authorHandle || '@choychat',
-              avatar: data.authorAvatar || DEFAULT_AVATAR
-            },
-            content: data.content || '',
-            mediaUrl: data.mediaUrl || undefined,
-            mediaType: data.mediaType || 'text',
-            timestamp: formatTimestamp(ts),
-            createdAtMs: ts && typeof ts.toMillis === 'function' ? ts.toMillis() : Date.now(),
-            category: data.category || 'feed'
-          };
-        });
-        list.sort((a, b) => b.createdAtMs - a.createdAtMs);
-        setPosts(list);
-      },
-      (err) => reportError(err, OperationType.LIST, 'posts')
-    );
-
-    const unsubMessages = onSnapshot(
-      query(collection(db, 'messages'), where('visibility', '==', 'members')),
-      (snapshot) => {
-        const list: Message[] = snapshot.docs.map((d) => {
-          const data = d.data();
-          const ts = data.createdAt as Timestamp | null;
-          return {
-            id: d.id,
-            senderId: data.senderId || '',
-            sender: data.senderName || 'Member',
-            receiver: data.roomId || 'VIP Group',
-            text: data.text || '',
-            mediaUrl: data.mediaUrl || undefined,
-            mediaType: data.mediaType || 'text',
-            time: formatTimestamp(ts),
-            createdAtMs: ts && typeof ts.toMillis === 'function' ? ts.toMillis() : Date.now(),
-            isMe: data.senderId === firebaseUser.uid,
-            reactions: Array.isArray(data.reactions) ? data.reactions : []
-          };
-        });
-        list.sort((a, b) => a.createdAtMs - b.createdAtMs);
-        setCloudMessages(list);
-      },
-      (err) => reportError(err, OperationType.LIST, 'messages')
-    );
-
-    const unsubUsers = onSnapshot(
-      query(collection(db, 'users'), where('visibility', '==', 'public')),
-      (snapshot) => {
-        const list: UserAccount[] = snapshot.docs.map((d) => {
-          const data = d.data();
-          return {
-            id: d.id,
-            name: data.displayName || 'Choy Member',
-            phone: d.id === firebaseUser.uid ? firebaseUser.email || 'Member' : 'Verified Member',
-            avatar: data.photoURL || DEFAULT_AVATAR,
-            status: data.status === 'approved' ? 'approved' : 'pending',
-            loginDate: formatDateTime(data.updatedAt as Timestamp | null)
-          };
-        });
-        setUsersList(list);
-      },
-      (err) => reportError(err, OperationType.LIST, 'users')
-    );
-
-    const unsubPrivate = onSnapshot(
-      doc(db, 'users', firebaseUser.uid, 'private', 'info'),
-      (snap) => {
-        if (snap.exists()) {
-          const data = snap.data();
-          setBlockedUsers(Array.isArray(data.blockedUsers) ? data.blockedUsers : []);
-        }
-      },
-      (err) => reportError(err, OperationType.GET, `users/${firebaseUser.uid}/private/info`)
-    );
-
-    const unsubKnowledge = onSnapshot(
-      query(collection(db, 'knowledge'), where('visibility', '==', 'public')),
-      (snapshot) => {
-        const list: KnowledgeQA[] = snapshot.docs.map((d) => {
-          const data = d.data();
-          return {
-            id: d.id,
-            question: data.question || '',
-            answer: data.answer || ''
-          };
-        });
-        setKnowledgeBase(list);
-      },
-      (err) => reportError(err, OperationType.LIST, 'knowledge')
-    );
-
-    const unsubLeaderboard = onSnapshot(
-      query(collection(db, 'leaderboard'), where('visibility', '==', 'public')),
-      (snapshot) => {
-        const list: LeaderboardItem[] = snapshot.docs.map((d) => {
-          const data = d.data();
-          return {
-            id: d.id,
-            name: data.name || 'Member',
-            total: typeof data.total === 'number' ? data.total : 0
-          };
-        });
-        list.sort((a, b) => b.total - a.total);
-        setLeaderboard(list);
-      },
-      (err) => reportError(err, OperationType.LIST, 'leaderboard')
-    );
+    connectSSE();
+    const pollInterval = setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        fetchSyncedState();
+      }
+    }, 6000);
 
     return () => {
-      unsubPosts();
-      unsubMessages();
-      unsubUsers();
-      unsubPrivate();
-      unsubKnowledge();
-      unsubLeaderboard();
+      abortController.abort();
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      clearInterval(pollInterval);
     };
-  }, [authReady, firebaseUser]);
+  }, [authToken, fetchSyncedState]);
 
-  // 4. Real-time Firestore listeners for ADMIN ONLY (Ledger & Settings)
-  useEffect(() => {
-    if (!authReady || !firebaseUser || !isAdmin) return;
-
-    const unsubLedger = onSnapshot(
-      collection(db, 'ledger'),
-      (snapshot) => {
-        const list: LedgerRow[] = snapshot.docs.map((d) => {
-          const data = d.data();
-          return {
-            id: d.id,
-            name: data.name || 'Unnamed',
-            fiveH: Number(data.fiveH) || 0,
-            fiveHType: data.fiveHType === 'red' ? 'red' : 'blue',
-            bulig: Number(data.bulig) || 0,
-            point5: Number(data.point5) || 0,
-            halfSack: Number(data.halfSack) || 0,
-            oneSack: Number(data.oneSack) || 0,
-            bal: Number(data.bal) || 0
-          };
-        });
-        list.sort((a, b) => a.name.localeCompare(b.name));
-        setLedgerRows(list);
-      },
-      (err) => reportError(err, OperationType.LIST, 'ledger')
-    );
-
-    const unsubSettings = onSnapshot(
-      doc(db, 'settings', 'prices'),
-      (snap) => {
-        if (snap.exists()) {
-          const data = snap.data();
-          setUnitPrices({
-            fiveH: Number(data.fiveH) || 0,
-            bulig: Number(data.bulig) || 0,
-            point5: Number(data.point5) || 0,
-            halfSack: Number(data.halfSack) || 0,
-            oneSack: Number(data.oneSack) || 0
-          });
-          setDefaultQuantities({
-            fiveH: Number(data.defFiveH) || 0,
-            bulig: Number(data.defBulig) || 0,
-            point5: Number(data.defPoint5) || 0,
-            halfSack: Number(data.defHalfSack) || 0,
-            oneSack: Number(data.defOneSack) || 0
-          });
-        }
-      },
-      (err) => reportError(err, OperationType.GET, 'settings/prices')
-    );
-
-    return () => {
-      unsubLedger();
-      unsubSettings();
-    };
-  }, [authReady, firebaseUser, isAdmin]);
-
-  // Combine cloud messages with any local-device media uploads
   const messages = [...cloudMessages, ...localMessages].sort((a, b) => a.createdAtMs - b.createdAtMs);
 
   // Photo Editor Canvas Loader
@@ -710,118 +443,390 @@ export default function App() {
     }
   }, [isPhotoEditorOpen, msgMediaUrl]);
 
-  const handleGoogleSignIn = async () => {
+  const handleFirstRunAdminSetup = async (e: React.FormEvent) => {
+    e.preventDefault();
     setLoginError('');
-    setIsSigningIn(true);
+    setAuthSubmitting(true);
     try {
-      await signInWithPopup(auth, googleProvider);
+      const res = await fetch('/api/auth/setup-admin', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: authName.trim() || 'Choy Admin',
+          phone: authPhone.trim(),
+          pin: authPin.trim()
+        })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Admin setup failed');
+      setNeedsAdminSetup(false);
+      setAuthToken(data.token);
+      setCurrentUser(data.user);
+      setAuthPin('');
       setActiveTab('feed');
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Google Sign-In failed.';
-      if (msg.includes('auth/unauthorized-domain')) {
-        setLoginError(
-          'Domain not yet authorized in Firebase Auth. Add this website domain in Firebase Console -> Authentication -> Settings -> Authorized domains.'
-        );
-      } else if (msg.includes('popup-closed-by-user')) {
-        setLoginError('Sign-in popup was closed. Please try again.');
-      } else {
-        setLoginError(msg);
-      }
+    } catch (err) {
+      setLoginError(err instanceof Error ? err.message : 'Admin setup failed');
     } finally {
-      setIsSigningIn(false);
+      setAuthSubmitting(false);
     }
   };
 
-  const handleLogout = async () => {
+  const handleAuthSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoginError('');
+    setAuthSubmitting(true);
     try {
-      await signOut(auth);
+      const endpoint = authMode === 'register' ? '/api/auth/register' : '/api/auth/login';
+      const body =
+        authMode === 'register'
+          ? { name: authName.trim(), phone: authPhone.trim(), pin: authPin.trim() }
+          : { phone: authPhone.trim(), pin: authPin.trim() };
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Authentication failed');
+      setAuthToken(data.token);
+      setCurrentUser(data.user);
+      setAuthPin('');
       setActiveTab('feed');
     } catch (err) {
-      console.error('Sign out error:', err);
+      setLoginError(err instanceof Error ? err.message : 'Authentication failed');
+    } finally {
+      setAuthSubmitting(false);
     }
+  };
+
+  const handleLogout = () => {
+    setAuthToken(null);
+    setCurrentUser(null);
+    setPosts([]);
+    setCloudMessages([]);
+    setLocalMessages([]);
+    setUsersList([]);
+    setKnowledgeBase([]);
+    setLedgerRows([]);
+    setLeaderboard([]);
+    setBlockedUsers([]);
+    setActiveTab('feed');
+    checkAuthStatus();
   };
 
   const handleToggleBlockUser = async (targetName: string) => {
-    if (!firebaseUser) return;
     const trimmed = targetName.slice(0, 80);
     const isBlocked = blockedUsers.includes(trimmed);
-    const next = isBlocked
-      ? blockedUsers.filter((n) => n !== trimmed)
-      : [...blockedUsers, trimmed].slice(0, 100);
+    const next = isBlocked ? blockedUsers.filter((n) => n !== trimmed) : [...blockedUsers, trimmed].slice(0, 100);
     setBlockedUsers(next);
     try {
-      await updateDoc(doc(db, 'users', firebaseUser.uid, 'private', 'info'), {
-        blockedUsers: next,
-        updatedAt: serverTimestamp()
+      await apiFetch('/api/choy/blocked-users', {
+        method: 'PUT',
+        body: JSON.stringify({ blockedUsers: next })
       });
     } catch (err) {
-      reportError(err, OperationType.UPDATE, `users/${firebaseUser.uid}/private/info`);
+      showNotice(err instanceof Error ? err.message : 'Failed to update blocked users');
+    }
+  };
+
+  const compressImageToDataUrl = (file: File): Promise<string> =>
+    new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onerror = () => reject(new Error('Failed to read image file'));
+      reader.onload = () => {
+        const img = new Image();
+        img.onerror = () => reject(new Error('Invalid image file'));
+        img.onload = () => {
+          const maxDim = 1080;
+          let { width, height } = img;
+          if (width > maxDim || height > maxDim) {
+            if (width >= height) {
+              height = Math.round((height * maxDim) / width);
+              width = maxDim;
+            } else {
+              width = Math.round((width * maxDim) / height);
+              height = maxDim;
+            }
+          }
+          const canvas = document.createElement('canvas');
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext('2d');
+          if (!ctx) {
+            resolve(String(reader.result || ''));
+            return;
+          }
+          ctx.drawImage(img, 0, 0, width, height);
+          resolve(canvas.toDataURL('image/jpeg', 0.8));
+        };
+        img.src = String(reader.result || '');
+      };
+      reader.readAsDataURL(file);
+    });
+
+  const readFileAsDataUrl = (file: File): Promise<string> =>
+    new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onerror = () => reject(new Error('Failed to read file'));
+      reader.onload = () => resolve(String(reader.result || ''));
+      reader.readAsDataURL(file);
+    });
+
+  const handlePostFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setIsProcessingPostMedia(true);
+    try {
+      if (file.type.startsWith('image/')) {
+        const dataUrl = await compressImageToDataUrl(file);
+        setNewPostMedia(dataUrl);
+        setNewPostType('image');
+        setNewPostMediaName(file.name);
+      } else if (file.type.startsWith('video/')) {
+        if (file.size > 6 * 1024 * 1024) {
+          showNotice('Video must be 6 MB or smaller para ma-sync sa tanan device.');
+          return;
+        }
+        const dataUrl = await readFileAsDataUrl(file);
+        setNewPostMedia(dataUrl);
+        setNewPostType('video');
+        setNewPostMediaName(file.name);
+      } else {
+        showNotice('Please select an image or short video file.');
+      }
+    } catch (err) {
+      showNotice(err instanceof Error ? err.message : 'Failed to load selected file');
+    } finally {
+      setIsProcessingPostMedia(false);
+      e.target.value = '';
     }
   };
 
   const handleCreatePost = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!firebaseUser || !newPostText.trim()) return;
-    const trimmedMedia = newPostMedia.trim();
-    const safeMediaUrl = trimmedMedia && trimmedMedia.length <= 1000 ? trimmedMedia : '';
-    const payload: Record<string, unknown> = {
-      authorId: firebaseUser.uid,
-      authorName: profile.name.slice(0, 80),
-      authorHandle: profile.handle.slice(0, 80),
-      authorAvatar: (profile.avatar || DEFAULT_AVATAR).slice(0, 500),
-      content: newPostText.trim().slice(0, 2000),
-      mediaType: safeMediaUrl ? newPostType : 'text',
-      category: newPostCategory,
-      visibility: 'public',
-      createdAt: serverTimestamp()
-    };
-    if (safeMediaUrl) payload.mediaUrl = safeMediaUrl;
+    if (!newPostText.trim() && !newPostMedia.trim()) return;
     try {
-      await addDoc(collection(db, 'posts'), payload);
+      await apiFetch('/api/choy/posts', {
+        method: 'POST',
+        body: JSON.stringify({
+          content: newPostText.trim(),
+          mediaUrl: newPostMedia.trim() || undefined,
+          mediaType: newPostMedia.trim() ? newPostType : 'text',
+          category: newPostCategory
+        })
+      });
       setNewPostText('');
       setNewPostMedia('');
+      setNewPostMediaName('');
+      setNewPostType('text');
+      await fetchSyncedState();
     } catch (err) {
-      reportError(err, OperationType.CREATE, 'posts');
+      showNotice(err instanceof Error ? err.message : 'Failed to publish post');
     }
   };
 
   const handleDeletePost = async (postId: string) => {
     try {
-      await deleteDoc(doc(db, 'posts', postId));
+      await apiFetch(`/api/choy/posts/${encodeURIComponent(postId)}`, { method: 'DELETE' });
+      await fetchSyncedState();
     } catch (err) {
-      reportError(err, OperationType.DELETE, `posts/${postId}`);
+      showNotice(err instanceof Error ? err.message : 'Failed to delete post');
     }
   };
 
-  const handleMsgFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const cleanupAudioRecording = useCallback(() => {
+    if (recordingTimerRef.current !== null) {
+      window.clearInterval(recordingTimerRef.current);
+      recordingTimerRef.current = null;
+    }
+    if (recordingStreamRef.current) {
+      recordingStreamRef.current.getTracks().forEach((track) => track.stop());
+      recordingStreamRef.current = null;
+    }
+    mediaRecorderRef.current = null;
+    setIsRecordingAudio(false);
+    setRecordingSeconds(0);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      try {
+        if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+          recordingActionRef.current = 'cancel';
+          mediaRecorderRef.current.stop();
+        }
+      } catch {
+        // ignore
+      }
+      cleanupAudioRecording();
+    };
+  }, [cleanupAudioRecording]);
+
+  const formatRecordingTime = (totalSeconds: number) => {
+    const mins = Math.floor(totalSeconds / 60);
+    const secs = totalSeconds % 60;
+    return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+  };
+
+  const stopAudioRecording = (action: 'attach' | 'send' | 'cancel') => {
+    recordingActionRef.current = action;
+    const recorder = mediaRecorderRef.current;
+    if (recorder && recorder.state !== 'inactive') {
+      recorder.stop();
+    } else {
+      cleanupAudioRecording();
+    }
+  };
+
+  const startAudioRecording = async () => {
+    if (isRecordingAudio || isProcessingAudio) return;
+    if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
+      showNotice('Voice recording is not supported in this browser.');
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      recordingStreamRef.current = stream;
+
+      const preferredTypes = [
+        'audio/webm;codecs=opus',
+        'audio/webm',
+        'audio/mp4',
+        'audio/ogg;codecs=opus',
+        'audio/ogg'
+      ];
+      const mimeType =
+        typeof MediaRecorder.isTypeSupported === 'function'
+          ? preferredTypes.find((t) => MediaRecorder.isTypeSupported(t)) || ''
+          : '';
+
+      const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+      mediaRecorderRef.current = recorder;
+      audioChunksRef.current = [];
+      recordingActionRef.current = 'attach';
+
+      recorder.ondataavailable = (ev: BlobEvent) => {
+        if (ev.data && ev.data.size > 0) {
+          audioChunksRef.current.push(ev.data);
+        }
+      };
+
+      recorder.onstop = async () => {
+        const action = recordingActionRef.current;
+        const chunks = audioChunksRef.current;
+        const finalMime = recorder.mimeType || mimeType || 'audio/webm';
+        cleanupAudioRecording();
+
+        if (action === 'cancel' || chunks.length === 0) {
+          return;
+        }
+
+        const audioBlob = new Blob(chunks, { type: finalMime });
+        if (audioBlob.size > 3.5 * 1024 * 1024) {
+          showNotice('Voice snippet is too large (max 3.5 MB). Please record a shorter clip.');
+          return;
+        }
+
+        setIsProcessingAudio(true);
+        try {
+          const dataUrl = await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onerror = () => reject(new Error('Failed to encode voice recording'));
+            reader.onload = () => resolve(String(reader.result || ''));
+            reader.readAsDataURL(audioBlob);
+          });
+
+          if (action === 'send') {
+            await apiFetch('/api/choy/messages', {
+              method: 'POST',
+              body: JSON.stringify({
+                roomId: activeChat,
+                text: msgInput.trim() || 'Voice message',
+                mediaUrl: dataUrl,
+                mediaType: 'audio'
+              })
+            });
+            setMsgInput('');
+            setMsgMediaUrl('');
+            setMsgMediaType('text');
+            await fetchSyncedState();
+          } else {
+            setMsgMediaType('audio');
+            setMsgMediaUrl(dataUrl);
+          }
+        } catch (err) {
+          showNotice(err instanceof Error ? err.message : 'Failed to process voice recording');
+        } finally {
+          setIsProcessingAudio(false);
+        }
+      };
+
+      recorder.start(250);
+      setIsRecordingAudio(true);
+      setRecordingSeconds(0);
+      recordingTimerRef.current = window.setInterval(() => {
+        setRecordingSeconds((prev) => {
+          if (prev + 1 >= 120) {
+            stopAudioRecording('attach');
+            return 120;
+          }
+          return prev + 1;
+        });
+      }, 1000);
+    } catch (err) {
+      cleanupAudioRecording();
+      showNotice(
+        err instanceof Error && err.name === 'NotAllowedError'
+          ? 'Microphone permission denied. Please allow microphone access to record voice messages.'
+          : 'Unable to access microphone.'
+      );
+    }
+  };
+
+  const handleMsgFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    const url = URL.createObjectURL(file);
-    const type = file.type.startsWith('image/')
-      ? 'image'
-      : file.type.startsWith('video/')
-      ? 'video'
-      : file.type.startsWith('audio/')
-      ? 'audio'
-      : 'file';
-    setMsgMediaType(type);
-    setMsgMediaUrl(url);
+    try {
+      if (file.type.startsWith('image/')) {
+        const dataUrl = await compressImageToDataUrl(file);
+        setMsgMediaType('image');
+        setMsgMediaUrl(dataUrl);
+      } else if (file.type.startsWith('video/') && file.size <= 6 * 1024 * 1024) {
+        const dataUrl = await readFileAsDataUrl(file);
+        setMsgMediaType('video');
+        setMsgMediaUrl(dataUrl);
+      } else if (file.type.startsWith('audio/') && file.size <= 3.5 * 1024 * 1024) {
+        const dataUrl = await readFileAsDataUrl(file);
+        setMsgMediaType('audio');
+        setMsgMediaUrl(dataUrl);
+      } else {
+        const url = URL.createObjectURL(file);
+        const type = file.type.startsWith('video/')
+          ? 'video'
+          : file.type.startsWith('audio/')
+          ? 'audio'
+          : 'file';
+        setMsgMediaType(type);
+        setMsgMediaUrl(url);
+      }
+    } catch {
+      showNotice('Failed to load selected attachment');
+    } finally {
+      e.target.value = '';
+    }
   };
 
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!firebaseUser || (!msgInput.trim() && !msgMediaUrl)) return;
+    if (!currentUser || (!msgInput.trim() && !msgMediaUrl)) return;
 
-    const isLocalBlob =
-      Boolean(msgMediaUrl) &&
-      (msgMediaUrl.startsWith('blob:') || msgMediaUrl.startsWith('data:') || msgMediaUrl.length > 1000);
+    const isLocalBlob = Boolean(msgMediaUrl) && msgMediaUrl.startsWith('blob:');
 
     if (isLocalBlob) {
-      // Keep local file playback & photo editor working seamlessly on current device
       const localMsg: Message = {
         id: 'local_' + Date.now(),
-        senderId: firebaseUser.uid,
-        sender: profile.name,
+        senderId: currentUser.id,
+        sender: currentUser.name,
         receiver: activeChat,
         text: msgInput.trim(),
         mediaType: msgMediaType,
@@ -833,35 +838,29 @@ export default function App() {
         isLocalOnly: true
       };
       setLocalMessages((prev) => [...prev, localMsg]);
-      showNotice('Local file sent on this device. Use the Link button (URL) to sync videos/images across all devices.');
+      showNotice('Large local file sent on this device. Images & short videos (<= 6 MB) auto-sync to all devices.');
       setMsgInput('');
       setMsgMediaUrl('');
       setMsgMediaType('text');
       return;
     }
 
-    const payload: Record<string, unknown> = {
-      senderId: firebaseUser.uid,
-      senderName: profile.name.slice(0, 80),
-      roomId: activeChat,
-      text: msgInput.trim().slice(0, 2000),
-      mediaType: msgMediaUrl ? msgMediaType : 'text',
-      reactions: [],
-      visibility: 'members',
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp()
-    };
-    if (msgMediaUrl) {
-      payload.mediaUrl = msgMediaUrl.slice(0, 1000);
-    }
-
     try {
-      await addDoc(collection(db, 'messages'), payload);
+      await apiFetch('/api/choy/messages', {
+        method: 'POST',
+        body: JSON.stringify({
+          roomId: activeChat,
+          text: msgInput.trim(),
+          mediaUrl: msgMediaUrl || undefined,
+          mediaType: msgMediaUrl ? msgMediaType : 'text'
+        })
+      });
       setMsgInput('');
       setMsgMediaUrl('');
       setMsgMediaType('text');
+      await fetchSyncedState();
     } catch (err) {
-      reportError(err, OperationType.CREATE, 'messages');
+      showNotice(err instanceof Error ? err.message : 'Failed to send message');
     }
   };
 
@@ -877,50 +876,39 @@ export default function App() {
     }
 
     try {
-      await updateDoc(doc(db, 'messages', msg.id), {
-        reactions: [...currentReactions, emoji],
-        updatedAt: serverTimestamp()
+      await apiFetch(`/api/choy/messages/${encodeURIComponent(msg.id)}/reactions`, {
+        method: 'POST',
+        body: JSON.stringify({ emoji })
       });
+      await fetchSyncedState();
     } catch (err) {
-      reportError(err, OperationType.UPDATE, `messages/${msg.id}`);
+      showNotice(err instanceof Error ? err.message : 'Failed to add reaction');
     }
   };
 
-  const syncLeaderboardRow = async (row: LedgerRow, prices = unitPrices) => {
-    const total = clampNumber(calculateRowTotalWithPrices(row, prices), -100000000, 100000000);
-    await setDoc(doc(db, 'leaderboard', row.id), {
-      name: row.name.slice(0, 100),
-      total,
-      visibility: 'public',
-      updatedAt: serverTimestamp()
-    });
+  const calculateRowTotal = (row: LedgerRow) => {
+    return (
+      row.fiveH * unitPrices.fiveH +
+      row.bulig * unitPrices.bulig +
+      row.point5 * unitPrices.point5 +
+      row.halfSack * unitPrices.halfSack +
+      row.oneSack * unitPrices.oneSack +
+      row.bal
+    );
   };
 
   const handleAddLedgerRow = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!firebaseUser || !isAdmin || !newLedgerName.trim()) return;
-    const safeName = newLedgerName.trim().slice(0, 100);
-    const newRowData: Omit<LedgerRow, 'id'> = {
-      name: safeName,
-      fiveH: clampNumber(defaultQuantities.fiveH, -1000000, 1000000),
-      fiveHType: 'blue',
-      bulig: clampNumber(defaultQuantities.bulig, -1000000, 1000000),
-      point5: clampNumber(defaultQuantities.point5, -1000000, 1000000),
-      halfSack: clampNumber(defaultQuantities.halfSack, -1000000, 1000000),
-      oneSack: clampNumber(defaultQuantities.oneSack, -1000000, 1000000),
-      bal: 0
-    };
+    if (!isAdmin || !newLedgerName.trim()) return;
     try {
-      const ref = await addDoc(collection(db, 'ledger'), {
-        ...newRowData,
-        updatedBy: firebaseUser.uid,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp()
+      await apiFetch('/api/choy/ledger', {
+        method: 'POST',
+        body: JSON.stringify({ name: newLedgerName.trim() })
       });
-      await syncLeaderboardRow({ id: ref.id, ...newRowData });
       setNewLedgerName('');
+      await fetchSyncedState();
     } catch (err) {
-      reportError(err, OperationType.CREATE, 'ledger');
+      showNotice(err instanceof Error ? err.message : 'Failed to add row');
     }
   };
 
@@ -928,163 +916,108 @@ export default function App() {
     row: LedgerRow,
     patch: Partial<Omit<LedgerRow, 'id' | 'name'>>
   ) => {
-    if (!firebaseUser || !isAdmin) return;
-    const updatedRow: LedgerRow = {
-      ...row,
-      fiveH: clampNumber(patch.fiveH ?? row.fiveH, -1000000, 1000000),
-      fiveHType: patch.fiveHType ?? row.fiveHType,
-      bulig: clampNumber(patch.bulig ?? row.bulig, -1000000, 1000000),
-      point5: clampNumber(patch.point5 ?? row.point5, -1000000, 1000000),
-      halfSack: clampNumber(patch.halfSack ?? row.halfSack, -1000000, 1000000),
-      oneSack: clampNumber(patch.oneSack ?? row.oneSack, -1000000, 1000000),
-      bal: clampNumber(patch.bal ?? row.bal, -100000000, 100000000)
-    };
-    setLedgerRows((prev) => prev.map((r) => (r.id === row.id ? updatedRow : r)));
+    if (!isAdmin) return;
+    const optimistic = { ...row, ...patch };
+    setLedgerRows((prev) => prev.map((r) => (r.id === row.id ? optimistic : r)));
     try {
-      await updateDoc(doc(db, 'ledger', row.id), {
-        fiveH: updatedRow.fiveH,
-        fiveHType: updatedRow.fiveHType,
-        bulig: updatedRow.bulig,
-        point5: updatedRow.point5,
-        halfSack: updatedRow.halfSack,
-        oneSack: updatedRow.oneSack,
-        bal: updatedRow.bal,
-        updatedBy: firebaseUser.uid,
-        updatedAt: serverTimestamp()
+      await apiFetch(`/api/choy/ledger/${encodeURIComponent(row.id)}`, {
+        method: 'PATCH',
+        body: JSON.stringify(patch)
       });
-      await syncLeaderboardRow(updatedRow);
     } catch (err) {
-      reportError(err, OperationType.UPDATE, `ledger/${row.id}`);
+      showNotice(err instanceof Error ? err.message : 'Failed to update row');
+      await fetchSyncedState();
     }
   };
 
   const handleDeleteLedgerRow = async (rowId: string) => {
     if (!isAdmin) return;
     try {
-      await deleteDoc(doc(db, 'ledger', rowId));
-      await deleteDoc(doc(db, 'leaderboard', rowId));
+      await apiFetch(`/api/choy/ledger/${encodeURIComponent(rowId)}`, { method: 'DELETE' });
+      await fetchSyncedState();
     } catch (err) {
-      reportError(err, OperationType.DELETE, `ledger/${rowId}`);
+      showNotice(err instanceof Error ? err.message : 'Failed to delete row');
     }
   };
 
   const handleSaveUnitPrices = async () => {
-    if (!firebaseUser || !isAdmin) return;
-    const cleanPrices = {
-      fiveH: clampNumber(unitPrices.fiveH, 0, 1000000),
-      bulig: clampNumber(unitPrices.bulig, 0, 1000000),
-      point5: clampNumber(unitPrices.point5, 0, 1000000),
-      halfSack: clampNumber(unitPrices.halfSack, 0, 1000000),
-      oneSack: clampNumber(unitPrices.oneSack, 0, 1000000)
-    };
-    const cleanDefs = {
-      fiveH: clampNumber(defaultQuantities.fiveH, 0, 1000000),
-      bulig: clampNumber(defaultQuantities.bulig, 0, 1000000),
-      point5: clampNumber(defaultQuantities.point5, 0, 1000000),
-      halfSack: clampNumber(defaultQuantities.halfSack, 0, 1000000),
-      oneSack: clampNumber(defaultQuantities.oneSack, 0, 1000000)
-    };
+    if (!isAdmin) return;
     try {
-      await setDoc(doc(db, 'settings', 'prices'), {
-        fiveH: cleanPrices.fiveH,
-        bulig: cleanPrices.bulig,
-        point5: cleanPrices.point5,
-        halfSack: cleanPrices.halfSack,
-        oneSack: cleanPrices.oneSack,
-        defFiveH: cleanDefs.fiveH,
-        defBulig: cleanDefs.bulig,
-        defPoint5: cleanDefs.point5,
-        defHalfSack: cleanDefs.halfSack,
-        defOneSack: cleanDefs.oneSack,
-        updatedBy: firebaseUser.uid,
-        updatedAt: serverTimestamp()
+      await apiFetch('/api/choy/settings', {
+        method: 'PUT',
+        body: JSON.stringify({
+          fiveH: unitPrices.fiveH,
+          bulig: unitPrices.bulig,
+          point5: unitPrices.point5,
+          halfSack: unitPrices.halfSack,
+          oneSack: unitPrices.oneSack,
+          defFiveH: defaultQuantities.fiveH,
+          defBulig: defaultQuantities.bulig,
+          defPoint5: defaultQuantities.point5,
+          defHalfSack: defaultQuantities.halfSack,
+          defOneSack: defaultQuantities.oneSack,
+          applyQuantitiesToAll: false
+        })
       });
-      await Promise.all(ledgerRows.map((row) => syncLeaderboardRow(row, cleanPrices)));
       setPricesSavedMsg(true);
       setTimeout(() => setPricesSavedMsg(false), 2500);
+      await fetchSyncedState();
     } catch (err) {
-      reportError(err, OperationType.WRITE, 'settings/prices');
+      showNotice(err instanceof Error ? err.message : 'Failed to save unit prices');
     }
   };
 
   const handleSaveDefaultQuantities = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!firebaseUser || !isAdmin) return;
-    const cleanDefs = {
-      fiveH: clampNumber(defaultQuantities.fiveH, 0, 1000000),
-      bulig: clampNumber(defaultQuantities.bulig, 0, 1000000),
-      point5: clampNumber(defaultQuantities.point5, 0, 1000000),
-      halfSack: clampNumber(defaultQuantities.halfSack, 0, 1000000),
-      oneSack: clampNumber(defaultQuantities.oneSack, 0, 1000000)
-    };
+    if (!isAdmin) return;
     try {
-      await setDoc(doc(db, 'settings', 'prices'), {
-        fiveH: clampNumber(unitPrices.fiveH, 0, 1000000),
-        bulig: clampNumber(unitPrices.bulig, 0, 1000000),
-        point5: clampNumber(unitPrices.point5, 0, 1000000),
-        halfSack: clampNumber(unitPrices.halfSack, 0, 1000000),
-        oneSack: clampNumber(unitPrices.oneSack, 0, 1000000),
-        defFiveH: cleanDefs.fiveH,
-        defBulig: cleanDefs.bulig,
-        defPoint5: cleanDefs.point5,
-        defHalfSack: cleanDefs.halfSack,
-        defOneSack: cleanDefs.oneSack,
-        updatedBy: firebaseUser.uid,
-        updatedAt: serverTimestamp()
-      });
-      await Promise.all(
-        ledgerRows.map(async (row) => {
-          const updatedRow: LedgerRow = {
-            ...row,
-            fiveH: cleanDefs.fiveH,
-            bulig: cleanDefs.bulig,
-            point5: cleanDefs.point5,
-            halfSack: cleanDefs.halfSack,
-            oneSack: cleanDefs.oneSack
-          };
-          await updateDoc(doc(db, 'ledger', row.id), {
-            fiveH: updatedRow.fiveH,
-            bulig: updatedRow.bulig,
-            point5: updatedRow.point5,
-            halfSack: updatedRow.halfSack,
-            oneSack: updatedRow.oneSack,
-            updatedBy: firebaseUser.uid,
-            updatedAt: serverTimestamp()
-          });
-          await syncLeaderboardRow(updatedRow);
+      await apiFetch('/api/choy/settings', {
+        method: 'PUT',
+        body: JSON.stringify({
+          fiveH: unitPrices.fiveH,
+          bulig: unitPrices.bulig,
+          point5: unitPrices.point5,
+          halfSack: unitPrices.halfSack,
+          oneSack: unitPrices.oneSack,
+          defFiveH: defaultQuantities.fiveH,
+          defBulig: defaultQuantities.bulig,
+          defPoint5: defaultQuantities.point5,
+          defHalfSack: defaultQuantities.halfSack,
+          defOneSack: defaultQuantities.oneSack,
+          applyQuantitiesToAll: true
         })
-      );
+      });
       setQtySavedMsg(true);
       setTimeout(() => setQtySavedMsg(false), 2500);
+      await fetchSyncedState();
     } catch (err) {
-      reportError(err, OperationType.WRITE, 'ledger');
+      showNotice(err instanceof Error ? err.message : 'Failed to apply quantities');
     }
   };
 
   const handleAddKnowledge = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!firebaseUser || !isAdmin || !newQ.trim() || !newA.trim()) return;
+    if (!isAdmin || !newQ.trim() || !newA.trim()) return;
     try {
-      await addDoc(collection(db, 'knowledge'), {
-        question: newQ.trim().slice(0, 300),
-        answer: newA.trim().slice(0, 2000),
-        visibility: 'public',
-        createdBy: firebaseUser.uid,
-        createdAt: serverTimestamp()
+      await apiFetch('/api/choy/knowledge', {
+        method: 'POST',
+        body: JSON.stringify({ question: newQ.trim(), answer: newA.trim() })
       });
       setNewQ('');
       setNewA('');
+      await fetchSyncedState();
     } catch (err) {
-      reportError(err, OperationType.CREATE, 'knowledge');
+      showNotice(err instanceof Error ? err.message : 'Failed to add Q&A');
     }
   };
 
   const handleDeleteKnowledge = async (qaId: string) => {
     if (!isAdmin) return;
     try {
-      await deleteDoc(doc(db, 'knowledge', qaId));
+      await apiFetch(`/api/choy/knowledge/${encodeURIComponent(qaId)}`, { method: 'DELETE' });
+      await fetchSyncedState();
     } catch (err) {
-      reportError(err, OperationType.DELETE, `knowledge/${qaId}`);
+      showNotice(err instanceof Error ? err.message : 'Failed to delete Q&A');
     }
   };
 
@@ -1092,38 +1025,36 @@ export default function App() {
     if (!isAdmin) return;
     const nextStatus = userItem.status === 'approved' ? 'pending' : 'approved';
     try {
-      await updateDoc(doc(db, 'users', userItem.id), {
-        status: nextStatus,
-        updatedAt: serverTimestamp()
+      await apiFetch(`/api/choy/users/${encodeURIComponent(userItem.id)}/status`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status: nextStatus })
       });
+      await fetchSyncedState();
     } catch (err) {
-      reportError(err, OperationType.UPDATE, `users/${userItem.id}`);
+      showNotice(err instanceof Error ? err.message : 'Failed to update status');
     }
   };
 
-  const handleAddCloudUser = async (name: string) => {
+  const handleAddCloudUser = async (name: string, phone: string) => {
     if (!isAdmin) return;
-    const newUid = `member_${Date.now()}`;
     try {
-      await setDoc(doc(db, 'users', newUid), {
-        uid: newUid,
-        displayName: name.slice(0, 80),
-        status: 'approved',
-        visibility: 'public',
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp()
+      await apiFetch('/api/choy/users', {
+        method: 'POST',
+        body: JSON.stringify({ name, phone: phone || `member_${Date.now()}` })
       });
+      await fetchSyncedState();
     } catch (err) {
-      reportError(err, OperationType.CREATE, `users/${newUid}`);
+      showNotice(err instanceof Error ? err.message : 'Failed to add user');
     }
   };
 
   const handleDeleteCloudUser = async (userId: string) => {
-    if (!isAdmin || userId === firebaseUser?.uid) return;
+    if (!isAdmin) return;
     try {
-      await deleteDoc(doc(db, 'users', userId));
+      await apiFetch(`/api/choy/users/${encodeURIComponent(userId)}`, { method: 'DELETE' });
+      await fetchSyncedState();
     } catch (err) {
-      reportError(err, OperationType.DELETE, `users/${userId}`);
+      showNotice(err instanceof Error ? err.message : 'Failed to delete user');
     }
   };
 
@@ -1258,86 +1189,173 @@ export default function App() {
     .filter((p) => !blockedUsers.includes(p.author.name))
     .filter((p) => p.content.toLowerCase().includes(searchQuery.toLowerCase()));
 
-  // Loading state while checking Firebase Auth session
-  if (!authReady) {
+  // Loading state while checking server status
+  if (!authChecked) {
     return (
       <div className="fixed inset-0 bg-emerald-950 text-slate-100 flex flex-col items-center justify-center gap-3 p-4">
-        <div className="w-12 h-12 rounded-xl overflow-hidden border border-emerald-400 shadow-lg">
-          <img src={DEFAULT_AVATAR} alt="" className="w-full h-full object-cover" />
+        <div className="w-16 h-24 rounded-2xl overflow-hidden border border-emerald-400 bg-emerald-950 p-0.5 shadow-lg">
+          <img src={DEFAULT_AVATAR} alt="" className="w-full h-full object-contain rounded-xl" />
         </div>
         <div className="flex items-center gap-2 text-xs text-emerald-300 font-semibold">
-          <Loader2 className="w-4 h-4 animate-spin" /> Syncing Choy Chat...
+          <Loader2 className="w-4 h-4 animate-spin" /> Connecting to Choy Chat...
         </div>
       </div>
     );
   }
 
-  // Google Sign-In Gate (Cross-Device Cloud Sync)
-  if (!firebaseUser) {
+  // Auth Gate: First-Run Admin Setup OR Standard Phone + PIN Login / Register
+  if (!authToken || !currentUser) {
     return (
-      <div className="fixed inset-0 bg-slate-950 text-slate-100 flex items-center justify-center p-4 overflow-hidden">
-        <div className="absolute inset-0 z-0">
-          <img src={DEFAULT_AVATAR} alt="" className="w-full h-full object-cover filter brightness-50" />
-          <div className="absolute inset-0 bg-emerald-950/80"></div>
+      <div className="fixed inset-0 bg-emerald-950 text-slate-100 flex items-center justify-center p-4 overflow-hidden">
+        <div className="absolute inset-0 z-0 flex items-center justify-center bg-emerald-950">
+          <img src={DEFAULT_AVATAR} alt="" className="w-full h-full object-contain opacity-35" />
+          <div className="absolute inset-0 bg-emerald-950/65"></div>
         </div>
 
-        <div className="relative z-15 w-[95%] max-w-sm max-h-[90vh] overflow-y-auto bg-emerald-950/90 border border-emerald-500/40 rounded-3xl p-6 shadow-2xl space-y-5">
-          <div className="text-center space-y-2">
-            <div className="w-14 h-14 rounded-2xl overflow-hidden border border-emerald-400 mx-auto shadow-lg">
-              <img src={DEFAULT_AVATAR} alt="" className="w-full h-full object-cover" />
+        <div className="relative z-15 w-[95%] max-w-sm max-h-[92vh] overflow-y-auto bg-emerald-950/90 border border-emerald-500/40 rounded-3xl p-6 shadow-2xl space-y-4">
+          <div className="text-center space-y-1.5">
+            <div className="w-16 h-24 rounded-2xl overflow-hidden border border-emerald-400 bg-emerald-950 p-0.5 mx-auto shadow-md">
+              <img src={DEFAULT_AVATAR} alt="" className="w-full h-full object-contain rounded-xl" />
             </div>
-            <h1 className="text-xl font-black text-white tracking-wider uppercase">Choy Chat</h1>
-            <p className="text-xs text-emerald-300 flex items-center justify-center gap-1.5">
-              <Cloud className="w-3.5 h-3.5" /> Real-time sync across all devices
+            <h1 className="text-3xl font-black tracking-[0.22em] uppercase bg-gradient-to-r from-amber-200 via-emerald-200 to-amber-300 bg-clip-text text-transparent drop-shadow-[0_2px_10px_rgba(251,191,36,0.35)]">
+              CHOY CHAT
+            </h1>
+            <p className="text-[11px] text-emerald-300 flex items-center justify-center gap-1.5">
+              <Cloud className="w-3.5 h-3.5" />
+              {storageMode === 'postgres' ? 'PostgreSQL Cloud Sync Ready' : 'Render Live Sync Ready'}
             </p>
           </div>
 
           {loginError && (
-            <div className="p-3 rounded-xl bg-red-500/15 border border-red-400/40 text-red-200 text-xs text-center leading-relaxed">
+            <div className="p-2.5 rounded-xl bg-red-500/15 border border-red-400/40 text-red-200 text-xs text-center">
               {loginError}
             </div>
           )}
 
-          <div className="space-y-3">
-            <button
-              type="button"
-              onClick={handleGoogleSignIn}
-              disabled={isSigningIn}
-              className="w-full py-3.5 px-4 bg-emerald-400 hover:bg-emerald-300 text-slate-950 font-extrabold text-sm rounded-xl shadow-lg flex items-center justify-center gap-2.5 transition disabled:opacity-60"
-            >
-              {isSigningIn ? (
-                <>
-                  <Loader2 className="w-4 h-4 animate-spin" /> Signing in...
-                </>
-              ) : (
-                <>
-                  <svg className="w-4 h-4" viewBox="0 0 24 24" aria-hidden="true">
-                    <path
-                      fill="currentColor"
-                      d="M21.35 11.1h-9.18v2.98h5.27c-.23 1.24-.92 2.29-1.97 3l3.18 2.47c1.86-1.71 2.93-4.24 2.93-7.24 0-.42-.04-.82-.23-1.21z"
-                    />
-                    <path
-                      fill="currentColor"
-                      d="M12.17 22c2.65 0 4.88-.88 6.51-2.38l-3.18-2.47c-.88.59-2 .94-3.33.94-2.56 0-4.73-1.73-5.51-4.05H3.38v2.55C5 19.83 8.33 22 12.17 22z"
-                    />
-                    <path
-                      fill="currentColor"
-                      d="M6.66 14.04a5.96 5.96 0 0 1 0-3.82V7.67H3.38a9.98 9.98 0 0 0 0 8.92l3.28-2.55z"
-                    />
-                    <path
-                      fill="currentColor"
-                      d="M12.17 6.17c1.44 0 2.74.5 3.76 1.47l2.82-2.82C17.04 3.22 14.82 2.26 12.17 2.26 8.33 2.26 5 4.43 3.38 7.67l3.28 2.55c.78-2.32 2.95-4.05 5.51-4.05z"
-                    />
-                  </svg>
-                  Sign in with Google
-                </>
-              )}
-            </button>
+          {needsAdminSetup ? (
+            <form onSubmit={handleFirstRunAdminSetup} className="space-y-3 text-xs">
+              <div className="p-2.5 rounded-xl bg-emerald-900/70 border border-emerald-500/40 text-emerald-200 text-[11px] leading-relaxed">
+                <strong className="text-white">First-Run Admin Setup:</strong> I-claim imong Admin account gamit imong phone number ug gusto nimong PIN.
+              </div>
+              <div>
+                <label className="block text-slate-300 mb-1">Admin Name</label>
+                <input
+                  type="text"
+                  required
+                  placeholder="Choy Admin"
+                  value={authName}
+                  onChange={(e) => setAuthName(e.target.value)}
+                  className="w-full p-2.5 bg-slate-900 border border-slate-700 rounded-xl text-white"
+                />
+              </div>
+              <div>
+                <label className="block text-slate-300 mb-1">Admin Phone Number</label>
+                <input
+                  type="text"
+                  required
+                  placeholder="09361223978"
+                  value={authPhone}
+                  onChange={(e) => setAuthPhone(e.target.value)}
+                  className="w-full p-2.5 bg-slate-900 border border-slate-700 rounded-xl text-white"
+                />
+              </div>
+              <div>
+                <label className="block text-slate-300 mb-1">Create Admin PIN (min. 4 chars)</label>
+                <input
+                  type="password"
+                  required
+                  minLength={4}
+                  placeholder="Enter your secret PIN..."
+                  value={authPin}
+                  onChange={(e) => setAuthPin(e.target.value)}
+                  className="w-full p-2.5 bg-slate-900 border border-slate-700 rounded-xl text-white"
+                />
+              </div>
+              <button
+                type="submit"
+                disabled={authSubmitting}
+                className="w-full py-3 bg-emerald-400 hover:bg-emerald-300 text-slate-950 font-extrabold rounded-xl shadow flex items-center justify-center gap-2 transition disabled:opacity-60"
+              >
+                <ShieldCheck className="w-4 h-4" />
+                {authSubmitting ? 'Setting up Admin...' : 'Claim Admin Account'}
+              </button>
+            </form>
+          ) : (
+            <>
+              <div className="grid grid-cols-2 gap-1.5 p-1 rounded-xl bg-emerald-900/60 border border-emerald-800 text-xs">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAuthMode('login');
+                    setLoginError('');
+                  }}
+                  className={`py-2 rounded-lg font-bold flex items-center justify-center gap-1.5 transition ${
+                    authMode === 'login' ? 'bg-emerald-400 text-slate-950 shadow' : 'text-emerald-200'
+                  }`}
+                >
+                  <LogIn className="w-3.5 h-3.5" /> Login
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAuthMode('register');
+                    setLoginError('');
+                  }}
+                  className={`py-2 rounded-lg font-bold flex items-center justify-center gap-1.5 transition ${
+                    authMode === 'register' ? 'bg-emerald-400 text-slate-950 shadow' : 'text-emerald-200'
+                  }`}
+                >
+                  <UserPlus className="w-3.5 h-3.5" /> Sign Up
+                </button>
+              </div>
 
-            <p className="text-[11px] text-center text-emerald-200/80 leading-relaxed">
-              Gamita imong Google account sa tanan nimong device para automatic ma-sync ang chats, posts, ledger, ug settings.
-            </p>
-          </div>
+              <form onSubmit={handleAuthSubmit} className="space-y-3 text-xs">
+                {authMode === 'register' && (
+                  <div>
+                    <label className="block text-slate-300 mb-1">Full Name</label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="Your name..."
+                      value={authName}
+                      onChange={(e) => setAuthName(e.target.value)}
+                      className="w-full p-2.5 bg-slate-900 border border-slate-700 rounded-xl text-white"
+                    />
+                  </div>
+                )}
+                <div>
+                  <label className="block text-slate-300 mb-1">Phone</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="09..."
+                    value={authPhone}
+                    onChange={(e) => setAuthPhone(e.target.value)}
+                    className="w-full p-2.5 bg-slate-900 border border-slate-700 rounded-xl text-white"
+                  />
+                </div>
+                <div>
+                  <label className="block text-slate-300 mb-1">PIN</label>
+                  <input
+                    type="password"
+                    required
+                    minLength={4}
+                    placeholder="Enter PIN..."
+                    value={authPin}
+                    onChange={(e) => setAuthPin(e.target.value)}
+                    className="w-full p-2.5 bg-slate-900 border border-slate-700 rounded-xl text-white"
+                  />
+                </div>
+                <button
+                  type="submit"
+                  disabled={authSubmitting}
+                  className="w-full py-3 bg-emerald-400 hover:bg-emerald-300 text-slate-950 font-bold rounded-xl shadow transition disabled:opacity-60"
+                >
+                  {authSubmitting ? 'Please wait...' : authMode === 'register' ? 'Create Account' : 'Login'}
+                </button>
+              </form>
+            </>
+          )}
 
           <div className="pt-2 border-t border-emerald-800/80">
             <PWAInstallButton fullWidth />
@@ -1637,107 +1655,121 @@ export default function App() {
           );
         })()}
 
-      {/* SIDEBAR */}
-      <aside className="w-full md:w-60 bg-emerald-900/90 border-r border-emerald-800 p-3 flex flex-row md:flex-col justify-between shrink-0 overflow-x-auto md:overflow-y-auto">
-        <div className="flex md:flex-col items-center md:items-stretch gap-1.5 w-full">
+      {/* SIDEBAR / MOBILE SWIPEABLE NAV BAR */}
+      <aside className="w-full md:w-60 bg-emerald-900/90 border-b md:border-b-0 md:border-r border-emerald-800 p-2.5 md:p-3 flex flex-row md:flex-col justify-between shrink-0 overflow-x-auto md:overflow-x-hidden md:overflow-y-auto touch-pan-x md:touch-pan-y overscroll-x-contain [-webkit-overflow-scrolling:touch]">
+        <div className="flex md:flex-col items-center md:items-stretch gap-1.5 w-max md:w-full">
           <div className="hidden md:flex items-center gap-2 px-2 py-2 mb-2">
-            <div className="w-8 h-8 rounded-lg overflow-hidden border border-emerald-400">
-              <img src={DEFAULT_AVATAR} alt="" className="w-full h-full object-cover" />
+            <div className="w-9 h-12 rounded-lg overflow-hidden border border-emerald-400 bg-emerald-950 p-0.5 shrink-0">
+              <img src={DEFAULT_AVATAR} alt="" className="w-full h-full object-contain rounded" />
             </div>
             <div className="min-w-0">
               <div className="text-sm font-bold text-white truncate">Choy Chat</div>
               <div className="text-[10px] text-emerald-300 flex items-center gap-1">
-                <Cloud className="w-3 h-3" /> Cloud Synced
+                <Cloud className="w-3 h-3" /> {storageMode === 'postgres' ? 'Postgres Synced' : 'Live Synced'}
               </div>
             </div>
           </div>
 
-          <nav className="flex md:flex-col gap-1 w-full text-xs font-medium">
+          <nav className="flex md:flex-col gap-1.5 md:gap-1 w-max md:w-full text-xs font-medium pr-3 md:pr-0">
             <button
               type="button"
               onClick={() => setActiveTab('feed')}
-              className={`px-3 py-2 rounded-xl flex items-center gap-2 ${
+              className={`px-3 py-2 rounded-xl flex items-center gap-2 shrink-0 whitespace-nowrap ${
                 activeTab === 'feed' ? 'bg-emerald-400 text-slate-950 font-bold' : 'text-emerald-100 hover:bg-emerald-800'
               }`}
             >
               <Home className="w-4 h-4 shrink-0" />
-              <span className="hidden md:inline">Newsfeed</span>
+              <span>Newsfeed</span>
             </button>
             <button
               type="button"
               onClick={() => setActiveTab('people')}
-              className={`px-3 py-2 rounded-xl flex items-center gap-2 ${
+              className={`px-3 py-2 rounded-xl flex items-center gap-2 shrink-0 whitespace-nowrap ${
                 activeTab === 'people'
                   ? 'bg-emerald-400 text-slate-950 font-bold'
                   : 'text-emerald-100 hover:bg-emerald-800'
               }`}
             >
               <Users className="w-4 h-4 shrink-0" />
-              <span className="hidden md:inline">People</span>
+              <span>People</span>
             </button>
             <button
               type="button"
               onClick={() => setActiveTab('videos')}
-              className={`px-3 py-2 rounded-xl flex items-center gap-2 ${
+              className={`px-3 py-2 rounded-xl flex items-center gap-2 shrink-0 whitespace-nowrap ${
                 activeTab === 'videos'
                   ? 'bg-emerald-400 text-slate-950 font-bold'
                   : 'text-emerald-100 hover:bg-emerald-800'
               }`}
             >
               <Video className="w-4 h-4 shrink-0" />
-              <span className="hidden md:inline">Videos</span>
+              <span>Videos</span>
             </button>
             <button
               type="button"
               onClick={() => setActiveTab('messages')}
-              className={`px-3 py-2 rounded-xl flex items-center gap-2 ${
+              className={`px-3 py-2 rounded-xl flex items-center gap-2 shrink-0 whitespace-nowrap ${
                 activeTab === 'messages'
                   ? 'bg-emerald-400 text-slate-950 font-bold'
                   : 'text-emerald-100 hover:bg-emerald-800'
               }`}
             >
               <MessageSquare className="w-4 h-4 shrink-0" />
-              <span className="hidden md:inline">Messages</span>
+              <span>Messages</span>
             </button>
             {isAdmin && (
               <button
                 type="button"
                 onClick={() => setActiveTab('ledger')}
-                className={`px-3 py-2 rounded-xl flex items-center gap-2 ${
+                className={`px-3 py-2 rounded-xl flex items-center gap-2 shrink-0 whitespace-nowrap ${
                   activeTab === 'ledger'
                     ? 'bg-emerald-400 text-slate-950 font-bold'
                     : 'text-emerald-100 hover:bg-emerald-800'
                 }`}
               >
                 <FileSpreadsheet className="w-4 h-4 shrink-0" />
-                <span className="hidden md:inline">Milestone</span>
+                <span>Milestone</span>
               </button>
             )}
             <button
               type="button"
               onClick={() => setActiveTab('analytics')}
-              className={`px-3 py-2 rounded-xl flex items-center gap-2 ${
+              className={`px-3 py-2 rounded-xl flex items-center gap-2 shrink-0 whitespace-nowrap ${
                 activeTab === 'analytics'
                   ? 'bg-emerald-400 text-slate-950 font-bold'
                   : 'text-emerald-100 hover:bg-emerald-800'
               }`}
             >
               <Award className="w-4 h-4 shrink-0" />
-              <span className="hidden md:inline">Analytics</span>
+              <span>Analytics</span>
             </button>
             <button
               type="button"
               onClick={() => setActiveTab('choyai')}
-              className={`px-3 py-2 rounded-xl flex items-center gap-2 ${
+              className={`px-3 py-2 rounded-xl flex items-center gap-2 shrink-0 whitespace-nowrap ${
                 activeTab === 'choyai' ? 'bg-cyan-400 text-slate-950 font-bold' : 'text-cyan-200 hover:bg-emerald-800'
               }`}
             >
               <img
                 src={DEFAULT_AVATAR}
                 alt=""
-                className="w-4 h-4 rounded object-cover shrink-0 border border-cyan-300"
+                className="w-4 h-5 rounded bg-emerald-950 object-contain shrink-0 border border-cyan-300"
               />
-              <span className="hidden md:inline">Choy AI</span>
+              <span>Choy AI</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab('profile')}
+              className={`md:hidden px-3 py-2 rounded-xl flex items-center gap-2 shrink-0 whitespace-nowrap ${
+                activeTab === 'profile' ? 'bg-emerald-400 text-slate-950 font-bold' : 'text-emerald-100 hover:bg-emerald-800'
+              }`}
+            >
+              <img
+                src={DEFAULT_AVATAR}
+                alt=""
+                className="w-4 h-5 rounded bg-emerald-950 object-contain shrink-0 border border-emerald-400"
+              />
+              <span>Account</span>
             </button>
 
             {isAdmin && (
@@ -1749,38 +1781,38 @@ export default function App() {
                 <button
                   type="button"
                   onClick={() => setActiveTab('admin_approvals')}
-                  className={`px-3 py-2 rounded-xl flex items-center gap-2 ${
+                  className={`px-3 py-2 rounded-xl flex items-center gap-2 shrink-0 whitespace-nowrap ${
                     activeTab === 'admin_approvals'
                       ? 'bg-indigo-600 text-white font-bold'
                       : 'text-indigo-200 hover:bg-emerald-800'
                   }`}
                 >
                   <ShieldCheck className="w-4 h-4 shrink-0" />
-                  <span className="hidden md:inline">User Approvals & Logs</span>
+                  <span>Approvals</span>
                 </button>
                 <button
                   type="button"
                   onClick={() => setActiveTab('admin_knowledge')}
-                  className={`px-3 py-2 rounded-xl flex items-center gap-2 ${
+                  className={`px-3 py-2 rounded-xl flex items-center gap-2 shrink-0 whitespace-nowrap ${
                     activeTab === 'admin_knowledge'
                       ? 'bg-indigo-600 text-white font-bold'
                       : 'text-indigo-200 hover:bg-emerald-800'
                   }`}
                 >
                   <Database className="w-4 h-4 shrink-0" />
-                  <span className="hidden md:inline">Choy AI Brain Q&A</span>
+                  <span>AI Brain</span>
                 </button>
                 <button
                   type="button"
                   onClick={() => setActiveTab('admin_prices')}
-                  className={`px-3 py-2 rounded-xl flex items-center gap-2 ${
+                  className={`px-3 py-2 rounded-xl flex items-center gap-2 shrink-0 whitespace-nowrap ${
                     activeTab === 'admin_prices'
                       ? 'bg-indigo-600 text-white font-bold'
                       : 'text-indigo-200 hover:bg-emerald-800'
                   }`}
                 >
                   <Sliders className="w-4 h-4 shrink-0" />
-                  <span className="hidden md:inline">Unit Prices Setup</span>
+                  <span>Unit Prices</span>
                 </button>
                 <button
                   type="button"
@@ -1805,9 +1837,9 @@ export default function App() {
             onClick={() => setActiveTab('profile')}
             className="w-full p-2 rounded-xl bg-emerald-950/70 border border-emerald-800 flex items-center gap-2 text-left hover:bg-emerald-800/70 transition"
           >
-            <img src={profile.avatar} alt="" className="w-7 h-7 rounded-lg object-cover shrink-0" />
+            <img src={DEFAULT_AVATAR} alt="" className="w-8 h-11 rounded-lg bg-emerald-950 object-contain shrink-0 border border-emerald-500/50" />
             <div className="min-w-0 flex-1">
-              <div className="text-[11px] font-bold text-white truncate">{profile.name}</div>
+              <div className="text-[11px] font-bold text-white truncate">{currentUser.name}</div>
               <div className="text-[9px] text-emerald-300 truncate">{isAdmin ? 'Admin • Synced' : 'Member • Synced'}</div>
             </div>
           </button>
@@ -1824,44 +1856,82 @@ export default function App() {
 
       {/* MAIN VIEW */}
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
-        {/* TOP BAR */}
-        <header className="flex flex-col px-4 py-3 border-b border-emerald-800 bg-emerald-900/50 shrink-0 gap-2.5">
-          <div className="flex items-center justify-between w-full gap-2">
-            <div className="flex items-center gap-2 min-w-8">
+        {/* TOP BAR — FULL-WIDTH DESIGNED CHOY CHAT BANNER */}
+        <header className="flex flex-col px-3 sm:px-5 pt-3 pb-3 border-b border-emerald-700/70 bg-gradient-to-b from-emerald-950 via-emerald-900/70 to-emerald-950/90 shrink-0 gap-2.5">
+          {/* Full-width edge-to-edge CHOY CHAT Hero Banner */}
+          <div className="relative w-full overflow-hidden rounded-2xl border border-amber-400/45 bg-gradient-to-r from-emerald-950 via-emerald-900/95 to-emerald-950 px-3 sm:px-6 py-2.5 sm:py-3.5 shadow-[0_0_25px_rgba(16,185,129,0.22)]">
+            {/* Soft ambient emerald & gold glow */}
+            <div className="pointer-events-none absolute -top-10 left-1/4 w-48 h-24 rounded-full bg-amber-400/15 blur-2xl"></div>
+            <div className="pointer-events-none absolute -bottom-10 right-1/4 w-48 h-24 rounded-full bg-emerald-400/20 blur-2xl"></div>
+
+            {/* Ornamental Gold Corner Accents */}
+            <span className="pointer-events-none absolute top-1.5 left-1.5 w-3.5 h-3.5 border-t-2 border-l-2 border-amber-300/80 rounded-tl-md"></span>
+            <span className="pointer-events-none absolute top-1.5 right-1.5 w-3.5 h-3.5 border-t-2 border-r-2 border-amber-300/80 rounded-tr-md"></span>
+            <span className="pointer-events-none absolute bottom-1.5 left-1.5 w-3.5 h-3.5 border-b-2 border-l-2 border-amber-300/80 rounded-bl-md"></span>
+            <span className="pointer-events-none absolute bottom-1.5 right-1.5 w-3.5 h-3.5 border-b-2 border-r-2 border-amber-300/80 rounded-br-md"></span>
+
+            <div className="relative z-10 w-full flex items-center justify-between gap-2 sm:gap-4">
+              {/* Left ornamental wing */}
+              <div className="hidden xs:flex sm:flex items-center gap-1.5 flex-1 min-w-[20px]">
+                <span className="h-[2px] flex-1 bg-gradient-to-r from-transparent via-amber-400/80 to-emerald-300"></span>
+                <span className="w-2 h-2 rotate-45 bg-amber-300 shadow-[0_0_8px_rgba(251,191,36,0.9)] shrink-0"></span>
+              </div>
+
+              {/* Stretched Full-Width CHOY CHAT Wordmark */}
+              <h1 className="flex-1 sm:flex-none text-center font-black uppercase leading-none select-none text-[clamp(1.65rem,7.2vw,3.4rem)] tracking-[0.18em] sm:tracking-[0.28em] md:tracking-[0.34em] bg-gradient-to-r from-amber-200 via-white via-50% to-emerald-300 bg-clip-text text-transparent drop-shadow-[0_3px_14px_rgba(251,191,36,0.4)] whitespace-nowrap pl-[0.18em] sm:pl-[0.28em] md:pl-[0.34em]">
+                CHOY CHAT
+              </h1>
+
+              {/* Right ornamental wing */}
+              <div className="hidden xs:flex sm:flex items-center gap-1.5 flex-1 min-w-[20px]">
+                <span className="w-2 h-2 rotate-45 bg-amber-300 shadow-[0_0_8px_rgba(251,191,36,0.9)] shrink-0"></span>
+                <span className="h-[2px] flex-1 bg-gradient-to-l from-transparent via-amber-400/80 to-emerald-300"></span>
+              </div>
+            </div>
+
+            {/* Subtle gold bottom shimmer line */}
+            <div className="relative z-10 mt-1.5 flex items-center justify-center gap-2 text-[9px] sm:text-[10px] font-bold uppercase tracking-[0.25em] text-amber-200/85">
+              <span className="h-px w-8 sm:w-16 bg-gradient-to-r from-transparent to-amber-300/70"></span>
+              <span className="truncate">VIP Social • Live Cloud Sync</span>
+              <span className="h-px w-8 sm:w-16 bg-gradient-to-l from-transparent to-amber-300/70"></span>
+            </div>
+          </div>
+
+          {/* Action & Search Row */}
+          <div className="flex items-center gap-2 w-full">
+            <div className="shrink-0">
               <PWAInstallButton compact />
             </div>
-            <div className="text-center">
-              <h1 className="text-lg md:text-xl font-black text-white tracking-widest uppercase">CHOY CHAT</h1>
+
+            <div className="relative flex-1 min-w-0">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-emerald-300" />
+              <input
+                type="text"
+                placeholder="Search posts, people, chats..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="w-full pl-9 pr-4 py-2 bg-emerald-950 border border-emerald-700/80 rounded-xl text-xs text-white placeholder-emerald-400 focus:outline-none focus:border-amber-300/80 shadow-inner"
+              />
             </div>
+
             <div className="flex items-center gap-1.5 shrink-0">
               <button
                 type="button"
                 onClick={handleShareApp}
-                className="p-2 bg-emerald-900 border border-emerald-700 rounded-lg text-emerald-200 hover:text-white shrink-0"
+                className="p-2 bg-emerald-900 border border-emerald-700 rounded-xl text-emerald-200 hover:text-white hover:border-amber-300/60 transition shrink-0"
                 title={shareCopied ? 'Link Copied!' : 'Share'}
               >
-                <Share2 className="w-3.5 h-3.5" />
+                <Share2 className="w-4 h-4" />
               </button>
               <button
                 type="button"
                 onClick={handleLogout}
-                className="md:hidden p-2 bg-emerald-900 border border-emerald-700 rounded-lg text-red-300 hover:text-white shrink-0"
+                className="md:hidden p-2 bg-emerald-900 border border-emerald-700 rounded-xl text-red-300 hover:text-white shrink-0"
                 title="Logout"
               >
-                <LogOut className="w-3.5 h-3.5" />
+                <LogOut className="w-4 h-4" />
               </button>
             </div>
-          </div>
-
-          <div className="relative w-full max-w-xl mx-auto">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-emerald-300" />
-            <input
-              type="text"
-              placeholder="Search..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full pl-9 pr-4 py-2 bg-emerald-950 border border-emerald-700 rounded-xl text-xs text-white placeholder-emerald-400 focus:outline-none focus:border-emerald-400 shadow-inner"
-            />
           </div>
         </header>
 
@@ -1874,7 +1944,7 @@ export default function App() {
           </div>
         )}
 
-        <div className="flex-1 overflow-y-auto p-4 md:p-6 min-w-0">
+        <div className="flex-1 overflow-y-auto overscroll-y-contain touch-pan-y [-webkit-overflow-scrolling:touch] p-4 pb-28 md:p-6 md:pb-6 min-w-0">
           {/* FEED */}
           {activeTab === 'feed' && (
             <div className="max-w-2xl mx-auto space-y-4">
@@ -1911,7 +1981,14 @@ export default function App() {
                   </button>
                 </div>
 
-                <form onSubmit={handleCreatePost} className="space-y-2">
+                <form onSubmit={handleCreatePost} className="space-y-2.5">
+                  <input
+                    type="file"
+                    ref={postFileInputRef}
+                    accept="image/*,video/*"
+                    className="hidden"
+                    onChange={handlePostFileSelect}
+                  />
                   <textarea
                     rows={2}
                     placeholder="Share an update across all devices..."
@@ -1920,28 +1997,54 @@ export default function App() {
                     className="w-full p-2.5 bg-emerald-950 border border-emerald-700 rounded-xl text-xs text-white focus:outline-none resize-none"
                   ></textarea>
 
-                  <div className="flex flex-wrap justify-between items-center gap-2">
-                    <div className="flex items-center gap-2">
-                      <select
-                        value={newPostType}
-                        onChange={(e) => setNewPostType(e.target.value as 'text' | 'image' | 'video')}
-                        className="p-1 bg-emerald-950 border border-emerald-700 rounded-lg text-xs text-emerald-200"
+                  {newPostMedia && (
+                    <div className="relative rounded-xl overflow-hidden bg-emerald-950 border border-emerald-700 p-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setNewPostMedia('');
+                          setNewPostMediaName('');
+                          setNewPostType('text');
+                        }}
+                        className="absolute top-2.5 right-2.5 z-10 px-2 py-0.5 rounded-lg bg-slate-950/85 border border-red-400/50 text-red-300 hover:text-white text-[11px] font-bold"
+                        title="Remove attachment"
                       >
-                        <option value="image">Picture</option>
-                        <option value="video">Video</option>
-                        <option value="text">Text Only</option>
-                      </select>
-                      <input
-                        type="text"
-                        placeholder="Image or Video URL..."
-                        value={newPostMedia}
-                        onChange={(e) => setNewPostMedia(e.target.value)}
-                        className="p-1.5 bg-emerald-950 border border-emerald-700 rounded-lg text-xs text-white w-48"
-                      />
+                        ✕
+                      </button>
+                      {newPostType === 'image' ? (
+                        <img
+                          src={newPostMedia}
+                          alt="Selected attachment"
+                          className="max-h-56 w-full object-contain rounded-lg bg-slate-950/60"
+                        />
+                      ) : (
+                        <video
+                          src={newPostMedia}
+                          controls
+                          playsInline
+                          className="max-h-56 w-full rounded-lg bg-slate-950"
+                        />
+                      )}
+                      {newPostMediaName && (
+                        <div className="text-[10px] text-emerald-300 mt-1.5 truncate px-1">{newPostMediaName}</div>
+                      )}
                     </div>
+                  )}
+
+                  <div className="flex flex-wrap justify-between items-center gap-2">
+                    <button
+                      type="button"
+                      disabled={isProcessingPostMedia}
+                      onClick={() => postFileInputRef.current?.click()}
+                      className="px-3.5 py-2 rounded-xl bg-emerald-950 border border-emerald-500/60 text-emerald-200 hover:bg-emerald-800 hover:text-white font-bold text-xs flex items-center gap-1.5 transition shadow-sm disabled:opacity-60"
+                    >
+                      <Plus className="w-4 h-4 text-emerald-400" />
+                      <span>{isProcessingPostMedia ? 'Loading...' : 'Add + Image / Video'}</span>
+                    </button>
                     <button
                       type="submit"
-                      className="px-4 py-1.5 bg-emerald-400 text-slate-950 font-bold text-xs rounded-xl"
+                      disabled={isProcessingPostMedia || (!newPostText.trim() && !newPostMedia.trim())}
+                      className="px-4 py-2 bg-emerald-400 hover:bg-emerald-300 text-slate-950 font-bold text-xs rounded-xl shadow disabled:opacity-50"
                     >
                       Publish
                     </button>
@@ -1961,7 +2064,7 @@ export default function App() {
                       <div className="flex justify-between items-center">
                         <div className="flex items-center gap-2 cursor-pointer" onClick={() => setActiveTab('profile')}>
                           <div className="relative">
-                            <img src={p.author.avatar} alt="" className="w-8 h-8 rounded-lg object-cover" />
+                            <img src={p.author.avatar} alt="" className="w-9 h-12 rounded-lg bg-emerald-950 object-contain border border-emerald-500/50" />
                             <span
                               className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 bg-emerald-400 border-2 border-emerald-950 rounded-full"
                               title="Online"
@@ -1972,7 +2075,7 @@ export default function App() {
                             <div className="text-[10px] text-emerald-300">{p.timestamp}</div>
                           </div>
                         </div>
-                        {(p.authorId === firebaseUser.uid || isAdmin) && (
+                        {(p.authorId === currentUser.id || isAdmin) && (
                           <button
                             type="button"
                             onClick={() => handleDeletePost(p.id)}
@@ -1983,9 +2086,28 @@ export default function App() {
                           </button>
                         )}
                       </div>
-                      <p className="text-xs text-slate-100 break-words">{p.content}</p>
+                      {p.content && <p className="text-xs text-slate-100 break-words">{p.content}</p>}
                       {p.mediaUrl && p.mediaType === 'image' && (
-                        <img src={p.mediaUrl} alt="" className="rounded-xl max-h-72 w-full object-cover" />
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setZoomedImage({
+                              src: p.mediaUrl!,
+                              caption: p.content || `${p.author.name} • ${p.timestamp}`
+                            })
+                          }
+                          className="group relative block w-full rounded-xl overflow-hidden bg-emerald-950/70 border border-emerald-700/50 hover:border-emerald-400/80 transition cursor-zoom-in text-left"
+                          title="Tap to zoom in / zoom out"
+                        >
+                          <img
+                            src={p.mediaUrl}
+                            alt={p.content || 'Post image'}
+                            className="max-h-96 w-full object-contain group-hover:scale-[1.01] transition duration-200"
+                          />
+                          <span className="absolute bottom-2 right-2 px-2.5 py-1 rounded-lg bg-slate-950/85 border border-emerald-400/60 text-emerald-200 text-[10px] font-bold flex items-center gap-1 shadow">
+                            <ZoomIn className="w-3 h-3" /> Tap to Zoom
+                          </span>
+                        </button>
                       )}
                       {p.mediaUrl && p.mediaType === 'video' && (
                         <ChatVideoPlayer src={p.mediaUrl} title={p.author.name} subtitle={p.timestamp} />
@@ -2000,66 +2122,54 @@ export default function App() {
           {/* PEOPLE TAB */}
           {activeTab === 'people' && (
             <div className="max-w-xl mx-auto space-y-3">
-              {usersList.length === 0 ? (
-                <div className="bg-emerald-900/60 border border-emerald-700/50 rounded-2xl p-6 text-center text-xs text-emerald-300">
-                  Loading synced community members...
-                </div>
-              ) : (
-                usersList.map((u) => {
-                  const isMe = u.id === firebaseUser.uid;
-                  const isBlocked = blockedUsers.includes(u.name);
-                  return (
-                    <div
-                      key={u.id}
-                      className="bg-emerald-900/60 border border-emerald-700/50 rounded-2xl p-4 flex items-center justify-between gap-2"
-                    >
-                      <div className="flex items-center gap-3 min-w-0">
-                        <div className="relative shrink-0">
-                          <img
-                            src={u.avatar || DEFAULT_AVATAR}
-                            alt=""
-                            className="w-10 h-10 rounded-xl object-cover"
-                          />
-                          <span
-                            className="absolute -bottom-0.5 -right-0.5 w-3 h-3 bg-emerald-400 border-2 border-emerald-950 rounded-full"
-                            title="Online"
-                          ></span>
-                        </div>
-                        <div className="min-w-0">
-                          <div className="text-xs font-bold text-white truncate">
-                            {u.name} {isMe ? '(You)' : ''}
-                          </div>
-                          <div className="text-[10px] text-emerald-300 truncate">{u.status}</div>
-                        </div>
+              {usersList.map((u) => {
+                const isMe = u.id === currentUser.id;
+                const isBlocked = blockedUsers.includes(u.name);
+                return (
+                  <div
+                    key={u.id}
+                    className="bg-emerald-900/60 border border-emerald-700/50 rounded-2xl p-4 flex items-center justify-between gap-2"
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className="relative shrink-0">
+                        <img src={DEFAULT_AVATAR} alt="" className="w-9 h-12 rounded-xl bg-emerald-950 object-contain border border-emerald-500/50" />
+                        <span
+                          className="absolute -bottom-0.5 -right-0.5 w-3 h-3 bg-emerald-400 border-2 border-emerald-950 rounded-full"
+                          title="Online"
+                        ></span>
                       </div>
-                      {!isMe && (
-                        <div className="flex items-center gap-2 shrink-0">
-                          <button
-                            type="button"
-                            onClick={() => handleToggleBlockUser(u.name)}
-                            className={`px-3 py-1.5 rounded-xl text-xs font-bold ${
-                              isBlocked
-                                ? 'bg-red-500 text-white'
-                                : 'bg-red-950 text-red-300 border border-red-700'
-                            }`}
-                          >
-                            {isBlocked ? 'Blocked' : 'Block User'}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setProfile({ ...profile, isFriend: !profile.isFriend })}
-                            className={`px-3 py-1.5 rounded-xl text-xs font-bold ${
-                              profile.isFriend ? 'bg-slate-800 text-slate-300' : 'bg-emerald-400 text-slate-950'
-                            }`}
-                          >
-                            {profile.isFriend ? 'Friends' : 'Add Friend'}
-                          </button>
+                      <div className="min-w-0">
+                        <div className="text-xs font-bold text-white truncate">
+                          {u.name} {isMe ? '(You)' : ''}
                         </div>
-                      )}
+                        <div className="text-[10px] text-emerald-300 truncate">{u.status}</div>
+                      </div>
                     </div>
-                  );
-                })
-              )}
+                    {!isMe && (
+                      <div className="flex items-center gap-2 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => handleToggleBlockUser(u.name)}
+                          className={`px-3 py-1.5 rounded-xl text-xs font-bold ${
+                            isBlocked ? 'bg-red-500 text-white' : 'bg-red-950 text-red-300 border border-red-700'
+                          }`}
+                        >
+                          {isBlocked ? 'Blocked' : 'Block User'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setIsFriend(!isFriend)}
+                          className={`px-3 py-1.5 rounded-xl text-xs font-bold ${
+                            isFriend ? 'bg-slate-800 text-slate-300' : 'bg-emerald-400 text-slate-950'
+                          }`}
+                        >
+                          {isFriend ? 'Friends' : 'Add Friend'}
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           )}
 
@@ -2110,38 +2220,56 @@ export default function App() {
               );
             })()}
 
-          {/* PROFILE */}
+          {/* PROFILE / ACCOUNT (ZOOMED OUT FULL PORTRAIT) */}
           {activeTab === 'profile' && (
-            <div className="max-w-xl mx-auto bg-emerald-900/60 border border-emerald-700/50 rounded-2xl p-5 space-y-4">
-              <div className="flex items-center gap-4">
-                <div className="relative">
+            <div className="max-w-xl mx-auto bg-emerald-900/60 border border-emerald-700/50 rounded-2xl p-5 space-y-5 shadow-lg">
+              <div className="flex flex-col sm:flex-row items-center sm:items-start gap-5">
+                <div className="relative w-full max-w-[240px] aspect-[9/16] max-h-[380px] rounded-2xl bg-emerald-950 border-2 border-emerald-400/80 p-1.5 overflow-hidden shadow-xl shrink-0">
                   <img
-                    src={profile.avatar}
-                    alt=""
-                    className="w-16 h-16 rounded-2xl object-cover border border-emerald-400"
+                    src={DEFAULT_AVATAR}
+                    alt="Account portrait"
+                    className="w-full h-full object-contain rounded-xl"
                   />
                   <span
-                    className="absolute bottom-0 right-0 w-3.5 h-3.5 bg-emerald-400 border-2 border-emerald-950 rounded-full"
+                    className="absolute bottom-3 right-3 w-3.5 h-3.5 bg-emerald-400 border-2 border-emerald-950 rounded-full"
                     title="Online"
                   ></span>
                 </div>
-                <div className="min-w-0">
-                  <div className="text-sm font-bold text-white truncate">{profile.name}</div>
-                  <div className="text-xs text-emerald-300 truncate">{profile.handle}</div>
-                  <div className="mt-1 inline-flex items-center gap-1.5 px-2 py-0.5 rounded-lg bg-emerald-500/20 border border-emerald-400/40 text-[10px] font-bold text-emerald-200">
-                    <Cloud className="w-3 h-3" /> {isAdmin ? 'Admin Cloud Sync Active' : 'Cloud Sync Active'}
+                <div className="min-w-0 flex-1 text-center sm:text-left space-y-2.5 pt-1">
+                  <div>
+                    <div className="text-[10px] uppercase tracking-wider font-bold text-emerald-300">My Account</div>
+                    <div className="text-lg font-black text-white truncate">{currentUser.name}</div>
+                    <div className="text-xs text-emerald-200 font-mono truncate">{currentUser.phone}</div>
+                  </div>
+                  <div className="flex flex-wrap items-center justify-center sm:justify-start gap-2">
+                    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-500/20 border border-emerald-400/40 text-[10px] font-bold text-emerald-200">
+                      <Cloud className="w-3 h-3" />{' '}
+                      {storageMode === 'postgres' ? 'PostgreSQL Cloud Sync Active' : 'Live Server Sync Active'}
+                    </span>
+                    <span className="px-2.5 py-1 rounded-lg bg-indigo-500/20 border border-indigo-400/40 text-[10px] font-bold text-indigo-200 uppercase">
+                      {isAdmin ? 'Admin' : 'Member'}
+                    </span>
+                  </div>
+                  <div className="pt-2">
+                    <button
+                      type="button"
+                      onClick={handleLogout}
+                      className="px-4 py-2 rounded-xl bg-emerald-950 border border-red-500/40 text-red-300 text-xs font-bold hover:bg-red-950/60 inline-flex items-center gap-2"
+                    >
+                      <LogOut className="w-3.5 h-3.5" /> Logout Account
+                    </button>
                   </div>
                 </div>
               </div>
             </div>
           )}
 
-          {/* MESSAGES WITH REAL-TIME CLOUD SYNC & REACTIONS */}
+          {/* MESSAGES WITH REAL-TIME SYNC & REACTIONS */}
           {activeTab === 'messages' && (
-            <div className="max-w-4xl mx-auto grid grid-cols-1 md:grid-cols-3 gap-4 md:h-[560px]">
-              <div className="bg-emerald-900/60 border border-emerald-700/50 rounded-2xl p-3 flex flex-col space-y-2">
-                <div className="text-xs font-bold text-emerald-300 uppercase mb-1">Chats</div>
-                <div className="flex md:flex-col gap-2 overflow-x-auto md:overflow-visible pb-1 md:pb-0">
+            <div className="max-w-4xl mx-auto flex flex-col md:grid md:grid-cols-3 gap-3 md:gap-4 md:h-[580px]">
+              <div className="bg-emerald-900/60 border border-emerald-700/50 rounded-2xl p-3 flex flex-col space-y-2 shrink-0">
+                <div className="text-xs font-bold text-emerald-300 uppercase">Chats</div>
+                <div className="flex md:flex-col gap-2 overflow-x-auto touch-pan-x overscroll-x-contain [-webkit-overflow-scrolling:touch] md:overflow-visible pb-1.5 md:pb-0">
                   {CHAT_ROOMS.map((room) => {
                     const isActive = activeChat === room;
                     return (
@@ -2149,7 +2277,7 @@ export default function App() {
                         key={room}
                         type="button"
                         onClick={() => setActiveChat(room)}
-                        className={`px-3 py-2.5 rounded-xl text-xs flex items-center justify-between gap-2 transition whitespace-nowrap shrink-0 md:w-full text-left ${
+                        className={`px-3.5 py-2.5 rounded-xl text-xs flex items-center justify-between gap-2 transition whitespace-nowrap shrink-0 md:w-full text-left ${
                           isActive
                             ? 'bg-emerald-400 text-slate-950 font-bold shadow'
                             : 'bg-emerald-950 text-emerald-200 hover:bg-emerald-800'
@@ -2166,26 +2294,28 @@ export default function App() {
                 </div>
               </div>
 
-              <div className="md:col-span-2 bg-emerald-900/60 border border-emerald-700/50 rounded-2xl flex flex-col overflow-hidden min-h-[380px]">
-                {/* Responsive Chat Header */}
-                <div className="p-3 border-b border-emerald-800 space-y-2 text-xs font-bold text-white">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="md:col-span-2 bg-emerald-900/60 border border-emerald-700/50 rounded-2xl flex flex-col min-h-[430px] md:min-h-0 md:h-full overflow-hidden">
+                {/* Responsive Swipeable Chat Header */}
+                <div className="p-3 border-b border-emerald-800 space-y-2 text-xs font-bold text-white shrink-0">
+                  <div className="flex items-center justify-between gap-2">
                     <span className="text-sm font-black text-white truncate">{activeChat}</span>
-                    <div className="flex flex-wrap items-center gap-1.5">
+                    <div className="flex items-center gap-1.5 overflow-x-auto touch-pan-x overscroll-x-contain [-webkit-overflow-scrolling:touch] max-w-[68%] sm:max-w-none pb-0.5">
                       <button
                         type="button"
                         onClick={() => {
-                          const targetUser = activeChat === 'VIP Group' ? 'Admin' : activeChat;
+                          const targetUser = activeChat === 'VIP Group' ? 'Choy Admin' : activeChat;
                           handleToggleBlockUser(targetUser);
                         }}
-                        className={`px-2.5 py-1.5 rounded-lg text-[11px] font-bold shrink-0 ${
-                          blockedUsers.includes(activeChat === 'VIP Group' ? 'Admin' : activeChat)
+                        className={`px-2.5 py-1.5 rounded-lg text-[11px] font-bold shrink-0 whitespace-nowrap ${
+                          blockedUsers.includes(activeChat === 'VIP Group' ? 'Choy Admin' : activeChat)
                             ? 'bg-red-500 text-white'
                             : 'bg-red-950 text-red-300 border border-red-700'
                         }`}
                         title="Block / Unblock User"
                       >
-                        {blockedUsers.includes(activeChat === 'VIP Group' ? 'Admin' : activeChat) ? 'Unblock' : 'Block'}
+                        {blockedUsers.includes(activeChat === 'VIP Group' ? 'Choy Admin' : activeChat)
+                          ? 'Unblock'
+                          : 'Block'}
                       </button>
                       <button
                         type="button"
@@ -2195,7 +2325,7 @@ export default function App() {
                           setSelectedGalleryVideo(null);
                           setIsMediaGalleryOpen(true);
                         }}
-                        className="px-2.5 py-1.5 bg-cyan-500/20 border border-cyan-400/50 text-cyan-200 rounded-lg flex items-center gap-1 shadow shrink-0 hover:bg-cyan-400 hover:text-slate-950 text-[11px] transition"
+                        className="px-2.5 py-1.5 bg-cyan-500/20 border border-cyan-400/50 text-cyan-200 rounded-lg flex items-center gap-1 shadow shrink-0 whitespace-nowrap hover:bg-cyan-400 hover:text-slate-950 text-[11px] transition"
                         title="Shared Chat Videos (with Sound)"
                       >
                         <Video className="w-3.5 h-3.5" /> Videos
@@ -2208,7 +2338,7 @@ export default function App() {
                           setSelectedGalleryVideo(null);
                           setIsMediaGalleryOpen(true);
                         }}
-                        className="px-2.5 py-1.5 bg-emerald-900 border border-emerald-700 text-emerald-200 rounded-lg flex items-center gap-1 shadow shrink-0 hover:text-white text-[11px]"
+                        className="px-2.5 py-1.5 bg-emerald-900 border border-emerald-700 text-emerald-200 rounded-lg flex items-center gap-1 shadow shrink-0 whitespace-nowrap hover:text-white text-[11px]"
                         title="Shared Media Gallery"
                       >
                         <ImageIcon className="w-3.5 h-3.5" /> Gallery
@@ -2216,7 +2346,7 @@ export default function App() {
                       <button
                         type="button"
                         onClick={() => setIsInVideoCall(true)}
-                        className="px-2.5 py-1.5 bg-emerald-400 text-slate-950 rounded-lg flex items-center gap-1 shadow shrink-0 text-[11px]"
+                        className="px-2.5 py-1.5 bg-emerald-400 text-slate-950 rounded-lg flex items-center gap-1 shadow shrink-0 whitespace-nowrap text-[11px]"
                       >
                         <PhoneCall className="w-3.5 h-3.5" /> Call
                       </button>
@@ -2234,7 +2364,7 @@ export default function App() {
                   </div>
                 </div>
 
-                <div className="flex-1 overflow-y-auto p-3 space-y-3 min-h-[220px] max-h-[45vh] md:max-h-none">
+                <div className="flex-1 overflow-y-auto overscroll-y-auto touch-pan-y [-webkit-overflow-scrolling:touch] p-3 space-y-3 min-h-[240px] max-h-[55dvh] md:max-h-none">
                   {messages
                     .filter((m) => m.receiver === activeChat)
                     .filter((m) => !blockedUsers.includes(m.sender))
@@ -2246,7 +2376,19 @@ export default function App() {
                         </div>
                         <div className="p-3 rounded-2xl text-xs bg-emerald-950 text-slate-100 space-y-2 max-w-[85%]">
                           {m.mediaType === 'image' && m.mediaUrl && (
-                            <img src={m.mediaUrl} alt="" className="max-h-40 rounded" />
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setZoomedImage({
+                                  src: m.mediaUrl!,
+                                  caption: m.text || `${m.sender} • ${m.time}`
+                                })
+                              }
+                              className="block rounded overflow-hidden cursor-zoom-in"
+                              title="Tap to zoom"
+                            >
+                              <img src={m.mediaUrl} alt="" className="max-h-40 rounded object-contain" />
+                            </button>
                           )}
                           {m.mediaType === 'video' && m.mediaUrl && <ChatVideoPlayer src={m.mediaUrl} compact />}
                           {m.mediaType === 'audio' && m.mediaUrl && (
@@ -2257,7 +2399,6 @@ export default function App() {
                           )}
                           {m.text && <div className="break-words">{m.text}</div>}
 
-                          {/* Display Reactions */}
                           {m.reactions && m.reactions.length > 0 && (
                             <div className="flex flex-wrap gap-1 pt-1">
                               {m.reactions.map((emoji, rIdx) => (
@@ -2272,7 +2413,6 @@ export default function App() {
                           )}
                         </div>
 
-                        {/* Reaction Buttons Toolbar */}
                         <div className="flex items-center gap-1 mt-1 px-1">
                           {(['❤️', '👍', '🔥', '😄'] as const).map((emoji) => (
                             <button
@@ -2360,7 +2500,27 @@ export default function App() {
                     </div>
                   )}
 
-                  {msgMediaUrl && msgMediaType !== 'image' && (
+                  {msgMediaUrl && msgMediaType === 'audio' && (
+                    <div className="flex items-center gap-2 p-2 bg-emerald-900/80 rounded-xl text-xs border border-emerald-700">
+                      <span className="text-emerald-300 font-bold text-[11px] shrink-0 flex items-center gap-1">
+                        <Mic className="w-3.5 h-3.5 text-emerald-400" /> Voice
+                      </span>
+                      <audio src={msgMediaUrl} controls className="h-8 flex-1 min-w-0" />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setMsgMediaUrl('');
+                          setMsgMediaType('text');
+                        }}
+                        className="text-red-300 hover:text-red-100 font-bold px-1.5 shrink-0"
+                        title="Discard voice snippet"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  )}
+
+                  {msgMediaUrl && msgMediaType !== 'image' && msgMediaType !== 'audio' && (
                     <div className="flex items-center justify-between p-2 bg-emerald-900/80 rounded-xl text-xs border border-emerald-700">
                       <span className="text-emerald-200 truncate">📎 Attached {msgMediaType.toUpperCase()}</span>
                       <button
@@ -2376,47 +2536,95 @@ export default function App() {
                     </div>
                   )}
 
-                  <form onSubmit={handleSendMessage} className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => msgFileInputRef.current?.click()}
-                      className="p-2.5 rounded-xl bg-emerald-900 border border-emerald-700 text-emerald-300 hover:text-white hover:bg-emerald-800 transition shrink-0"
-                      title="Upload local picture, video, audio or file"
-                    >
-                      <Plus className="w-4 h-4" />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setShowMsgLinkInput(!showMsgLinkInput)}
-                      className={`p-2.5 rounded-xl border transition shrink-0 ${
-                        showMsgLinkInput
-                          ? 'bg-cyan-400 text-slate-950 border-cyan-300'
-                          : 'bg-emerald-900 border-emerald-700 text-cyan-300 hover:text-white hover:bg-emerald-800'
-                      }`}
-                      title="Attach synced Video/Image URL"
-                    >
-                      <Link2 className="w-4 h-4" />
-                    </button>
-                    <input
-                      type="text"
-                      placeholder={`Message ${activeChat}...`}
-                      value={msgInput}
-                      onChange={(e) => setMsgInput(e.target.value)}
-                      className="flex-1 min-w-0 p-2.5 bg-emerald-900 border border-emerald-700 rounded-xl text-xs text-white placeholder-emerald-400 focus:outline-none"
-                    />
-                    <button
-                      type="submit"
-                      className="px-4 py-2.5 bg-emerald-400 text-slate-950 font-bold text-xs rounded-xl shadow hover:bg-emerald-300 transition shrink-0"
-                    >
-                      Send
-                    </button>
-                  </form>
+                  {isRecordingAudio ? (
+                    <div className="flex flex-wrap items-center justify-between gap-2 p-2.5 bg-red-950/70 border border-red-500/60 rounded-xl text-xs">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className="w-2.5 h-2.5 rounded-full bg-red-500 animate-pulse shrink-0"></span>
+                        <span className="font-bold text-red-100 whitespace-nowrap">Recording Voice</span>
+                        <span className="font-mono text-red-200 bg-red-900/80 px-2 py-0.5 rounded-md">
+                          {formatRecordingTime(recordingSeconds)}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => stopAudioRecording('cancel')}
+                          className="px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-700 text-slate-300 hover:text-white font-semibold flex items-center gap-1"
+                          title="Cancel recording"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" /> Cancel
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => stopAudioRecording('attach')}
+                          className="px-2.5 py-1.5 rounded-lg bg-amber-400 text-slate-950 font-bold hover:bg-amber-300 flex items-center gap-1"
+                          title="Stop and preview before sending"
+                        >
+                          <Square className="w-3 h-3 fill-current" /> Preview
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => stopAudioRecording('send')}
+                          className="px-3 py-1.5 rounded-lg bg-emerald-400 text-slate-950 font-bold hover:bg-emerald-300 flex items-center gap-1 shadow"
+                          title="Stop and send voice snippet now"
+                        >
+                          <Send className="w-3.5 h-3.5" /> Send
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <form onSubmit={handleSendMessage} className="flex items-center gap-1.5 sm:gap-2">
+                      <button
+                        type="button"
+                        onClick={() => msgFileInputRef.current?.click()}
+                        className="p-2.5 rounded-xl bg-emerald-900 border border-emerald-700 text-emerald-300 hover:text-white hover:bg-emerald-800 transition shrink-0"
+                        title="Upload local picture, video, audio or file"
+                      >
+                        <Plus className="w-4 h-4" />
+                      </button>
+                      <button
+                        type="button"
+                        disabled={isProcessingAudio}
+                        onClick={startAudioRecording}
+                        className="p-2.5 rounded-xl bg-emerald-900 border border-emerald-700 text-emerald-300 hover:text-white hover:bg-emerald-800 transition shrink-0 disabled:opacity-50"
+                        title="Record voice message"
+                      >
+                        <Mic className="w-4 h-4" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setShowMsgLinkInput(!showMsgLinkInput)}
+                        className={`p-2.5 rounded-xl border transition shrink-0 ${
+                          showMsgLinkInput
+                            ? 'bg-cyan-400 text-slate-950 border-cyan-300'
+                            : 'bg-emerald-900 border-emerald-700 text-cyan-300 hover:text-white hover:bg-emerald-800'
+                        }`}
+                        title="Attach synced Video/Image URL"
+                      >
+                        <Link2 className="w-4 h-4" />
+                      </button>
+                      <input
+                        type="text"
+                        placeholder={isProcessingAudio ? 'Preparing voice clip...' : `Message ${activeChat}...`}
+                        value={msgInput}
+                        onChange={(e) => setMsgInput(e.target.value)}
+                        className="flex-1 min-w-0 p-2.5 bg-emerald-900 border border-emerald-700 rounded-xl text-xs text-white placeholder-emerald-400 focus:outline-none"
+                      />
+                      <button
+                        type="submit"
+                        disabled={isProcessingAudio}
+                        className="px-3.5 sm:px-4 py-2.5 bg-emerald-400 text-slate-950 font-bold text-xs rounded-xl shadow hover:bg-emerald-300 transition shrink-0 disabled:opacity-50"
+                      >
+                        Send
+                      </button>
+                    </form>
+                  )}
                 </div>
               </div>
             </div>
           )}
 
-          {/* MILESTONE SPREADSHEET LEDGER (ADMIN ONLY, REAL-TIME CLOUD SYNCED) */}
+          {/* MILESTONE SPREADSHEET LEDGER (ADMIN ONLY) */}
           {activeTab === 'ledger' && isAdmin && (
             <div className="max-w-6xl mx-auto space-y-4">
               <div className="flex flex-wrap justify-between items-center gap-2 bg-emerald-900/60 border border-emerald-700/50 rounded-2xl p-4 shadow">
@@ -2454,7 +2662,6 @@ export default function App() {
                 </form>
               </div>
 
-              {/* Spreadsheet Table */}
               <div className="bg-emerald-900/60 border border-emerald-700/50 rounded-2xl overflow-hidden shadow">
                 <div className="max-h-[60vh] overflow-auto">
                   <table className="w-full text-left border-collapse text-xs whitespace-nowrap">
@@ -2647,7 +2854,7 @@ export default function App() {
           {activeTab === 'admin_approvals' && isAdmin && (
             <div className="max-w-4xl mx-auto space-y-4">
               <div className="bg-emerald-900/60 border border-emerald-700/50 rounded-2xl p-5 space-y-4">
-                <h3 className="text-sm font-bold text-white">User Accounts Approval & Cloud Sync Monitor</h3>
+                <h3 className="text-sm font-bold text-white">User Accounts Approval & Sync Monitor</h3>
                 <div className="space-y-2">
                   {usersList.map((u) => (
                     <div
@@ -2655,7 +2862,9 @@ export default function App() {
                       className="p-3 bg-emerald-950 border border-emerald-800 rounded-xl flex items-center justify-between text-xs gap-2"
                     >
                       <div className="min-w-0">
-                        <div className="font-bold text-white truncate">{u.name}</div>
+                        <div className="font-bold text-white truncate">
+                          {u.name} ({u.phone})
+                        </div>
                         <div className="text-[10px] text-emerald-300">Last Synced: {u.loginDate}</div>
                       </div>
                       <div className="flex items-center gap-2 shrink-0">
@@ -2686,7 +2895,7 @@ export default function App() {
           {activeTab === 'admin_knowledge' && isAdmin && (
             <div className="max-w-4xl mx-auto space-y-4">
               <div className="bg-emerald-900/60 border border-emerald-700/50 rounded-2xl p-5 space-y-4">
-                <h3 className="text-sm font-bold text-white">Choy AI Brain Knowledge Box (Cloud Synced Q & A)</h3>
+                <h3 className="text-sm font-bold text-white">Choy AI Brain Knowledge Box (Synced Q & A)</h3>
                 <form onSubmit={handleAddKnowledge} className="space-y-2 text-xs">
                   <input
                     type="text"
@@ -2735,7 +2944,7 @@ export default function App() {
           {activeTab === 'admin_prices' && isAdmin && (
             <div className="max-w-xl mx-auto space-y-4">
               <div className="bg-emerald-900/60 border border-emerald-700/50 rounded-2xl p-5 space-y-4 text-xs">
-                <h3 className="text-sm font-bold text-white">Set Unit Prices (Cloud Synced)</h3>
+                <h3 className="text-sm font-bold text-white">Set Unit Prices (Synced)</h3>
                 <div className="space-y-3">
                   <div>
                     <label className="block text-emerald-300 mb-1">5H Unit Price</label>
@@ -2787,7 +2996,7 @@ export default function App() {
                     onClick={handleSaveUnitPrices}
                     className="w-full py-2.5 bg-emerald-400 text-slate-950 font-bold rounded-xl shadow mt-2"
                   >
-                    {pricesSavedMsg ? 'Unit Prices Synced to Cloud!' : 'Save Unit Prices'}
+                    {pricesSavedMsg ? 'Unit Prices Synced!' : 'Save Unit Prices'}
                   </button>
                 </div>
               </div>
@@ -2864,10 +3073,12 @@ export default function App() {
             <SecurityStudio
               usersList={usersList}
               setUsersList={setUsersList}
-              onAddUser={(name) => handleAddCloudUser(name)}
+              onAddUser={(name, phone) => handleAddCloudUser(name, phone)}
               onToggleUserStatus={handleToggleUserStatus}
               onDeleteUser={handleDeleteCloudUser}
               isCloudSynced
+              storageMode={storageMode}
+              authToken={authToken}
               blockedUsers={blockedUsers}
               postsCount={posts.length}
               mediaPostsCount={posts.filter((p) => Boolean(p.mediaUrl)).length}
@@ -2917,15 +3128,15 @@ export default function App() {
       </div>
 
       {/* FLOATING CHOY AI POPUP WIDGET */}
-      <div className="fixed bottom-24 right-4 md:bottom-6 md:right-6 z-40">
+      <div className="fixed bottom-16 right-3 md:bottom-6 md:right-6 z-40">
         {!isChoyAIPopupOpen && (
           <button
             type="button"
             onClick={() => setIsChoyAIPopupOpen(true)}
-            className="w-12 h-12 md:w-14 md:h-14 bg-emerald-950 border-2 border-cyan-400 rounded-full shadow-2xl flex items-center justify-center font-bold hover:scale-105 overflow-hidden transition"
+            className="w-12 h-14 md:w-14 md:h-16 bg-emerald-950 border-2 border-cyan-400 rounded-2xl shadow-2xl flex items-center justify-center font-bold hover:scale-105 overflow-hidden p-0.5 transition"
             title="Ask Choy AI"
           >
-            <img src={DEFAULT_AVATAR} alt="" className="w-full h-full object-cover" />
+            <img src={DEFAULT_AVATAR} alt="" className="w-full h-full object-contain rounded-xl" />
           </button>
         )}
 
@@ -2936,7 +3147,7 @@ export default function App() {
                 <img
                   src={DEFAULT_AVATAR}
                   alt=""
-                  className="w-5 h-5 rounded object-cover border border-cyan-400"
+                  className="w-5 h-6 rounded bg-emerald-950 object-contain border border-cyan-400"
                 />{' '}
                 Choy AI Assistant
               </div>
@@ -2999,6 +3210,14 @@ export default function App() {
           </div>
         )}
       </div>
+
+      {zoomedImage && (
+        <ImageZoomModal
+          src={zoomedImage.src}
+          caption={zoomedImage.caption}
+          onClose={() => setZoomedImage(null)}
+        />
+      )}
 
       <OfflineIndicator />
     </div>

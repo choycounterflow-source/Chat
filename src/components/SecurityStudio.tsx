@@ -42,6 +42,8 @@ interface SecurityStudioProps {
   onToggleUserStatus?: (user: SecurityUserAccount) => Promise<void> | void;
   onDeleteUser?: (userId: string) => Promise<void> | void;
   isCloudSynced?: boolean;
+  storageMode?: 'postgres' | 'memory';
+  authToken?: string | null;
   blockedUsers: string[];
   postsCount: number;
   mediaPostsCount: number;
@@ -56,23 +58,26 @@ const DEFAULT_LINKS = {
   aiStudioChat: 'https://aistudio.google.com/apps',
   renderDashboard: 'https://dashboard.render.com',
   renderLiveApp: 'https://chat-1-5b9f.onrender.com',
-  renderNewDeploy: 'https://dashboard.render.com/select-repo?type=web',
+  renderNewPostgres: 'https://dashboard.render.com/new/database',
+  supabaseDashboard: 'https://supabase.com/dashboard',
   googleOneStorage: 'https://one.google.com/storage',
 };
 
 const STORAGE_KEYS = {
-  mainKeys: 'choychat_admin_simple_keys_v1',
+  mainKeys: 'choychat_admin_simple_keys_v2',
   customKeys: 'choychat_admin_custom_kv_v1',
-  links: 'choychat_admin_render_links_v1',
+  links: 'choychat_admin_render_links_v2',
   storageProfile: 'choychat_admin_storage_v1',
 };
 
 interface MainKeysConfig {
+  DATABASE_URL: string;
+  ADMIN_PHONE: string;
+  ADMIN_PIN: string;
   APP_URL: string;
   GEMINI_API_KEY: string;
   SUPABASE_URL: string;
   SUPABASE_ANON_KEY: string;
-  SUPABASE_SERVICE_ROLE_KEY: string;
   SUPABASE_BUCKET: string;
 }
 
@@ -81,7 +86,24 @@ const AUTO_DOCKER_DEFAULTS = [
   'PORT=10000',
   'HOST=0.0.0.0',
   'DISABLE_HMR=true',
+  'APP_NAME=Choy Chat',
+  'APP_VERSION=2.5.0',
+  'STORAGE_PROVIDER=Google One 5TB',
+  'STORAGE_QUOTA_GB=5120',
+  'PWA_THEME_COLOR=#022c22',
+  'CACHE_MODE=lightweight-auto',
 ];
+
+const KNOWN_KEY_DEFAULTS: MainKeysConfig = {
+  DATABASE_URL: '',
+  ADMIN_PHONE: '09361223978',
+  ADMIN_PIN: '',
+  APP_URL: 'https://chat-1-5b9f.onrender.com',
+  GEMINI_API_KEY: '',
+  SUPABASE_URL: '',
+  SUPABASE_ANON_KEY: '',
+  SUPABASE_BUCKET: 'choychat-media',
+};
 
 export const SecurityStudio: React.FC<SecurityStudioProps> = ({
   usersList,
@@ -90,6 +112,8 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
   onToggleUserStatus,
   onDeleteUser,
   isCloudSynced = false,
+  storageMode = 'memory',
+  authToken = null,
   blockedUsers,
   postsCount,
   mediaPostsCount,
@@ -111,24 +135,26 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
   const [editingLinks, setEditingLinks] = useState(false);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
 
-  // 2. Simple Unified Keys (Exact checklist of variables to fill up)
+  // 2. Simple Unified Keys (Pre-filled with safe known values)
   const [mainKeys, setMainKeys] = useState<MainKeysConfig>(() => {
-    const defaults: MainKeysConfig = {
-      APP_URL: 'https://chat-1-5b9f.onrender.com',
-      GEMINI_API_KEY: '',
-      SUPABASE_URL: '',
-      SUPABASE_ANON_KEY: '',
-      SUPABASE_SERVICE_ROLE_KEY: '',
-      SUPABASE_BUCKET: 'choychat-media',
-    };
     try {
       const saved = localStorage.getItem(STORAGE_KEYS.mainKeys);
-      if (saved) return { ...defaults, ...JSON.parse(saved) };
+      if (saved) {
+        const parsed = JSON.parse(saved) as Partial<MainKeysConfig>;
+        return {
+          ...KNOWN_KEY_DEFAULTS,
+          ...parsed,
+          ADMIN_PHONE: parsed.ADMIN_PHONE?.trim() || KNOWN_KEY_DEFAULTS.ADMIN_PHONE,
+          APP_URL: parsed.APP_URL?.trim() || KNOWN_KEY_DEFAULTS.APP_URL,
+          SUPABASE_BUCKET: parsed.SUPABASE_BUCKET?.trim() || KNOWN_KEY_DEFAULTS.SUPABASE_BUCKET,
+        };
+      }
     } catch {
       // ignore
     }
-    return defaults;
+    return { ...KNOWN_KEY_DEFAULTS };
   });
+  const [serverConfigured, setServerConfigured] = useState<Record<string, boolean>>({});
   const [revealedFields, setRevealedFields] = useState<Record<string, boolean>>({});
   const [customPairs, setCustomPairs] = useState<KeyValueItem[]>(() => {
     try {
@@ -200,6 +226,47 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
   useEffect(() => {
     refreshStorageStats();
   }, []);
+
+  useEffect(() => {
+    if (!authToken) return;
+    let cancelled = false;
+    fetch('/api/admin/env-status', {
+      headers: { Authorization: `Bearer ${authToken}` },
+    })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (cancelled || !data) return;
+        if (data.configured && typeof data.configured === 'object') {
+          setServerConfigured(data.configured);
+        }
+        if (data.defaults && typeof data.defaults === 'object') {
+          setMainKeys((prev) => ({
+            ...prev,
+            APP_URL: prev.APP_URL.trim() || data.defaults.APP_URL || KNOWN_KEY_DEFAULTS.APP_URL,
+            ADMIN_PHONE: prev.ADMIN_PHONE.trim() || data.defaults.ADMIN_PHONE || KNOWN_KEY_DEFAULTS.ADMIN_PHONE,
+            SUPABASE_URL: prev.SUPABASE_URL.trim() || data.defaults.SUPABASE_URL || '',
+            SUPABASE_BUCKET: prev.SUPABASE_BUCKET.trim() || data.defaults.SUPABASE_BUCKET || KNOWN_KEY_DEFAULTS.SUPABASE_BUCKET,
+          }));
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [authToken]);
+
+  const handleAutoFillKnownDefaults = () => {
+    const filled: MainKeysConfig = {
+      ...mainKeys,
+      ADMIN_PHONE: mainKeys.ADMIN_PHONE.trim() || KNOWN_KEY_DEFAULTS.ADMIN_PHONE,
+      APP_URL: mainKeys.APP_URL.trim() || KNOWN_KEY_DEFAULTS.APP_URL,
+      SUPABASE_BUCKET: mainKeys.SUPABASE_BUCKET.trim() || KNOWN_KEY_DEFAULTS.SUPABASE_BUCKET,
+    };
+    setMainKeys(filled);
+    localStorage.setItem(STORAGE_KEYS.mainKeys, JSON.stringify(filled));
+    setKeysSavedMsg('Auto-filled na tanan safe default values! Private secrets lang (DATABASE_URL, ADMIN_PIN, GEMINI_API_KEY) ang ikaw ra ang makabutang.');
+    setTimeout(() => setKeysSavedMsg(''), 4000);
+  };
 
   const handleCopy = (label: string, text: string) => {
     navigator.clipboard?.writeText(text).catch(() => {});
@@ -324,6 +391,28 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
     getLink?: { label: string; url: string };
   }[] = [
     {
+      id: 'DATABASE_URL',
+      label: 'Render or Supabase PostgreSQL URL (Importante!)',
+      hint: 'I-paste imong Render Postgres Internal URL o Supabase Postgres URI para permanenteng ma-sync sa tanan device',
+      secret: true,
+      placeholder: 'postgresql://user:pass@host:5432/dbname',
+      getLink: { label: 'Create Render Postgres', url: 'https://dashboard.render.com/new/database' },
+    },
+    {
+      id: 'ADMIN_PHONE',
+      label: 'Admin Login Phone (Optional Override)',
+      hint: 'Imong Admin phone number sa login (optional — pwede ra pud i-setup diretso sa first login)',
+      secret: false,
+      placeholder: '09361223978',
+    },
+    {
+      id: 'ADMIN_PIN',
+      label: 'Admin Login PIN (Optional Override)',
+      hint: 'Imong secret Admin PIN (i-paste sa Render Environment para permanenteng naka-lock)',
+      secret: true,
+      placeholder: 'Enter secret PIN...',
+    },
+    {
       id: 'APP_URL',
       label: 'Live App URL',
       hint: 'Naka-fill up na (imong Render link)',
@@ -332,7 +421,7 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
     },
     {
       id: 'GEMINI_API_KEY',
-      label: 'Gemini API Key',
+      label: 'Gemini API Key (Optional)',
       hint: 'Para sa AI features — pindota ang "Get Key" para makuha libre sa AI Studio',
       secret: true,
       placeholder: 'AIza...',
@@ -340,30 +429,23 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
     },
     {
       id: 'SUPABASE_URL',
-      label: 'Supabase Project URL',
-      hint: 'Kuhaa sa Supabase -> Project Settings -> API',
+      label: 'Supabase Project URL (Optional)',
+      hint: 'Kung Supabase ang gamiton — kuhaa sa Supabase -> Project Settings -> API',
       secret: false,
       placeholder: 'https://xxxx.supabase.co',
       getLink: { label: 'Open Supabase', url: 'https://supabase.com/dashboard' },
     },
     {
       id: 'SUPABASE_ANON_KEY',
-      label: 'Supabase Anon Key',
+      label: 'Supabase Anon Key (Optional)',
       hint: 'Public anon key gikan sa Supabase -> API',
       secret: true,
       placeholder: 'eyJ...',
     },
     {
-      id: 'SUPABASE_SERVICE_ROLE_KEY',
-      label: 'Supabase Secret Key',
-      hint: 'Service role / secret key (Admin only)',
-      secret: true,
-      placeholder: 'sbp_... / eyJ...',
-    },
-    {
       id: 'SUPABASE_BUCKET',
       label: 'Supabase Storage Bucket',
-      hint: 'Naka-fill up na (bucket name para sa images/videos)',
+      hint: 'Bucket name kung mag-store og files sa Supabase',
       secret: false,
       placeholder: 'choychat-media',
     },
@@ -378,15 +460,23 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
             <ShieldCheck className="w-5 h-5" />
           </div>
           <div>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <h2 className="text-base font-black text-white uppercase tracking-wide">Security Studio</h2>
               {isCloudSynced && (
-                <span className="px-2 py-0.5 rounded-md bg-emerald-500/20 border border-emerald-400/50 text-emerald-300 text-[10px] font-bold">
-                  Cloud Sync Active
+                <span
+                  className={`px-2 py-0.5 rounded-md border text-[10px] font-bold ${
+                    storageMode === 'postgres'
+                      ? 'bg-emerald-500/20 border-emerald-400/50 text-emerald-300'
+                      : 'bg-amber-500/20 border-amber-400/50 text-amber-200'
+                  }`}
+                >
+                  {storageMode === 'postgres'
+                    ? 'PostgreSQL Cloud Sync Active'
+                    : 'Live Server Sync (Add DATABASE_URL in Render for Permanent DB)'}
                 </span>
               )}
             </div>
-            <p className="text-[11px] text-emerald-300">Simple Admin Hub — Render Docker, AI Studio, Keys, Storage & Cache</p>
+            <p className="text-[11px] text-emerald-300">Simple Admin Hub — Render Postgres, Supabase, Keys, Storage & Cache</p>
           </div>
         </div>
         <button
@@ -455,12 +545,20 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
               btnColor: 'bg-indigo-500 text-white hover:bg-indigo-400',
             },
             {
-              key: 'renderNewDeploy',
-              title: 'Deploy / Sync to Render',
-              subtitle: 'Pilia imong GitHub repo + Docker',
-              url: adminLinks.renderNewDeploy,
+              key: 'renderNewPostgres',
+              title: 'Create Free Render Postgres DB',
+              subtitle: '1-click Free PostgreSQL database para sa Render (copy Internal URL -> DATABASE_URL)',
+              url: adminLinks.renderNewPostgres,
               icon: <ExternalLink className="w-4 h-4 text-amber-300" />,
               btnColor: 'bg-amber-400 text-slate-950 hover:bg-amber-300',
+            },
+            {
+              key: 'supabaseDashboard',
+              title: 'Supabase Dashboard (Alternative)',
+              subtitle: 'Pwede pud Supabase Postgres URI isip DATABASE_URL',
+              url: adminLinks.supabaseDashboard,
+              icon: <ShieldCheck className="w-4 h-4 text-emerald-300" />,
+              btnColor: 'bg-emerald-500 text-slate-950 hover:bg-emerald-400',
             },
           ].map((item) => (
             <div key={item.key} className="p-3.5 rounded-xl bg-emerald-950 border border-emerald-800 space-y-2.5 flex flex-col justify-between">
@@ -554,6 +652,7 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
           {keyFields.map((field) => {
             const isHidden = field.secret && !revealedFields[field.id];
             const hasVal = mainKeys[field.id].trim().length > 0;
+            const isLiveOnServer = Boolean(serverConfigured[field.id]);
             return (
               <div key={field.id} className="p-3 bg-emerald-950 border border-emerald-800 rounded-xl space-y-1.5">
                 <div className="flex flex-wrap items-center justify-between gap-2">
@@ -564,10 +663,14 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
                     <span className="font-bold text-white">{field.label}</span>
                     <span
                       className={`px-1.5 py-0.5 rounded text-[9px] font-bold uppercase ${
-                        hasVal ? 'bg-emerald-500/20 text-emerald-300' : 'bg-amber-500/20 text-amber-300'
+                        isLiveOnServer
+                          ? 'bg-cyan-500/20 text-cyan-300'
+                          : hasVal
+                          ? 'bg-emerald-500/20 text-emerald-300'
+                          : 'bg-amber-500/20 text-amber-300'
                       }`}
                     >
-                      {hasVal ? 'Ready' : 'To Fill'}
+                      {isLiveOnServer ? 'Active on Server ✓' : hasVal ? 'Filled ✓' : 'Paste Key'}
                     </span>
                   </div>
                   {field.getLink && (
@@ -628,12 +731,21 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
           )}
 
           <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
-            <button
-              type="submit"
-              className="px-5 py-2.5 bg-emerald-400 hover:bg-emerald-300 text-slate-950 font-bold rounded-xl shadow flex items-center gap-1.5"
-            >
-              <Save className="w-3.5 h-3.5" /> Save Keys
-            </button>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="submit"
+                className="px-5 py-2.5 bg-emerald-400 hover:bg-emerald-300 text-slate-950 font-bold rounded-xl shadow flex items-center gap-1.5"
+              >
+                <Save className="w-3.5 h-3.5" /> Save Keys
+              </button>
+              <button
+                type="button"
+                onClick={handleAutoFillKnownDefaults}
+                className="px-3.5 py-2.5 bg-cyan-500/20 border border-cyan-400/50 text-cyan-200 hover:bg-cyan-400 hover:text-slate-950 font-bold rounded-xl transition flex items-center gap-1.5"
+              >
+                <Sparkles className="w-3.5 h-3.5" /> Auto-Fill Defaults
+              </button>
+            </div>
             <div className="flex items-center gap-2">
               <button
                 type="button"
