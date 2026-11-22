@@ -356,6 +356,15 @@ export default function App() {
 
   const [activeChat, setActiveChat] = useState<string>('VIP Group');
   const [activeChatMobileView, setActiveChatMobileView] = useState(false);
+  const [pinnedChatRooms, setPinnedChatRooms] = useState<string[]>([]);
+
+  useEffect(() => {
+    if (!activeChat) return;
+    setPinnedChatRooms((prev) => {
+      const filtered = prev.filter((r) => r.toLowerCase() !== activeChat.toLowerCase());
+      return [activeChat, ...filtered];
+    });
+  }, [activeChat]);
   const [galleryFilter, setGalleryFilter] = useState<'all' | 'image' | 'video' | 'audio'>('all');
   const [galleryScope, setGalleryScope] = useState<'chat' | 'all'>('chat');
   const [selectedGalleryVideo, setSelectedGalleryVideo] = useState<Message | null>(null);
@@ -1253,6 +1262,7 @@ export default function App() {
 
     addRoom('VIP Group', true);
     if (activeChat) addRoom(activeChat, true);
+    pinnedChatRooms.forEach((r) => addRoom(r, true));
     usersList.forEach((u) => addRoom(u.name));
     CHAT_ROOMS.forEach((r) => addRoom(r));
     messages.forEach((m) => {
