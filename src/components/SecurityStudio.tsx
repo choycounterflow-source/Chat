@@ -31,7 +31,10 @@ import {
   Layers,
   Share2,
   Link2,
-  Pin
+  Pin,
+  FileText,
+  Folder,
+  Code2
 } from 'lucide-react';
 import {
   type EmojiLinkItem,
@@ -80,7 +83,52 @@ interface SecurityStudioProps {
   emojiLinks?: EmojiLinkItem[];
   onEmojiLinksChanged?: (links: EmojiLinkItem[]) => void;
   defaultAppIcon?: string;
+  syncTick?: number;
 }
+
+interface StudioNoteEntry {
+  id: string;
+  rawText: string;
+  createdAt: string;
+}
+
+interface StudioNoteFile {
+  id: string;
+  title: string;
+  category: string;
+  entries: StudioNoteEntry[];
+  organizedPrompt: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface EnvVaultEntry {
+  id: string;
+  category: string;
+  keyName: string;
+  value: string;
+  secret: boolean;
+  notes?: string;
+  updatedAt: string;
+}
+
+const NOTE_CATEGORIES = [
+  'App Features',
+  'Messaging & Chat',
+  'UI / Design',
+  'Security Studio',
+  'Backend & Database',
+  'Bug Fixes',
+] as const;
+
+const ENV_CATEGORIES = [
+  'Database',
+  'Supabase Storage',
+  'AI & Gemini',
+  'Auth & App URL',
+  'Render & Docker',
+  'Code & Custom',
+] as const;
 
 const DEFAULT_LINKS = {
   aiStudioChat: 'https://aistudio.google.com/apps',
@@ -155,6 +203,7 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
   emojiLinks: propEmojiLinks,
   onEmojiLinksChanged,
   defaultAppIcon = '/assets/aistudio/image_20261121_145253_f477cbfa.webp',
+  syncTick = 0,
 }) => {
   // 1. Direct Admin Links
   const [adminLinks, setAdminLinks] = useState(() => {
@@ -266,6 +315,393 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
   const [pinSavedMsg, setPinSavedMsg] = useState('');
   const [isFingerprinting, setIsFingerprinting] = useState(false);
   const [expandedToolId, setExpandedToolId] = useState<string | null>(null);
+
+  // 9. Type Notes (Feature Planner & Auto-Summarise File Builder)
+  const [showTypeNotesPanel, setShowTypeNotesPanel] = useState(true);
+  const [studioNotes, setStudioNotes] = useState<StudioNoteFile[]>([]);
+  const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
+  const [showNewNoteFileForm, setShowNewNoteFileForm] = useState(false);
+  const [newNoteFileTitle, setNewNoteFileTitle] = useState('');
+  const [newNoteFileCategory, setNewNoteFileCategory] = useState<string>('App Features');
+  const [newNoteFileInitialText, setNewNoteFileInitialText] = useState('');
+  const [appendNoteDraft, setAppendNoteDraft] = useState('');
+  const [autoSummarizeOnSave, setAutoSummarizeOnSave] = useState(true);
+  const [promptEditDraft, setPromptEditDraft] = useState('');
+  const [isNoteSaving, setIsNoteSaving] = useState(false);
+  const [noteStatusMsg, setNoteStatusMsg] = useState('');
+  const [noteErrorMsg, setNoteErrorMsg] = useState('');
+
+  // 10. Categorized .env & All Code Config Vault (Auto-Synced)
+  const [envVaultEntries, setEnvVaultEntries] = useState<EnvVaultEntry[]>([]);
+  const [activeEnvCategory, setActiveEnvCategory] = useState<string>('All');
+  const [envVaultKeyName, setEnvVaultKeyName] = useState('');
+  const [envVaultCategory, setEnvVaultCategory] = useState<string>('Database');
+  const [envVaultValue, setEnvVaultValue] = useState('');
+  const [envVaultNotes, setEnvVaultNotes] = useState('');
+  const [envVaultSecret, setEnvVaultSecret] = useState(false);
+  const [revealedEnvIds, setRevealedEnvIds] = useState<Record<string, boolean>>({});
+  const [isSyncingEnvVault, setIsSyncingEnvVault] = useState(false);
+  const [envVaultStatusMsg, setEnvVaultStatusMsg] = useState('');
+
+  useEffect(() => {
+    if (!authToken) return;
+    let cancelled = false;
+    fetch('/api/admin/studio-notes', {
+      headers: { Authorization: `Bearer ${authToken}` },
+      cache: 'no-store',
+    })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (cancelled || !data || !Array.isArray(data.notes)) return;
+        setStudioNotes(data.notes);
+        setSelectedNoteId((prev) => {
+          if (prev && data.notes.some((n: StudioNoteFile) => n.id === prev)) return prev;
+          return data.notes[0]?.id || null;
+        });
+      })
+      .catch(() => {});
+
+    fetch('/api/admin/env-vault', {
+      headers: { Authorization: `Bearer ${authToken}` },
+      cache: 'no-store',
+    })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (cancelled || !data || !Array.isArray(data.entries)) return;
+        setEnvVaultEntries(data.entries);
+      })
+      .catch(() => {});
+
+    return () => {
+      cancelled = true;
+    };
+  }, [authToken, syncTick]);
+
+  const selectedNoteFile = studioNotes.find((n) => n.id === selectedNoteId) || null;
+
+  useEffect(() => {
+    setPromptEditDraft(selectedNoteFile?.organizedPrompt || '');
+  }, [selectedNoteFile?.id, selectedNoteFile?.organizedPrompt]);
+
+  const handleCreateNoteFile = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!authToken || !newNoteFileTitle.trim()) return;
+    setIsNoteSaving(true);
+    setNoteErrorMsg('');
+    setNoteStatusMsg('');
+    try {
+      const res = await fetch('/api/admin/studio-notes', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`,
+        },
+        body: JSON.stringify({
+          title: newNoteFileTitle.trim(),
+          category: newNoteFileCategory,
+          initialText: newNoteFileInitialText.trim(),
+          autoSummarize: autoSummarizeOnSave,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setNoteErrorMsg(data.error || 'Could not create note file');
+        return;
+      }
+      if (Array.isArray(data.notes)) {
+        setStudioNotes(data.notes);
+      }
+      if (data.note?.id) {
+        setSelectedNoteId(data.note.id);
+        setPromptEditDraft(data.note.organizedPrompt || '');
+      }
+      setNewNoteFileTitle('');
+      setNewNoteFileInitialText('');
+      setShowNewNoteFileForm(false);
+      setNoteStatusMsg(
+        data.usedAi
+          ? 'Note file created, AI auto-summarised & synced!'
+          : 'Note file created, organized & synced!'
+      );
+      setTimeout(() => setNoteStatusMsg(''), 4000);
+    } catch (err) {
+      setNoteErrorMsg(err instanceof Error ? err.message : 'Failed to create note file');
+    } finally {
+      setIsNoteSaving(false);
+    }
+  };
+
+  const handleAppendNoteEntry = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!authToken || !selectedNoteFile) return;
+    const text = appendNoteDraft.trim();
+    if (!text) return;
+    setIsNoteSaving(true);
+    setNoteErrorMsg('');
+    setNoteStatusMsg('');
+    try {
+      const res = await fetch(`/api/admin/studio-notes/${encodeURIComponent(selectedNoteFile.id)}/append`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`,
+        },
+        body: JSON.stringify({
+          rawText: text,
+          autoSummarize: autoSummarizeOnSave,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setNoteErrorMsg(data.error || 'Failed to add & connect note');
+        return;
+      }
+      if (Array.isArray(data.notes)) {
+        setStudioNotes(data.notes);
+      }
+      if (data.note) {
+        setPromptEditDraft(data.note.organizedPrompt || '');
+      }
+      setAppendNoteDraft('');
+      setNoteStatusMsg(
+        data.usedAi
+          ? 'Connected to note file, AI auto-summarised & saved!'
+          : 'Connected to existing note file, organized & saved!'
+      );
+      setTimeout(() => setNoteStatusMsg(''), 4500);
+    } catch (err) {
+      setNoteErrorMsg(err instanceof Error ? err.message : 'Failed to save note');
+    } finally {
+      setIsNoteSaving(false);
+    }
+  };
+
+  const handleSavePromptManual = async (reSummarize = false) => {
+    if (!authToken || !selectedNoteFile) return;
+    setIsNoteSaving(true);
+    setNoteErrorMsg('');
+    setNoteStatusMsg('');
+    try {
+      const res = await fetch(`/api/admin/studio-notes/${encodeURIComponent(selectedNoteFile.id)}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`,
+        },
+        body: JSON.stringify({
+          organizedPrompt: promptEditDraft,
+          reSummarize,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setNoteErrorMsg(data.error || 'Failed to save changes');
+        return;
+      }
+      if (Array.isArray(data.notes)) {
+        setStudioNotes(data.notes);
+      }
+      if (data.note) {
+        setPromptEditDraft(data.note.organizedPrompt || '');
+      }
+      setNoteStatusMsg(
+        reSummarize
+          ? data.usedAi
+            ? 'Re-summarised with AI & saved!'
+            : 'Re-organized all connected notes & saved!'
+          : 'Saved! Prompt & notes safely synced.'
+      );
+      setTimeout(() => setNoteStatusMsg(''), 3500);
+    } catch {
+      setNoteErrorMsg('Could not save note file.');
+    } finally {
+      setIsNoteSaving(false);
+    }
+  };
+
+  const handleDeleteNoteEntry = async (entryId: string) => {
+    if (!authToken || !selectedNoteFile) return;
+    const nextEntries = selectedNoteFile.entries.filter((item) => item.id !== entryId);
+    setIsNoteSaving(true);
+    try {
+      const res = await fetch(`/api/admin/studio-notes/${encodeURIComponent(selectedNoteFile.id)}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`,
+        },
+        body: JSON.stringify({
+          entries: nextEntries,
+          reSummarize: autoSummarizeOnSave,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok && Array.isArray(data.notes)) {
+        setStudioNotes(data.notes);
+        if (data.note) setPromptEditDraft(data.note.organizedPrompt || '');
+        setNoteStatusMsg('Entry removed & file updated.');
+        setTimeout(() => setNoteStatusMsg(''), 2500);
+      }
+    } finally {
+      setIsNoteSaving(false);
+    }
+  };
+
+  const handleDeleteNoteFile = async (id: string) => {
+    if (!authToken) return;
+    try {
+      const res = await fetch(`/api/admin/studio-notes/${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      const data = await res.json();
+      if (res.ok && Array.isArray(data.notes)) {
+        setStudioNotes(data.notes);
+        if (selectedNoteId === id) {
+          setSelectedNoteId(data.notes[0]?.id || null);
+        }
+      }
+    } catch {
+      // ignore
+    }
+  };
+
+  const handleDownloadNoteFile = () => {
+    if (!selectedNoteFile) return;
+    const content = [
+      `# ${selectedNoteFile.title} [${selectedNoteFile.category}]`,
+      `Updated: ${new Date(selectedNoteFile.updatedAt).toLocaleString()}`,
+      '',
+      '## Ready-to-Paste AI Studio Prompt',
+      promptEditDraft || selectedNoteFile.organizedPrompt,
+      '',
+      '## Connected Raw Notes',
+      ...selectedNoteFile.entries.map((e, i) => `${i + 1}. (${new Date(e.createdAt).toLocaleString()}) ${e.rawText}`),
+    ].join('\n');
+    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${selectedNoteFile.title.toLowerCase().replace(/[^a-z0-9]+/g, '_') || 'studio_notes'}.txt`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  const handleSaveCategorizedEnvEntry = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!authToken || !envVaultKeyName.trim()) return;
+    setIsSyncingEnvVault(true);
+    try {
+      const res = await fetch('/api/admin/env-vault', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`,
+        },
+        body: JSON.stringify({
+          category: envVaultCategory,
+          keyName: envVaultKeyName.trim(),
+          value: envVaultValue,
+          secret: envVaultSecret,
+          notes: envVaultNotes.trim(),
+        }),
+      });
+      const data = await res.json();
+      if (res.ok && Array.isArray(data.entries)) {
+        setEnvVaultEntries(data.entries);
+        setEnvVaultKeyName('');
+        setEnvVaultValue('');
+        setEnvVaultNotes('');
+        setEnvVaultSecret(false);
+        setEnvVaultStatusMsg(`Saved "${data.entry?.keyName}" under [${envVaultCategory}] & Auto-Synced!`);
+        setTimeout(() => setEnvVaultStatusMsg(''), 3500);
+      }
+    } finally {
+      setIsSyncingEnvVault(false);
+    }
+  };
+
+  const handleSyncAllMainKeysToEnvVault = async () => {
+    if (!authToken) return;
+    setIsSyncingEnvVault(true);
+    try {
+      const payloadEntries = [
+        { id: 'ev_database_url', category: 'Database', keyName: 'DATABASE_URL', value: mainKeys.DATABASE_URL.trim(), secret: true, notes: 'PostgreSQL cloud connection string' },
+        { id: 'ev_supabase_url', category: 'Supabase Storage', keyName: 'SUPABASE_URL', value: mainKeys.SUPABASE_URL.trim(), secret: false, notes: 'Supabase project endpoint' },
+        { id: 'ev_supabase_anon', category: 'Supabase Storage', keyName: 'SUPABASE_ANON_KEY', value: mainKeys.SUPABASE_ANON_KEY.trim(), secret: true, notes: 'Supabase anon key' },
+        { id: 'ev_supabase_bucket', category: 'Supabase Storage', keyName: 'SUPABASE_BUCKET', value: mainKeys.SUPABASE_BUCKET.trim() || 'choychat-media', secret: false, notes: 'Media storage bucket' },
+        { id: 'ev_gemini_api_key', category: 'AI & Gemini', keyName: 'GEMINI_API_KEY', value: mainKeys.GEMINI_API_KEY.trim(), secret: true, notes: 'Google AI Studio Gemini key' },
+        { id: 'ev_app_url', category: 'Auth & App URL', keyName: 'APP_URL', value: mainKeys.APP_URL.trim(), secret: false, notes: 'Live website URL' },
+        { id: 'ev_admin_phone', category: 'Auth & App URL', keyName: 'ADMIN_PHONE', value: mainKeys.ADMIN_PHONE.trim(), secret: false, notes: 'Admin account phone' },
+        { id: 'ev_admin_pin', category: 'Auth & App URL', keyName: 'ADMIN_PIN', value: mainKeys.ADMIN_PIN.trim(), secret: true, notes: 'Admin login PIN' },
+        ...customPairs.map((kv) => ({
+          id: `ev_custom_${kv.id}`,
+          category: 'Code & Custom',
+          keyName: kv.key,
+          value: kv.value,
+          secret: Boolean(kv.secret),
+          notes: 'Synced custom key',
+        })),
+      ].filter((item) => item.value.length > 0);
+
+      const res = await fetch('/api/admin/env-vault/sync-all', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`,
+        },
+        body: JSON.stringify({ entries: payloadEntries }),
+      });
+      const data = await res.json();
+      if (res.ok && Array.isArray(data.entries)) {
+        setEnvVaultEntries(data.entries);
+        setEnvVaultStatusMsg(`All ${payloadEntries.length} categorized .env keys auto-synced to cloud vault!`);
+        setTimeout(() => setEnvVaultStatusMsg(''), 4000);
+      }
+    } finally {
+      setIsSyncingEnvVault(false);
+    }
+  };
+
+  const handleDeleteCategorizedEnvEntry = async (id: string) => {
+    if (!authToken) return;
+    const res = await fetch(`/api/admin/env-vault/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${authToken}` },
+    });
+    const data = await res.json();
+    if (res.ok && Array.isArray(data.entries)) {
+      setEnvVaultEntries(data.entries);
+      setEnvVaultStatusMsg('Removed entry & synced.');
+      setTimeout(() => setEnvVaultStatusMsg(''), 2500);
+    }
+  };
+
+  const handleCopyEnvVaultCategory = (category: string) => {
+    const filtered =
+      category === 'All'
+        ? envVaultEntries
+        : envVaultEntries.filter((e) => e.category === category);
+    const lines: string[] = [];
+    const grouped = new Map<string, EnvVaultEntry[]>();
+    filtered.forEach((entry) => {
+      const list = grouped.get(entry.category) || [];
+      list.push(entry);
+      grouped.set(entry.category, list);
+    });
+    grouped.forEach((list, cat) => {
+      lines.push(`# === ${cat} ===`);
+      list.forEach((item) => {
+        lines.push(`${item.keyName}=${item.value}`);
+      });
+      lines.push('');
+    });
+    handleCopy(`env_cat_${category}`, lines.join('\n').trim());
+    setEnvVaultStatusMsg(`Copied [${category}] .env block to clipboard!`);
+    setTimeout(() => setEnvVaultStatusMsg(''), 3000);
+  };
 
   // 8. Live Website Emoji Link & App Icon Image Generator (Auto Push/Sync)
   const [emojiLinksList, setEmojiLinksList] = useState<EmojiLinkItem[]>(propEmojiLinks || []);
@@ -937,6 +1373,23 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
         <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
+            onClick={() => {
+              setShowTypeNotesPanel((prev) => !prev);
+              setTimeout(() => {
+                document.getElementById('studio-type-notes')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+              }, 60);
+            }}
+            className={`px-3.5 py-2 rounded-xl font-bold flex items-center gap-1.5 shadow transition border ${
+              showTypeNotesPanel
+                ? 'bg-emerald-400 text-slate-950 border-emerald-300'
+                : 'bg-emerald-500/20 border-emerald-400/50 text-emerald-900 dark:text-emerald-200 hover:bg-emerald-500/30'
+            }`}
+          >
+            <FileText className="w-3.5 h-3.5" />
+            <span>Type Notes ({studioNotes.length})</span>
+          </button>
+          <button
+            type="button"
             onClick={() => setShowSetPinModal(true)}
             className="px-3.5 py-2 rounded-xl bg-indigo-600/20 border border-indigo-400/40 text-indigo-800 dark:text-indigo-200 font-bold hover:bg-indigo-600/30 flex items-center gap-1.5 shadow transition"
           >
@@ -1006,6 +1459,322 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
         <div className="px-4 py-2.5 rounded-xl bg-emerald-500/20 border border-emerald-400/50 text-emerald-200 flex items-center justify-between">
           <span>{cacheStatus}</span>
           <button type="button" onClick={() => setCacheStatus('')} className="text-emerald-700 dark:text-emerald-300 hover:text-emerald-950 dark:hover:text-white font-bold">✕</button>
+        </div>
+      )}
+
+      {/* TYPE NOTES: AI FEATURE PLANNER & AUTO-SUMMARISE NOTEBOOK */}
+      {showTypeNotesPanel && (
+        <div
+          id="studio-type-notes"
+          className="bg-white dark:bg-emerald-900/65 border-2 border-emerald-400/70 dark:border-emerald-400/50 rounded-2xl p-5 space-y-4 shadow-lg"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <FileText className="w-4 h-4 text-emerald-600 dark:text-emerald-300" />
+              <div>
+                <h3 className="text-sm font-black text-emerald-950 dark:text-white">
+                  Type Notes — App Update Planner &amp; AI Prompt Builder
+                </h3>
+                <p className="text-[11px] text-emerald-700 dark:text-emerald-300">
+                  Create a note file, type rough update ideas, auto-summarise &amp; connect new notes onto earlier ones, save cleanly, and copy-paste straight to AI Studio.
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setShowNewNoteFileForm((prev) => !prev)}
+                className="px-3 py-1.5 rounded-xl bg-emerald-400 hover:bg-emerald-300 text-slate-950 font-black text-[11px] inline-flex items-center gap-1 shadow"
+              >
+                <Plus className="w-3.5 h-3.5" /> Create Note File
+              </button>
+            </div>
+          </div>
+
+          {noteStatusMsg && (
+            <div className="px-3 py-2 rounded-xl bg-emerald-500/20 border border-emerald-400/50 text-emerald-950 dark:text-emerald-100 font-bold text-[11px]">
+              {noteStatusMsg}
+            </div>
+          )}
+          {noteErrorMsg && (
+            <div className="px-3 py-2 rounded-xl bg-rose-500/15 border border-rose-400/50 text-rose-700 dark:text-rose-200 font-bold text-[11px]">
+              {noteErrorMsg}
+            </div>
+          )}
+
+          {showNewNoteFileForm && (
+            <form
+              onSubmit={handleCreateNoteFile}
+              className="p-4 rounded-xl bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 space-y-3"
+            >
+              <div className="text-xs font-black text-emerald-950 dark:text-white flex items-center gap-1.5">
+                <Folder className="w-3.5 h-3.5 text-amber-500" />
+                <span>Create New Feature Note File</span>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                <input
+                  type="text"
+                  required
+                  placeholder="File Name (e.g. Choy Chat v3 Updates)..."
+                  value={newNoteFileTitle}
+                  onChange={(e) => setNewNoteFileTitle(e.target.value)}
+                  className="p-2.5 bg-white dark:bg-slate-950 border border-emerald-300 dark:border-emerald-700 rounded-xl text-xs text-emerald-950 dark:text-white"
+                />
+                <select
+                  value={newNoteFileCategory}
+                  onChange={(e) => setNewNoteFileCategory(e.target.value)}
+                  className="p-2.5 bg-white dark:bg-slate-950 border border-emerald-300 dark:border-emerald-700 rounded-xl text-xs text-emerald-950 dark:text-white"
+                >
+                  {NOTE_CATEGORIES.map((cat) => (
+                    <option key={cat} value={cat}>
+                      {cat}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <textarea
+                rows={3}
+                placeholder="Type your first app update idea here (optional — Bisaya, Tagalog, or English)..."
+                value={newNoteFileInitialText}
+                onChange={(e) => setNewNoteFileInitialText(e.target.value)}
+                className="w-full p-2.5 bg-white dark:bg-slate-950 border border-emerald-300 dark:border-emerald-700 rounded-xl text-xs text-emerald-950 dark:text-white resize-y"
+              />
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <label className="inline-flex items-center gap-2 text-[11px] font-semibold text-emerald-900 dark:text-emerald-200 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={autoSummarizeOnSave}
+                    onChange={(e) => setAutoSummarizeOnSave(e.target.checked)}
+                    className="w-4 h-4 accent-emerald-500 rounded"
+                  />
+                  <span>Auto-Summarise &amp; Organise for AI Studio</span>
+                </label>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowNewNoteFileForm(false)}
+                    className="px-3 py-2 rounded-xl bg-white dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 text-emerald-900 dark:text-white font-bold text-[11px]"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isNoteSaving}
+                    className="px-4 py-2 rounded-xl bg-emerald-400 hover:bg-emerald-300 text-slate-950 font-black text-[11px] inline-flex items-center gap-1.5 shadow disabled:opacity-60"
+                  >
+                    <Save className="w-3.5 h-3.5" />
+                    <span>{isNoteSaving ? 'Creating...' : 'Create & Save File'}</span>
+                  </button>
+                </div>
+              </div>
+            </form>
+          )}
+
+          {/* Note Files List + Active Note File Editor */}
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+            {/* Sidebar: Note Files */}
+            <div className="space-y-2">
+              <div className="text-[10px] font-bold uppercase tracking-wider text-emerald-700 dark:text-emerald-300">
+                Saved Note Files ({studioNotes.length})
+              </div>
+              {studioNotes.length === 0 ? (
+                <div className="p-4 rounded-xl bg-emerald-50 dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-800 text-center space-y-2 text-[11px] text-emerald-700 dark:text-emerald-300">
+                  <div>No note files created yet.</div>
+                  <button
+                    type="button"
+                    onClick={() => setShowNewNoteFileForm(true)}
+                    className="px-3 py-1.5 rounded-lg bg-emerald-400 text-slate-950 font-bold text-[11px]"
+                  >
+                    + Create First Note File
+                  </button>
+                </div>
+              ) : (
+                <div className="space-y-1.5 max-h-[420px] overflow-y-auto pr-1">
+                  {studioNotes.map((file) => {
+                    const active = file.id === selectedNoteId;
+                    return (
+                      <div
+                        key={file.id}
+                        className={`p-2.5 rounded-xl border transition flex items-start justify-between gap-2 ${
+                          active
+                            ? 'bg-emerald-200/80 dark:bg-emerald-800 border-emerald-500 dark:border-amber-400 shadow'
+                            : 'bg-emerald-50 dark:bg-emerald-950 border-emerald-200 dark:border-emerald-800 hover:border-emerald-400'
+                        }`}
+                      >
+                        <button
+                          type="button"
+                          onClick={() => setSelectedNoteId(file.id)}
+                          className="min-w-0 flex-1 text-left space-y-0.5"
+                        >
+                          <div className="text-xs font-black text-emerald-950 dark:text-white truncate">{file.title}</div>
+                          <div className="flex flex-wrap items-center gap-1.5 text-[10px]">
+                            <span className="px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-900 dark:text-emerald-200 font-bold">
+                              {file.category}
+                            </span>
+                            <span className="text-emerald-700 dark:text-emerald-300">
+                              {file.entries.length} note{file.entries.length === 1 ? '' : 's'}
+                            </span>
+                          </div>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteNoteFile(file.id)}
+                          className="p-1 rounded-lg text-rose-600 dark:text-rose-400 hover:bg-rose-500/15 shrink-0"
+                          title="Delete Note File"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* Main Note File Connector & Auto-Summary Area */}
+            <div className="lg:col-span-2 space-y-3">
+              {!selectedNoteFile ? (
+                <div className="p-6 rounded-2xl bg-emerald-50 dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-800 text-center text-xs text-emerald-700 dark:text-emerald-300">
+                  Select a saved note file on the left or tap <span className="font-bold">Create Note File</span> to start organizing your app feature ideas for AI Studio.
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {/* Add & Connect New Update Message + Save Button right beside it */}
+                  <form
+                    onSubmit={handleAppendNoteEntry}
+                    className="p-3.5 rounded-xl bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 space-y-2.5"
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="text-xs font-black text-emerald-950 dark:text-white">
+                        Add New Message / Feature to "{selectedNoteFile.title}"
+                      </span>
+                      <label className="inline-flex items-center gap-1.5 text-[10px] font-bold text-emerald-800 dark:text-emerald-200 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={autoSummarizeOnSave}
+                          onChange={(e) => setAutoSummarizeOnSave(e.target.checked)}
+                          className="w-3.5 h-3.5 accent-emerald-500 rounded"
+                        />
+                        <span>Auto-Summarise &amp; Connect</span>
+                      </label>
+                    </div>
+                    <div className="flex flex-col sm:flex-row gap-2 items-stretch">
+                      <textarea
+                        rows={2}
+                        placeholder="Type a new feature update here... It automatically connects to your saved notes in this file!"
+                        value={appendNoteDraft}
+                        onChange={(e) => setAppendNoteDraft(e.target.value)}
+                        className="flex-1 p-2.5 bg-white dark:bg-slate-950 border border-emerald-300 dark:border-emerald-700 rounded-xl text-xs text-emerald-950 dark:text-white resize-y"
+                      />
+                      <button
+                        type="submit"
+                        disabled={isNoteSaving || !appendNoteDraft.trim()}
+                        className="px-4 py-2.5 rounded-xl bg-emerald-400 hover:bg-emerald-300 text-slate-950 font-black text-xs inline-flex items-center justify-center gap-1.5 shadow disabled:opacity-50 shrink-0"
+                      >
+                        <Save className="w-3.5 h-3.5" />
+                        <span>{isNoteSaving ? 'Saving...' : 'Save & Connect'}</span>
+                      </button>
+                    </div>
+                  </form>
+
+                  {/* Ready-to-Paste AI Studio Organised Prompt + Save / Copy beside it */}
+                  <div className="p-3.5 rounded-xl bg-emerald-50/90 dark:bg-emerald-950 border border-amber-400/60 dark:border-amber-400/50 space-y-2">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="text-xs font-black text-emerald-950 dark:text-amber-300 flex items-center gap-1.5">
+                        <Sparkles className="w-3.5 h-3.5 text-amber-500 dark:text-amber-300" />
+                        <span>Organised AI Studio Prompt (Ready to Copy &amp; Paste)</span>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <button
+                          type="button"
+                          disabled={isNoteSaving}
+                          onClick={() => handleSavePromptManual(false)}
+                          className="px-2.5 py-1.5 rounded-lg bg-emerald-400 hover:bg-emerald-300 text-slate-950 font-black text-[10px] inline-flex items-center gap-1 shadow disabled:opacity-60"
+                          title="Save edits so nothing is lost"
+                        >
+                          <Save className="w-3 h-3" /> Save
+                        </button>
+                        <button
+                          type="button"
+                          disabled={isNoteSaving || selectedNoteFile.entries.length === 0}
+                          onClick={() => handleSavePromptManual(true)}
+                          className="px-2.5 py-1.5 rounded-lg bg-amber-400 hover:bg-amber-300 text-slate-950 font-black text-[10px] inline-flex items-center gap-1 disabled:opacity-60"
+                          title="Auto-summarise & re-organise all connected notes"
+                        >
+                          <Sparkles className="w-3 h-3" /> Auto-Summarise
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            handleCopy(`note_prompt_${selectedNoteFile.id}`, promptEditDraft);
+                            setNoteStatusMsg('Copied organised prompt! Ready to paste in AI Studio.');
+                            setTimeout(() => setNoteStatusMsg(''), 3000);
+                          }}
+                          className="px-2.5 py-1.5 rounded-lg bg-cyan-400 hover:bg-cyan-300 text-slate-950 font-black text-[10px] inline-flex items-center gap-1 shadow"
+                        >
+                          {copiedKey === `note_prompt_${selectedNoteFile.id}` ? (
+                            <Check className="w-3 h-3" />
+                          ) : (
+                            <Copy className="w-3 h-3" />
+                          )}
+                          <span>{copiedKey === `note_prompt_${selectedNoteFile.id}` ? 'Copied!' : 'Copy for AI Studio'}</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleDownloadNoteFile}
+                          className="px-2.5 py-1.5 rounded-lg bg-white dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 text-emerald-950 dark:text-white font-bold text-[10px] inline-flex items-center gap-1"
+                        >
+                          <Download className="w-3 h-3" /> .txt
+                        </button>
+                      </div>
+                    </div>
+
+                    <textarea
+                      rows={8}
+                      value={promptEditDraft}
+                      onChange={(e) => setPromptEditDraft(e.target.value)}
+                      placeholder="Your summarised & organised prompt appears here. You can also edit it and tap Save."
+                      className="w-full p-3 bg-white dark:bg-slate-950 border border-emerald-300 dark:border-emerald-800 rounded-xl text-xs font-mono text-emerald-950 dark:text-emerald-100 leading-relaxed resize-y"
+                    />
+                  </div>
+
+                  {/* Connected Raw Notes History */}
+                  {selectedNoteFile.entries.length > 0 && (
+                    <div className="space-y-1.5">
+                      <div className="text-[10px] font-bold uppercase tracking-wider text-emerald-700 dark:text-emerald-300">
+                        Connected Notes in This File ({selectedNoteFile.entries.length})
+                      </div>
+                      <div className="space-y-1.5 max-h-40 overflow-y-auto pr-1">
+                        {selectedNoteFile.entries.map((entry, idx) => (
+                          <div
+                            key={entry.id}
+                            className="p-2.5 rounded-xl bg-emerald-50 dark:bg-emerald-950/70 border border-emerald-200 dark:border-emerald-800 flex items-start justify-between gap-2 text-[11px]"
+                          >
+                            <div className="min-w-0 flex-1 space-y-0.5">
+                              <div className="text-[10px] font-bold text-emerald-700 dark:text-amber-300">
+                                Note #{idx + 1} · {new Date(entry.createdAt).toLocaleString()}
+                              </div>
+                              <div className="text-emerald-950 dark:text-slate-100 whitespace-pre-wrap break-words">
+                                {entry.rawText}
+                              </div>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteNoteEntry(entry.id)}
+                              className="p-1 rounded text-rose-500 hover:bg-rose-500/15 shrink-0"
+                              title="Remove note entry"
+                            >
+                              <Trash2 className="w-3 h-3" />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
         </div>
       )}
 
@@ -1622,6 +2391,214 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
             <pre className="text-[11px] font-mono text-emerald-800 dark:text-slate-300">{AUTO_DOCKER_DEFAULTS.join('\n')}</pre>
           </div>
         )}
+
+        {/* Categorized .env & All Code Config Vault (Auto-Synced) */}
+        <div className="pt-4 border-t border-emerald-200 dark:border-emerald-800 space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <Code2 className="w-4 h-4 text-cyan-600 dark:text-cyan-300" />
+              <div>
+                <div className="text-xs font-black text-emerald-950 dark:text-white flex items-center gap-2">
+                  <span>Categorized .env &amp; All Code Config Vault</span>
+                  <span className="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-800 dark:text-emerald-300 font-mono text-[9px] font-bold">
+                    Auto-Synced ✓
+                  </span>
+                </div>
+                <p className="text-[10px] text-emerald-700 dark:text-emerald-300">
+                  Organise your .env variables and code/config entries by category with automatic cross-device sync.
+                </p>
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-1.5">
+              <button
+                type="button"
+                disabled={isSyncingEnvVault}
+                onClick={handleSyncAllMainKeysToEnvVault}
+                className="px-3 py-1.5 rounded-xl bg-cyan-400 hover:bg-cyan-300 text-slate-950 font-black text-[11px] inline-flex items-center gap-1 shadow disabled:opacity-60"
+              >
+                <RefreshCw className={`w-3 h-3 ${isSyncingEnvVault ? 'animate-spin' : ''}`} />
+                <span>Sync Keys to Cloud Vault</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => handleCopyEnvVaultCategory(activeEnvCategory)}
+                className="px-3 py-1.5 rounded-xl bg-emerald-400 hover:bg-emerald-300 text-slate-950 font-black text-[11px] inline-flex items-center gap-1 shadow"
+              >
+                {copiedKey === `env_cat_${activeEnvCategory}` ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+                <span>Copy {activeEnvCategory} .env</span>
+              </button>
+            </div>
+          </div>
+
+          {envVaultStatusMsg && (
+            <div className="px-3 py-2 rounded-xl bg-emerald-500/20 border border-emerald-400/50 text-emerald-950 dark:text-emerald-100 font-bold text-[11px]">
+              {envVaultStatusMsg}
+            </div>
+          )}
+
+          {/* Category Filter Pills */}
+          <div className="flex flex-wrap gap-1.5">
+            {(['All', ...ENV_CATEGORIES] as const).map((cat) => {
+              const count =
+                cat === 'All'
+                  ? envVaultEntries.length
+                  : envVaultEntries.filter((e) => e.category === cat).length;
+              const active = activeEnvCategory === cat;
+              return (
+                <button
+                  key={cat}
+                  type="button"
+                  onClick={() => setActiveEnvCategory(cat)}
+                  className={`px-2.5 py-1 rounded-lg text-[10px] font-bold border transition ${
+                    active
+                      ? 'bg-emerald-400 text-slate-950 border-emerald-400 shadow'
+                      : 'bg-emerald-50 dark:bg-emerald-950 border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-200 hover:border-emerald-400'
+                  }`}
+                >
+                  {cat} ({count})
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Add Categorized .env / Code Config Entry */}
+          <form
+            onSubmit={handleSaveCategorizedEnvEntry}
+            className="p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 space-y-2"
+          >
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+              <select
+                value={envVaultCategory}
+                onChange={(e) => setEnvVaultCategory(e.target.value)}
+                className="p-2 bg-white dark:bg-slate-950 border border-emerald-300 dark:border-emerald-700 rounded-lg text-[11px] text-emerald-950 dark:text-white"
+              >
+                {ENV_CATEGORIES.map((cat) => (
+                  <option key={cat} value={cat}>
+                    {cat}
+                  </option>
+                ))}
+              </select>
+              <input
+                type="text"
+                required
+                placeholder="KEY_NAME or File Label..."
+                value={envVaultKeyName}
+                onChange={(e) => setEnvVaultKeyName(e.target.value)}
+                className="p-2 bg-white dark:bg-slate-950 border border-emerald-300 dark:border-emerald-700 rounded-lg text-[11px] font-mono text-emerald-950 dark:text-white"
+              />
+              <input
+                type="text"
+                placeholder="Short note (optional)..."
+                value={envVaultNotes}
+                onChange={(e) => setEnvVaultNotes(e.target.value)}
+                className="p-2 bg-white dark:bg-slate-950 border border-emerald-300 dark:border-emerald-700 rounded-lg text-[11px] text-emerald-950 dark:text-white"
+              />
+            </div>
+            <div className="flex flex-col sm:flex-row gap-2 items-stretch">
+              <textarea
+                rows={2}
+                required
+                placeholder="Paste .env value or code/config snippet..."
+                value={envVaultValue}
+                onChange={(e) => setEnvVaultValue(e.target.value)}
+                className="flex-1 p-2 bg-white dark:bg-slate-950 border border-emerald-300 dark:border-emerald-700 rounded-lg text-[11px] font-mono text-emerald-950 dark:text-white"
+              />
+              <div className="flex sm:flex-col justify-between gap-2 shrink-0">
+                <label className="inline-flex items-center gap-1.5 text-[10px] font-bold text-emerald-900 dark:text-emerald-200 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={envVaultSecret}
+                    onChange={(e) => setEnvVaultSecret(e.target.checked)}
+                    className="w-3.5 h-3.5 accent-amber-500 rounded"
+                  />
+                  <span>Secret</span>
+                </label>
+                <button
+                  type="submit"
+                  disabled={isSyncingEnvVault}
+                  className="px-3.5 py-2 rounded-lg bg-emerald-400 hover:bg-emerald-300 text-slate-950 font-black text-[11px] inline-flex items-center justify-center gap-1 shadow disabled:opacity-60"
+                >
+                  <Save className="w-3.5 h-3.5" /> Save &amp; Sync
+                </button>
+              </div>
+            </div>
+          </form>
+
+          {/* Filtered Categorized Entries List */}
+          {(() => {
+            const visibleEntries =
+              activeEnvCategory === 'All'
+                ? envVaultEntries
+                : envVaultEntries.filter((e) => e.category === activeEnvCategory);
+            if (visibleEntries.length === 0) {
+              return (
+                <div className="p-3 rounded-xl bg-emerald-50/70 dark:bg-emerald-950/60 border border-emerald-200 dark:border-emerald-800 text-center text-[11px] text-emerald-700 dark:text-emerald-300">
+                  No synced entries in [{activeEnvCategory}] yet. Tap <span className="font-bold">Sync Keys to Cloud Vault</span> or add one above.
+                </div>
+              );
+            }
+            return (
+              <div className="space-y-2">
+                {visibleEntries.map((entry) => {
+                  const isMasked = entry.secret && !revealedEnvIds[entry.id];
+                  return (
+                    <div
+                      key={entry.id}
+                      className="p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-800 flex flex-col sm:flex-row sm:items-center justify-between gap-2"
+                    >
+                      <div className="min-w-0 flex-1 space-y-1">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="px-2 py-0.5 rounded bg-indigo-500/20 text-indigo-800 dark:text-indigo-200 text-[9px] font-bold uppercase">
+                            {entry.category}
+                          </span>
+                          <span className="font-mono font-bold text-xs text-emerald-950 dark:text-white">
+                            {entry.keyName}
+                          </span>
+                          {entry.notes && (
+                            <span className="text-[10px] text-emerald-700 dark:text-emerald-300">· {entry.notes}</span>
+                          )}
+                        </div>
+                        <pre className="text-[11px] font-mono text-emerald-800 dark:text-cyan-300 whitespace-pre-wrap break-all bg-white/80 dark:bg-slate-950/70 px-2.5 py-1.5 rounded-lg border border-emerald-200/80 dark:border-emerald-800/80">
+                          {isMasked ? '••••••••••••••••••••' : entry.value}
+                        </pre>
+                      </div>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        {entry.secret && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setRevealedEnvIds((prev) => ({ ...prev, [entry.id]: !prev[entry.id] }))
+                            }
+                            className="p-1.5 rounded-lg bg-white dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 text-emerald-800 dark:text-emerald-200"
+                            title="Reveal / Hide"
+                          >
+                            {isMasked ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => handleCopy(`ev_${entry.id}`, `${entry.keyName}=${entry.value}`)}
+                          className="px-2.5 py-1.5 rounded-lg bg-white dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 text-emerald-900 dark:text-white font-bold text-[10px] inline-flex items-center gap-1"
+                        >
+                          {copiedKey === `ev_${entry.id}` ? <Check className="w-3 h-3 text-emerald-500" /> : <Copy className="w-3 h-3" />}
+                          {copiedKey === `ev_${entry.id}` ? 'Copied' : 'Copy'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteCategorizedEnvEntry(entry.id)}
+                          className="p-1.5 rounded-lg text-rose-500 hover:bg-rose-500/15"
+                          title="Delete entry"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })()}
+        </div>
       </div>
 
       {/* 3. ANALYTICS OVERVIEW */}

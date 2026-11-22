@@ -1835,6 +1835,274 @@ ${CHOY_APP_USAGE_GUIDE}`;
   }
 });
 
+// Helper: Organize & summarise Studio Feature Notes into a clean AI Studio prompt
+function buildStructuredFallbackPrompt(
+  title: string,
+  category: string,
+  entries: Array<{ id: string; rawText: string; createdAt: string }>
+): string {
+  if (entries.length === 0) {
+    return `Feature File: ${title} [${category}]\n\n(No notes added yet. Type a feature update below and save to auto-organize.)`;
+  }
+  const cleanLines = entries
+    .map((entry, idx) => {
+      const cleaned = entry.rawText
+        .replace(/\s+/g, ' ')
+        .trim();
+      return `${idx + 1}. ${cleaned}`;
+    })
+    .filter(Boolean);
+
+  return [
+    `Feature Update Request: ${title}`,
+    `Category: ${category}`,
+    ``,
+    `Summary:`,
+    `Implement and connect the ${entries.length} feature update${entries.length > 1 ? 's' : ''} below cleanly in Choy Chat while maintaining existing design, dark/light mode contrast, and real-time cloud sync.`,
+    ``,
+    `Organized Requirements:`,
+    ...cleanLines,
+    ``,
+    `Technical & UX Checklist:`,
+    `- Integrate smoothly with existing components and database/SSE sync.`,
+    `- Ensure responsive layout on both mobile and desktop.`,
+    `- Verify TypeScript build and lint checks pass cleanly.`,
+  ].join('\n');
+}
+
+async function summarizeAndOrganizeStudioNote(
+  title: string,
+  category: string,
+  entries: Array<{ id: string; rawText: string; createdAt: string }>
+): Promise<{ organizedPrompt: string; usedAi: boolean }> {
+  const fallback = buildStructuredFallbackPrompt(title, category, entries);
+  if (!entries.length) {
+    return { organizedPrompt: fallback, usedAi: false };
+  }
+  if (!(process.env.GEMINI_API_KEY || '').trim()) {
+    return { organizedPrompt: fallback, usedAi: false };
+  }
+  try {
+    const entriesText = entries
+      .map((e, i) => `Note #${i + 1} (${e.createdAt.slice(0, 16).replace('T', ' ')}):\n${e.rawText}`)
+      .join('\n\n---\n\n');
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-4-hydrogen',
+      contents: `Feature File Title: ${title}\nCategory: ${category}\n\nAll Connected Notes (chronological order):\n${entriesText}`,
+      config: {
+        systemInstruction:
+          'You are an expert AI Studio prompt organizer. The app owner writes rough feature ideas in English, Bisaya (Cebuano), or Tagalog. Combine and connect ALL chronological notes into ONE clean, polished, ready-to-copy-and-paste specification prompt for Google AI Studio. Preserve every requirement from earlier and new notes, resolve duplicates, organize clearly with: Title, Short Summary, Numbered Feature Requirements, and UI/Sync Notes. Output ONLY the clean formatted prompt in clear English.',
+      },
+    });
+    const text = (response.text || '').trim();
+    if (text) {
+      return { organizedPrompt: text, usedAi: true };
+    }
+  } catch (err) {
+    console.warn('[Studio Notes Summarize fallback]:', err instanceof Error ? err.message : err);
+  }
+  return { organizedPrompt: fallback, usedAi: false };
+}
+
+// Studio Type Notes Routes (Admin Only, Auto-Synced)
+app.get('/api/admin/studio-notes', requireAuth, requireAdmin, async (_req: AuthedRequest, res: Response) => {
+  try {
+    const notes = await store.listStudioNotes();
+    return res.json({ notes });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to load studio notes' });
+  }
+});
+
+app.post('/api/admin/studio-notes', requireAuth, requireAdmin, async (req: AuthedRequest, res: Response) => {
+  try {
+    const title = typeof req.body?.title === 'string' ? req.body.title.trim().slice(0, 100) : '';
+    const category = typeof req.body?.category === 'string' ? req.body.category.trim().slice(0, 50) : 'App Features';
+    const initialText = typeof req.body?.initialText === 'string' ? req.body.initialText.trim().slice(0, 6000) : '';
+    const autoSummarize = req.body?.autoSummarize !== false;
+
+    if (!title) {
+      return res.status(400).json({ error: 'Note file name/title is required' });
+    }
+
+    const entries = initialText
+      ? [{ id: 'ne_' + crypto.randomUUID().slice(0, 10), rawText: initialText, createdAt: new Date().toISOString() }]
+      : [];
+
+    let organizedPrompt = '';
+    let usedAi = false;
+    if (entries.length > 0 && autoSummarize) {
+      const resSum = await summarizeAndOrganizeStudioNote(title, category || 'App Features', entries);
+      organizedPrompt = resSum.organizedPrompt;
+      usedAi = resSum.usedAi;
+    } else if (entries.length > 0) {
+      organizedPrompt = buildStructuredFallbackPrompt(title, category || 'App Features', entries);
+    }
+
+    const created = await store.createStudioNoteFile({
+      title,
+      category: category || 'App Features',
+      entries,
+      organizedPrompt,
+    });
+    const notes = await store.listStudioNotes();
+    broadcastSync('studio-notes');
+    return res.status(201).json({ note: created, notes, usedAi });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to create note file' });
+  }
+});
+
+app.post('/api/admin/studio-notes/:id/append', requireAuth, requireAdmin, async (req: AuthedRequest, res: Response) => {
+  try {
+    const existing = await store.getStudioNoteById(req.params.id);
+    if (!existing) {
+      return res.status(404).json({ error: 'Note file not found' });
+    }
+    const rawText = typeof req.body?.rawText === 'string' ? req.body.rawText.trim().slice(0, 6000) : '';
+    const autoSummarize = req.body?.autoSummarize !== false;
+
+    const nextEntries = rawText
+      ? [
+          ...existing.entries,
+          { id: 'ne_' + crypto.randomUUID().slice(0, 10), rawText, createdAt: new Date().toISOString() },
+        ]
+      : existing.entries;
+
+    let organizedPrompt = existing.organizedPrompt;
+    let usedAi = false;
+    if (autoSummarize || !organizedPrompt.trim()) {
+      const resSum = await summarizeAndOrganizeStudioNote(existing.title, existing.category, nextEntries);
+      organizedPrompt = resSum.organizedPrompt;
+      usedAi = resSum.usedAi;
+    } else if (rawText) {
+      organizedPrompt = `${organizedPrompt.trim()}\n\n${nextEntries.length}. ${rawText}`;
+    }
+
+    const updated = await store.updateStudioNoteFile(existing.id, {
+      entries: nextEntries,
+      organizedPrompt,
+    });
+    const notes = await store.listStudioNotes();
+    broadcastSync('studio-notes');
+    return res.json({ note: updated, notes, usedAi });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to connect note entry' });
+  }
+});
+
+app.patch('/api/admin/studio-notes/:id', requireAuth, requireAdmin, async (req: AuthedRequest, res: Response) => {
+  try {
+    const existing = await store.getStudioNoteById(req.params.id);
+    if (!existing) {
+      return res.status(404).json({ error: 'Note file not found' });
+    }
+    const title = typeof req.body?.title === 'string' && req.body.title.trim() ? req.body.title.trim().slice(0, 100) : existing.title;
+    const category = typeof req.body?.category === 'string' && req.body.category.trim() ? req.body.category.trim().slice(0, 50) : existing.category;
+    const entries = Array.isArray(req.body?.entries) ? req.body.entries : existing.entries;
+    let organizedPrompt = typeof req.body?.organizedPrompt === 'string' ? req.body.organizedPrompt : existing.organizedPrompt;
+    let usedAi = false;
+
+    if (req.body?.reSummarize === true) {
+      const resSum = await summarizeAndOrganizeStudioNote(title, category, entries);
+      organizedPrompt = resSum.organizedPrompt;
+      usedAi = resSum.usedAi;
+    }
+
+    const updated = await store.updateStudioNoteFile(existing.id, {
+      title,
+      category,
+      entries,
+      organizedPrompt,
+    });
+    const notes = await store.listStudioNotes();
+    broadcastSync('studio-notes');
+    return res.json({ note: updated, notes, usedAi });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to save note file' });
+  }
+});
+
+app.delete('/api/admin/studio-notes/:id', requireAuth, requireAdmin, async (req: AuthedRequest, res: Response) => {
+  try {
+    const ok = await store.deleteStudioNoteFile(req.params.id);
+    if (!ok) return res.status(404).json({ error: 'Note file not found' });
+    const notes = await store.listStudioNotes();
+    broadcastSync('studio-notes');
+    return res.json({ deleted: true, notes });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to delete note file' });
+  }
+});
+
+// Categorized .env & All Code Config Vault Routes (Admin Only, Auto-Synced)
+app.get('/api/admin/env-vault', requireAuth, requireAdmin, async (_req: AuthedRequest, res: Response) => {
+  try {
+    const entries = await store.listEnvVault();
+    return res.json({ entries });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to load env vault' });
+  }
+});
+
+app.post('/api/admin/env-vault', requireAuth, requireAdmin, async (req: AuthedRequest, res: Response) => {
+  try {
+    const category = typeof req.body?.category === 'string' && req.body.category.trim() ? req.body.category.trim().slice(0, 60) : 'Code & Custom';
+    const keyName = typeof req.body?.keyName === 'string' ? req.body.keyName.trim().slice(0, 100) : '';
+    const value = typeof req.body?.value === 'string' ? req.body.value.slice(0, 12000) : '';
+    const secret = Boolean(req.body?.secret);
+    const notes = typeof req.body?.notes === 'string' ? req.body.notes.trim().slice(0, 500) : undefined;
+    const id = typeof req.body?.id === 'string' ? req.body.id.trim() : undefined;
+
+    if (!keyName) {
+      return res.status(400).json({ error: 'Key / Config name is required' });
+    }
+
+    const saved = await store.upsertEnvVaultEntry({ id, category, keyName, value, secret, notes });
+    const entries = await store.listEnvVault();
+    broadcastSync('env-vault');
+    return res.status(201).json({ entry: saved, entries });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to save env entry' });
+  }
+});
+
+app.post('/api/admin/env-vault/sync-all', requireAuth, requireAdmin, async (req: AuthedRequest, res: Response) => {
+  try {
+    const rawItems = Array.isArray(req.body?.entries) ? req.body.entries : [];
+    for (const item of rawItems.slice(0, 100)) {
+      const keyName = typeof item?.keyName === 'string' ? item.keyName.trim().slice(0, 100) : '';
+      if (!keyName) continue;
+      await store.upsertEnvVaultEntry({
+        id: typeof item?.id === 'string' ? item.id : undefined,
+        category: typeof item?.category === 'string' && item.category.trim() ? item.category.trim().slice(0, 60) : 'Code & Custom',
+        keyName,
+        value: typeof item?.value === 'string' ? item.value.slice(0, 12000) : '',
+        secret: Boolean(item?.secret),
+        notes: typeof item?.notes === 'string' ? item.notes.trim().slice(0, 500) : undefined,
+      });
+    }
+    const entries = await store.listEnvVault();
+    broadcastSync('env-vault');
+    return res.json({ entries, synced: true });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to sync env vault' });
+  }
+});
+
+app.delete('/api/admin/env-vault/:id', requireAuth, requireAdmin, async (req: AuthedRequest, res: Response) => {
+  try {
+    const ok = await store.deleteEnvVaultEntry(req.params.id);
+    if (!ok) return res.status(404).json({ error: 'Env entry not found' });
+    const entries = await store.listEnvVault();
+    broadcastSync('env-vault');
+    return res.json({ deleted: true, entries });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to delete env entry' });
+  }
+});
+
 // Helper for GitHub headers
 function getGitHubHeaders(token: string) {
   return {

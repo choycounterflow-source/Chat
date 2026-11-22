@@ -663,6 +663,7 @@ export default function App() {
   const [activeEmojiLink, setActiveEmojiLink] = useState<EmojiLinkItem | null>(null);
   const [isAppIconShareModalOpen, setIsAppIconShareModalOpen] = useState(false);
   const [appIconShareNotice, setAppIconShareNotice] = useState('');
+  const [securitySyncTick, setSecuritySyncTick] = useState(0);
   const [deletingUserIds, setDeletingUserIds] = useState<string[]>([]);
   const [confirmDeleteUserId, setConfirmDeleteUserId] = useState<string | null>(null);
   const [showDeleteAccountSetup, setShowDeleteAccountSetup] = useState(false);
@@ -1117,6 +1118,7 @@ export default function App() {
             }
             if (eventName === 'sync') {
               fetchSyncedState();
+              setSecuritySyncTick((prev) => prev + 1);
             } else if (eventName === 'rtc' && dataLines.length > 0) {
               try {
                 const payload = JSON.parse(dataLines.join('\n')) as RtcSignalPayload;
@@ -7096,6 +7098,7 @@ export default function App() {
                 setActiveEmojiLink(links.find((l) => l.pinnedToAppIcon) || links[0] || null);
               }}
               defaultAppIcon={DEFAULT_AVATAR}
+              syncTick={securitySyncTick}
             />
           )}
 

@@ -113,6 +113,32 @@ export interface StoredEmojiLink {
   createdAt: string;
 }
 
+export interface StudioNoteEntry {
+  id: string;
+  rawText: string;
+  createdAt: string;
+}
+
+export interface StoredStudioNoteFile {
+  id: string;
+  title: string;
+  category: string;
+  entries: StudioNoteEntry[];
+  organizedPrompt: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface StoredEnvVaultEntry {
+  id: string;
+  category: string;
+  keyName: string;
+  value: string;
+  secret: boolean;
+  notes?: string;
+  updatedAt: string;
+}
+
 export interface SessionPayload {
   uid: string;
   role: 'admin' | 'member';
@@ -308,6 +334,8 @@ export class ChoyStore {
       createdAt: new Date().toISOString(),
     },
   ];
+  private memStudioNotes: StoredStudioNoteFile[] = [];
+  private memEnvVault: StoredEnvVaultEntry[] = [];
   private memSeeded = false;
 
   constructor() {
@@ -460,6 +488,24 @@ export class ChoyStore {
         pinned_to_app_icon BOOLEAN NOT NULL DEFAULT false,
         created_by TEXT NOT NULL,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE TABLE IF NOT EXISTS app_studio_notes (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        category TEXT NOT NULL DEFAULT 'App Features',
+        entries JSONB NOT NULL DEFAULT '[]'::jsonb,
+        organized_prompt TEXT NOT NULL DEFAULT '',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE TABLE IF NOT EXISTS app_env_vault (
+        id TEXT PRIMARY KEY,
+        category TEXT NOT NULL DEFAULT 'Auth & App URL',
+        key_name TEXT NOT NULL,
+        value TEXT NOT NULL DEFAULT '',
+        secret BOOLEAN NOT NULL DEFAULT false,
+        notes TEXT NOT NULL DEFAULT '',
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
     `);
   }
@@ -1662,6 +1708,195 @@ export class ChoyStore {
       if (matched) return matched;
     }
     return links.find((l) => l.pinnedToAppIcon) || links[0] || null;
+  }
+
+  public async listStudioNotes(): Promise<StoredStudioNoteFile[]> {
+    await this.ready();
+    if (this.usePostgres && this.pool) {
+      const res = await this.pool.query(
+        `SELECT id, title, category, entries, organized_prompt, created_at, updated_at
+         FROM app_studio_notes
+         ORDER BY updated_at DESC`
+      );
+      return res.rows.map((r) => ({
+        id: String(r.id),
+        title: String(r.title),
+        category: String(r.category || 'App Features'),
+        entries: Array.isArray(r.entries) ? (r.entries as StudioNoteEntry[]) : [],
+        organizedPrompt: String(r.organized_prompt || ''),
+        createdAt: new Date(String(r.created_at)).toISOString(),
+        updatedAt: new Date(String(r.updated_at)).toISOString(),
+      }));
+    }
+    return [...this.memStudioNotes].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  }
+
+  public async getStudioNoteById(id: string): Promise<StoredStudioNoteFile | null> {
+    const notes = await this.listStudioNotes();
+    return notes.find((n) => n.id === id) || null;
+  }
+
+  public async createStudioNoteFile(input: {
+    title: string;
+    category: string;
+    entries: StudioNoteEntry[];
+    organizedPrompt: string;
+  }): Promise<StoredStudioNoteFile> {
+    await this.ready();
+    const id = 'sn_' + crypto.randomUUID().slice(0, 12);
+    const now = new Date().toISOString();
+    if (this.usePostgres && this.pool) {
+      await this.pool.query(
+        `INSERT INTO app_studio_notes (id, title, category, entries, organized_prompt, created_at, updated_at)
+         VALUES ($1, $2, $3, $4::jsonb, $5, NOW(), NOW())`,
+        [id, input.title, input.category, JSON.stringify(input.entries), input.organizedPrompt]
+      );
+      return {
+        id,
+        title: input.title,
+        category: input.category,
+        entries: input.entries,
+        organizedPrompt: input.organizedPrompt,
+        createdAt: now,
+        updatedAt: now,
+      };
+    }
+    const created: StoredStudioNoteFile = {
+      id,
+      title: input.title,
+      category: input.category,
+      entries: input.entries,
+      organizedPrompt: input.organizedPrompt,
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.memStudioNotes.unshift(created);
+    return created;
+  }
+
+  public async updateStudioNoteFile(
+    id: string,
+    patch: {
+      title?: string;
+      category?: string;
+      entries?: StudioNoteEntry[];
+      organizedPrompt?: string;
+    }
+  ): Promise<StoredStudioNoteFile | null> {
+    await this.ready();
+    const existing = await this.getStudioNoteById(id);
+    if (!existing) return null;
+    const updated: StoredStudioNoteFile = {
+      ...existing,
+      title: patch.title !== undefined ? patch.title : existing.title,
+      category: patch.category !== undefined ? patch.category : existing.category,
+      entries: patch.entries !== undefined ? patch.entries : existing.entries,
+      organizedPrompt: patch.organizedPrompt !== undefined ? patch.organizedPrompt : existing.organizedPrompt,
+      updatedAt: new Date().toISOString(),
+    };
+
+    if (this.usePostgres && this.pool) {
+      await this.pool.query(
+        `UPDATE app_studio_notes
+         SET title = $2, category = $3, entries = $4::jsonb, organized_prompt = $5, updated_at = NOW()
+         WHERE id = $1`,
+        [id, updated.title, updated.category, JSON.stringify(updated.entries), updated.organizedPrompt]
+      );
+      return updated;
+    }
+    this.memStudioNotes = this.memStudioNotes.map((n) => (n.id === id ? updated : n));
+    return updated;
+  }
+
+  public async deleteStudioNoteFile(id: string): Promise<boolean> {
+    await this.ready();
+    if (this.usePostgres && this.pool) {
+      const res = await this.pool.query('DELETE FROM app_studio_notes WHERE id = $1', [id]);
+      return Boolean(res.rowCount && res.rowCount > 0);
+    }
+    const before = this.memStudioNotes.length;
+    this.memStudioNotes = this.memStudioNotes.filter((n) => n.id !== id);
+    return this.memStudioNotes.length < before;
+  }
+
+  public async listEnvVault(): Promise<StoredEnvVaultEntry[]> {
+    await this.ready();
+    if (this.usePostgres && this.pool) {
+      const res = await this.pool.query(
+        `SELECT id, category, key_name, value, secret, notes, updated_at
+         FROM app_env_vault
+         ORDER BY category ASC, key_name ASC`
+      );
+      return res.rows.map((r) => ({
+        id: String(r.id),
+        category: String(r.category || 'Code & Custom'),
+        keyName: String(r.key_name),
+        value: String(r.value || ''),
+        secret: Boolean(r.secret),
+        notes: typeof r.notes === 'string' && r.notes ? r.notes : undefined,
+        updatedAt: new Date(String(r.updated_at)).toISOString(),
+      }));
+    }
+    return [...this.memEnvVault].sort((a, b) =>
+      a.category === b.category ? a.keyName.localeCompare(b.keyName) : a.category.localeCompare(b.category)
+    );
+  }
+
+  public async upsertEnvVaultEntry(input: {
+    id?: string;
+    category: string;
+    keyName: string;
+    value: string;
+    secret: boolean;
+    notes?: string;
+  }): Promise<StoredEnvVaultEntry> {
+    await this.ready();
+    const id = input.id && input.id.trim() ? input.id.trim() : 'ev_' + crypto.randomUUID().slice(0, 12);
+    const now = new Date().toISOString();
+    const record: StoredEnvVaultEntry = {
+      id,
+      category: input.category,
+      keyName: input.keyName,
+      value: input.value,
+      secret: input.secret,
+      notes: input.notes,
+      updatedAt: now,
+    };
+
+    if (this.usePostgres && this.pool) {
+      await this.pool.query(
+        `INSERT INTO app_env_vault (id, category, key_name, value, secret, notes, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, NOW())
+         ON CONFLICT (id) DO UPDATE
+           SET category = EXCLUDED.category,
+               key_name = EXCLUDED.key_name,
+               value = EXCLUDED.value,
+               secret = EXCLUDED.secret,
+               notes = EXCLUDED.notes,
+               updated_at = NOW()`,
+        [id, record.category, record.keyName, record.value, record.secret, record.notes || '']
+      );
+      return record;
+    }
+
+    const idx = this.memEnvVault.findIndex((e) => e.id === id);
+    if (idx >= 0) {
+      this.memEnvVault[idx] = record;
+    } else {
+      this.memEnvVault.push(record);
+    }
+    return record;
+  }
+
+  public async deleteEnvVaultEntry(id: string): Promise<boolean> {
+    await this.ready();
+    if (this.usePostgres && this.pool) {
+      const res = await this.pool.query('DELETE FROM app_env_vault WHERE id = $1', [id]);
+      return Boolean(res.rowCount && res.rowCount > 0);
+    }
+    const before = this.memEnvVault.length;
+    this.memEnvVault = this.memEnvVault.filter((e) => e.id !== id);
+    return this.memEnvVault.length < before;
   }
 
   private mapUserRow(r: Record<string, unknown>): StoredUser {
