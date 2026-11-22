@@ -987,13 +987,26 @@ app.get('/api/choy/state', requireAuth, async (req: AuthedRequest, res: Response
     const user = req.choyUser!;
     touchUserPresence(user.name);
     const isAdmin = user.role === 'admin';
-    const [posts, messages, users, knowledge, leaderboard] = await Promise.all([
+    const [posts, allMessages, users, knowledge, leaderboard] = await Promise.all([
       store.listPosts(),
       store.listMessages(),
       store.listUsers(isAdmin),
       store.listKnowledge(),
       store.getPublicLeaderboard(),
     ]);
+
+    const myNameLower = user.name.trim().toLowerCase();
+    const messages = isAdmin
+      ? allMessages
+      : allMessages.filter((m) => {
+          const roomLower = m.roomId.trim().toLowerCase();
+          return (
+            roomLower === 'vip group' ||
+            m.senderId === user.id ||
+            m.senderName.trim().toLowerCase() === myNameLower ||
+            roomLower === myNameLower
+          );
+        });
 
     let ledger = undefined;
     let settings = undefined;
@@ -1361,6 +1374,213 @@ const ai = new GoogleGenAI({
       'User-Agent': 'aistudio-build',
     },
   },
+});
+
+const CHOY_APP_USAGE_GUIDE = `
+CHOY CHAT APP FEATURES & HOW TO USE GUIDE:
+1. Messages & Chats (Messages tab):
+   - Send text messages, photos (tap the Camera/Photo button or attach image), videos, and voice messages in VIP Group or 1-on-1 direct chats with any user.
+   - Voice-to-Text Transcription: Record a voice message using the Mic button; spoken words are transcribed automatically below the audio player.
+   - Reactions & Forward: Tap emoji reactions (❤️ 👍 🔥 😄) or tap the "Forward" button under any message to open the Forward dialog, search a user or room, and re-send the message content.
+   - Photo Editor & Zoom: Tap any sent photo to zoom in/out; draw or crop attached images before sending.
+   - Message Notifications & Tune: Incoming messages trigger a popup notification with sender avatar and a notification sound tune.
+2. Live Video Calls (Messages tab):
+   - Open a chat with a user (or VIP Group) and tap the Video Call button to start a real live WebRTC video call.
+   - Controls during a call: Mute/unmute mic, turn camera on/off, flip front/back camera, and Hang Up.
+   - Incoming calls ring continuously with an audible ringtone, vibration, and caller profile picture banner until accepted or declined.
+3. Home-Screen Push Notifications (Background Alerts):
+   - Tap "Enable Alerts" in Messages or inside the 3-dots (⋮) Menu Drawer to allow background push notifications.
+   - Once enabled (and installed to Home Screen as a PWA), you receive message popups and incoming video call alerts with caller profile icons even when the app is closed, as long as mobile data/Wi-Fi is on.
+4. Profile Picture & Change Name (Account / Profile tab or your own Profile Modal):
+   - Open Account (My Account) to tap "Add Profile Pic" / "Change Profile Pic" (or the Camera badge) to upload a photo, or "Reset Photo" to restore the default icon.
+   - Tap "Change Name" to update your display name (2–60 characters). Your updated name and photo sync automatically across posts, chats, search, and calls.
+5. Newsfeed, Videos & People:
+   - Newsfeed tab: Share text, photo, or video posts (Feed, My Day, or Video) and view posts from the community.
+   - People tab & top Search bar: Find members, view public profiles, start a message, or Block/Unblock a user.
+   - Videos tab: Watch shared chat videos with sound enabled.
+6. 3-Dots (⋮) Menu Drawer & Settings:
+   - Tap the 3-dots (⋮) button at the top right for Theme (Light / Dark / System), Font Size, Reduce Motion, Push Notification toggle, Account Delete setup, and Logout.
+7. Install as App (PWA):
+   - Tap the Install App button or browser "Add to Home Screen" for full-screen mobile app experience and reliable background alerts.
+`.trim();
+
+app.post('/api/choy/ai/chat', requireAuth, async (req: AuthedRequest, res: Response) => {
+  try {
+    const user = req.choyUser!;
+    const question = typeof req.body?.question === 'string' ? req.body.question.trim() : '';
+    if (!question || question.length > 1500) {
+      return res.status(400).json({ error: 'Please enter a question (max 1500 characters).' });
+    }
+
+    const apiKey = (process.env.GEMINI_API_KEY || '').trim();
+    if (!apiKey) {
+      return res.status(503).json({
+        error: 'Choy AI requires GEMINI_API_KEY to be configured on the server.',
+      });
+    }
+
+    const isAdminUser = user.role === 'admin';
+    const rawHistory = Array.isArray(req.body?.history) ? req.body.history.slice(-6) : [];
+    const safeHistoryText = rawHistory
+      .map((item: unknown) => {
+        if (!item || typeof item !== 'object') return '';
+        const rec = item as { sender?: unknown; text?: unknown };
+        const role = rec.sender === 'user' ? 'User' : 'Choy AI';
+        const txt = typeof rec.text === 'string' ? rec.text.trim().slice(0, 400) : '';
+        return txt ? `${role}: ${txt}` : '';
+      })
+      .filter(Boolean)
+      .join('\n');
+
+    const knowledge = await store.listKnowledge();
+    const knowledgeBlock =
+      knowledge.length > 0
+        ? knowledge
+            .slice(0, 40)
+            .map((k, idx) => `${idx + 1}. Q: ${k.question}\n   A: ${k.answer}`)
+            .join('\n')
+        : 'No custom Q&A entries yet.';
+
+    let systemInstruction = '';
+
+    if (isAdminUser) {
+      // ADMIN-ONLY SYNCED CONTEXT: Milestone Ledger + All Users' Messages (for moderation/safety checks) + Users + Prices
+      const [ledger, settings, allMessages, allUsers] = await Promise.all([
+        store.listLedger(),
+        store.getSettings(),
+        store.listMessages(),
+        store.listUsers(false),
+      ]);
+
+      const ledgerSummary =
+        ledger.length > 0
+          ? ledger
+              .map((row) => {
+                const total =
+                  row.fiveH * settings.fiveH +
+                  row.bulig * settings.bulig +
+                  row.point5 * settings.point5 +
+                  row.halfSack * settings.halfSack +
+                  row.oneSack * settings.oneSack +
+                  row.bal;
+                return `- ${row.name}: 5H=${row.fiveH} (${row.fiveHType}), Bulig=${row.bulig}, .5=${row.point5}, 1/2Sack=${row.halfSack}, 1Sack=${row.oneSack}, Bal=₱${row.bal} | Computed Total=₱${total.toLocaleString()} (Updated: ${row.updatedAt.slice(0, 16).replace('T', ' ')})`;
+              })
+              .join('\n')
+          : 'No milestone ledger rows yet.';
+
+      const recentMessages = allMessages
+        .slice(-150)
+        .map((m) => {
+          const ts = m.createdAt.slice(0, 16).replace('T', ' ');
+          const mediaTag = m.mediaType !== 'text' ? ` [${m.mediaType.toUpperCase()}]` : '';
+          const transcriptTag = m.transcript ? ` (Transcript: "${m.transcript.slice(0, 160)}")` : '';
+          const body = m.text ? m.text.slice(0, 260) : '(media only)';
+          return `[${ts}] Room="${m.roomId}" | From="${m.senderName}"${mediaTag}: ${body}${transcriptTag}`;
+        })
+        .join('\n');
+
+      const usersSummary =
+        allUsers.length > 0
+          ? allUsers
+              .map((u) => `- ${u.name} (${u.role}, status: ${u.status}, lastActive: ${u.loginDate})`)
+              .join('\n')
+          : 'No registered users.';
+
+      systemInstruction = `You are Choy AI (ADMIN MODE) inside the Choy Chat app, speaking to the verified Admin (${user.name}).
+
+LANGUAGE RULE (CRITICAL):
+- Detect the user's language (Bisaya/Cebuano, Tagalog/Filipino, English, Hiligaynon, Ilocano, or ANY other language) and ALWAYS reply naturally in that exact same language!
+
+ADMIN CAPABILITIES & LIVE SYNCED DATA:
+- You have full Admin-only access to:
+  1. App Usage Instructions & Synced AI Brain Q&A.
+  2. Live Synced Milestone Ledger & Unit Prices (to calculate totals, balances, Blue/Red 5H, top entries, and answer any Milestone question accurately).
+  3. All Users' Messages across VIP Group and Direct Messages ONLY for Admin moderation, safety checks, spotting conflicts/issues ("not going good"), or reviewing specific user messages when Admin asks.
+  4. Registered user list (names, roles, last active status).
+- Keep answers clear, well-structured, concise, and factual based ONLY on the synced data below (never invent fake messages or ledger numbers).
+- When checking messages for things "not going good" (conflicts, rude/harmful language, suspicious behavior, complaints, or urgent issues), clearly list any concerning messages with sender, room, and timestamp, or clearly confirm if everything looks peaceful/normal.
+
+--- UNIT PRICES ---
+5H: ₱${settings.fiveH}, Bulig: ₱${settings.bulig}, .5: ₱${settings.point5}, 1/2 Sack: ₱${settings.halfSack}, 1 Sack: ₱${settings.oneSack}
+
+--- SYNCED MILESTONE LEDGER (${ledger.length} rows) ---
+${ledgerSummary}
+
+--- REGISTERED USERS (${allUsers.length}) ---
+${usersSummary}
+
+--- ALL USERS' RECENT MESSAGES (ADMIN-ONLY MODERATION SYNC, ${Math.min(allMessages.length, 150)} of ${allMessages.length}) ---
+${recentMessages || 'No messages yet.'}
+
+--- SYNCED AI BRAIN Q&A ---
+${knowledgeBlock}
+
+--- APP USAGE GUIDE ---
+${CHOY_APP_USAGE_GUIDE}`;
+    } else {
+      // REGULAR MEMBER MODE: STRICT PRIVACY — APP INSTRUCTIONS ONLY (ZERO ACCESS TO MESSAGES, USER PROFILES, OR MILESTONE)
+      systemInstruction = `You are Choy AI, the friendly App Guide Assistant inside Choy Chat, helping a regular member.
+
+LANGUAGE RULE (CRITICAL):
+- Detect the user's language (Bisaya/Cebuano, Tagalog/Filipino, English, Hiligaynon, Ilocano, or ANY other language) and ALWAYS reply naturally in that exact same language!
+
+STRICT ACCESS & PRIVACY RULES (NON-NEGOTIABLE):
+1. ALLOWED ONLY:
+   - Explaining HOW TO USE the Choy Chat app and what buttons/features to use (messaging, forwarding, voice transcription, video calls, notifications/ringtones, profile picture upload, changing display name, Newsfeed posts, People/blocking, theme/menu settings, PWA install).
+   - Answering general public questions from the Synced AI Brain Q&A below.
+2. STRICTLY NOT ALLOWED (MUST POLITELY REFUSE IN THE USER'S LANGUAGE):
+   - Private Messages / Chats: You do NOT have access to any user's messages or chat history. If asked to read, check, summarize, or search anyone's messages, politely explain that messages are private and only accessible to the Admin.
+   - User Profile Information: You do NOT have access to any user's profile information, phone numbers, account list, personal details, or online activity. If asked about any user's profile/info, politely explain that user profile information is restricted and you can only help with how to use the app.
+   - Milestone Ledger / Admin Records: You do NOT have access to Milestone ledger records, balances, or Admin-only data. If asked, politely explain that Milestone records are Admin-only.
+   - Never guess, fabricate, or pretend to look up private messages, user profiles, or Milestone records.
+3. Keep instructions short, clear, friendly, and easy to follow step-by-step.
+
+--- SYNCED AI BRAIN Q&A ---
+${knowledgeBlock}
+
+--- APP USAGE GUIDE ---
+${CHOY_APP_USAGE_GUIDE}`;
+    }
+
+    const promptContents = safeHistoryText
+      ? `Recent conversation:\n${safeHistoryText}\n\nLatest question from ${isAdminUser ? 'Admin' : 'Member'}:\n${question}`
+      : question;
+
+    let responseText = '';
+    let lastErr: unknown = null;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const response = await ai.models.generateContent({
+          model: 'gemini-4-hydrogen',
+          contents: promptContents,
+          config: {
+            systemInstruction,
+          },
+        });
+        responseText = (response.text || '').trim();
+        break;
+      } catch (err) {
+        lastErr = err;
+        const msg = err instanceof Error ? err.message : String(err);
+        if (msg.includes('400') || msg.includes('403') || msg.includes('404') || msg.includes('429')) {
+          break;
+        }
+        await new Promise((r) => setTimeout(r, 400 * (attempt + 1)));
+      }
+    }
+
+    if (!responseText) {
+      const errMsg = lastErr instanceof Error ? lastErr.message : 'Choy AI could not generate a response right now.';
+      return res.status(502).json({ error: errMsg });
+    }
+
+    return res.json({
+      answer: responseText,
+      scope: isAdminUser ? 'admin_full_sync' : 'member_app_guide',
+    });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Choy AI request failed' });
+  }
 });
 
 // Helper for GitHub headers

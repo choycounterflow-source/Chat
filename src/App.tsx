@@ -55,7 +55,9 @@ import {
   VideoOff,
   RefreshCw,
   Bell,
-  BellOff
+  BellOff,
+  Forward,
+  Check
 } from 'lucide-react';
 import { PWAInstallButton } from './components/PWAInstallButton';
 import { OfflineIndicator } from './components/OfflineIndicator';
@@ -335,12 +337,10 @@ export default function App() {
   const [qtySavedMsg, setQtySavedMsg] = useState(false);
 
   const [aiChatInput, setAiChatInput] = useState('');
-  const [aiChatMessages, setAiChatMessages] = useState<{ sender: 'user' | 'ai'; text: string }[]>([
-    {
-      sender: 'ai',
-      text: 'Hello! I am Choy AI. I am synchronized with all cloud app knowledge across your devices. Ask me anything!'
-    }
-  ]);
+  const [isChoyAIThinking, setIsChoyAIThinking] = useState(false);
+  const [aiChatMessages, setAiChatMessages] = useState<{ sender: 'user' | 'ai'; text: string }[]>([]);
+  const choyAiTabEndRef = useRef<HTMLDivElement>(null);
+  const choyAiPopupEndRef = useRef<HTMLDivElement>(null);
 
   const [isFriend, setIsFriend] = useState(false);
   const [posts, setPosts] = useState<Post[]>([]);
@@ -406,8 +406,77 @@ export default function App() {
   const [nameDraft, setNameDraft] = useState('');
   const [isUpdatingName, setIsUpdatingName] = useState(false);
   const [nameEditError, setNameEditError] = useState('');
+  const [forwardingMessage, setForwardingMessage] = useState<Message | null>(null);
+  const [forwardSearch, setForwardSearch] = useState('');
+  const [forwardingTarget, setForwardingTarget] = useState<string | null>(null);
+  const [forwardedTargets, setForwardedTargets] = useState<string[]>([]);
   const profileAvatarInputRef = useRef<HTMLInputElement | null>(null);
+  const soundCtxRef = useRef<AudioContext | null>(null);
   const syncSeqRef = useRef(0);
+
+  const getUnlockedAudioContext = useCallback((): AudioContext | null => {
+    try {
+      const AudioCtx =
+        window.AudioContext ||
+        (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+      if (!AudioCtx) return null;
+      if (!soundCtxRef.current || soundCtxRef.current.state === 'closed') {
+        soundCtxRef.current = new AudioCtx();
+      }
+      if (soundCtxRef.current.state === 'suspended') {
+        void soundCtxRef.current.resume().catch(() => {});
+      }
+      return soundCtxRef.current;
+    } catch {
+      return null;
+    }
+  }, []);
+
+  // Unlock Web Audio on first user interaction so message chimes & call ringtones always play audibly on mobile
+  useEffect(() => {
+    const unlock = () => {
+      getUnlockedAudioContext();
+    };
+    window.addEventListener('pointerdown', unlock, { passive: true });
+    window.addEventListener('touchstart', unlock, { passive: true });
+    window.addEventListener('keydown', unlock, { passive: true });
+    return () => {
+      window.removeEventListener('pointerdown', unlock);
+      window.removeEventListener('touchstart', unlock);
+      window.removeEventListener('keydown', unlock);
+    };
+  }, [getUnlockedAudioContext]);
+
+  // Crisp messenger notification tune when a new message arrives
+  const playMessageNotificationTune = useCallback(() => {
+    try {
+      if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
+        navigator.vibrate([120, 60, 120]);
+      }
+      const ctx = getUnlockedAudioContext();
+      if (!ctx) return;
+      const now = ctx.currentTime;
+      const notes = [
+        { freq: 880, start: 0, dur: 0.14, vol: 0.22 },
+        { freq: 1318.5, start: 0.12, dur: 0.24, vol: 0.24 },
+      ];
+      for (const n of notes) {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(n.freq, now + n.start);
+        gain.gain.setValueAtTime(0.001, now + n.start);
+        gain.gain.linearRampToValueAtTime(n.vol, now + n.start + 0.015);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + n.start + n.dur);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(now + n.start);
+        osc.stop(now + n.start + n.dur + 0.02);
+      }
+    } catch {
+      // Audio playback may wait for browser gesture policy
+    }
+  }, [getUnlockedAudioContext]);
 
   const showNotice = (msg: string) => {
     setSyncNotice(msg);
@@ -679,6 +748,7 @@ export default function App() {
                 ? 'Sent a voice message'
                 : 'New message');
             setLiveMsgBanner({ sender: latest.sender, room: targetRoom, preview });
+            playMessageNotificationTune();
           }
         } else {
           initialMsgSyncDoneRef.current = true;
@@ -720,7 +790,7 @@ export default function App() {
     } catch (err) {
       console.error('Sync refresh error:', err);
     }
-  }, [authToken, apiFetch]);
+  }, [authToken, apiFetch, playMessageNotificationTune]);
 
   // 3. Initial sync + Real-Time SSE stream + Fast Guaranteed Polling Fallback (Messages + Calls)
   useEffect(() => {
@@ -1548,37 +1618,74 @@ export default function App() {
     }
   }, [incomingCall, isInVideoCall, acceptIncomingCall]);
 
-  // Subtle incoming call chime + mobile vibration while ringing
+  // Continuous audible phone ringtone + strong vibration while an incoming video call is ringing
   useEffect(() => {
     if (!incomingCall || isInVideoCall) return;
-    const playChime = () => {
+    let cancelled = false;
+    const activeOscs: OscillatorNode[] = [];
+
+    const playRingBurst = () => {
+      if (cancelled) return;
       try {
         if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
-          navigator.vibrate([250, 150, 250]);
+          navigator.vibrate([450, 200, 450, 200, 450]);
         }
-        const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-        if (!AudioCtx) return;
-        const ctx = new AudioCtx();
-        const osc = ctx.createOscillator();
-        const gain = ctx.createGain();
-        osc.type = 'sine';
-        osc.frequency.setValueAtTime(660, ctx.currentTime);
-        osc.frequency.setValueAtTime(880, ctx.currentTime + 0.16);
-        gain.gain.setValueAtTime(0.08, ctx.currentTime);
-        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.42);
-        osc.connect(gain);
-        gain.connect(ctx.destination);
-        osc.start();
-        osc.stop(ctx.currentTime + 0.44);
-        window.setTimeout(() => ctx.close().catch(() => {}), 500);
+        const ctx = getUnlockedAudioContext();
+        if (!ctx) return;
+        const now = ctx.currentTime;
+        // Classic bright modern phone ringtone melody (two lively rings per cycle)
+        const pattern = [
+          { freq: 784, start: 0.0, dur: 0.14 },
+          { freq: 987.77, start: 0.14, dur: 0.14 },
+          { freq: 1174.66, start: 0.28, dur: 0.16 },
+          { freq: 987.77, start: 0.44, dur: 0.2 },
+          { freq: 784, start: 0.78, dur: 0.14 },
+          { freq: 987.77, start: 0.92, dur: 0.14 },
+          { freq: 1174.66, start: 1.06, dur: 0.16 },
+          { freq: 987.77, start: 1.22, dur: 0.24 },
+        ];
+        for (const step of pattern) {
+          const osc = ctx.createOscillator();
+          const harmonic = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.type = 'sine';
+          harmonic.type = 'triangle';
+          osc.frequency.setValueAtTime(step.freq, now + step.start);
+          harmonic.frequency.setValueAtTime(step.freq * 1.5, now + step.start);
+          gain.gain.setValueAtTime(0.001, now + step.start);
+          gain.gain.linearRampToValueAtTime(0.24, now + step.start + 0.02);
+          gain.gain.exponentialRampToValueAtTime(0.001, now + step.start + step.dur);
+          osc.connect(gain);
+          harmonic.connect(gain);
+          gain.connect(ctx.destination);
+          osc.start(now + step.start);
+          harmonic.start(now + step.start);
+          osc.stop(now + step.start + step.dur + 0.02);
+          harmonic.stop(now + step.start + step.dur + 0.02);
+          activeOscs.push(osc, harmonic);
+        }
       } catch {
         // Autoplay may be restricted until user interacts
       }
     };
-    playChime();
-    const ringInterval = window.setInterval(playChime, 2400);
-    return () => window.clearInterval(ringInterval);
-  }, [incomingCall, isInVideoCall]);
+
+    playRingBurst();
+    const ringInterval = window.setInterval(playRingBurst, 2100);
+    return () => {
+      cancelled = true;
+      window.clearInterval(ringInterval);
+      if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
+        navigator.vibrate(0);
+      }
+      activeOscs.forEach((osc) => {
+        try {
+          osc.stop();
+        } catch {
+          // Already stopped
+        }
+      });
+    };
+  }, [incomingCall, isInVideoCall, getUnlockedAudioContext]);
 
   // Auto-dismiss live incoming message banner after 5s
   useEffect(() => {
@@ -2480,6 +2587,125 @@ export default function App() {
     }
   };
 
+  const openForwardDialog = (msg: Message) => {
+    setForwardingMessage(msg);
+    setForwardSearch('');
+    setForwardingTarget(null);
+    setForwardedTargets([]);
+  };
+
+  const handleForwardToRoom = async (targetRoom: string) => {
+    if (!forwardingMessage || !currentUser || forwardingTarget) return;
+    const cleanTarget = targetRoom.trim();
+    if (!cleanTarget) return;
+    setForwardingTarget(cleanTarget);
+    try {
+      if (forwardingMessage.isLocalOnly && forwardingMessage.mediaUrl?.startsWith('blob:')) {
+        const localCopy: Message = {
+          id: `local_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+          senderId: currentUser.id,
+          sender: currentUser.name,
+          receiver: cleanTarget,
+          text: forwardingMessage.text || '',
+          mediaType: forwardingMessage.mediaType || 'text',
+          mediaUrl: forwardingMessage.mediaUrl,
+          transcript: forwardingMessage.transcript,
+          time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          createdAtMs: Date.now(),
+          isMe: true,
+          reactions: [],
+          isLocalOnly: true,
+        };
+        setLocalMessages((prev) => [...prev, localCopy]);
+        setForwardedTargets((prev) => (prev.includes(cleanTarget) ? prev : [...prev, cleanTarget]));
+        showNotice(`Forwarded message to ${cleanTarget}!`);
+        return;
+      }
+
+      await apiFetch('/api/choy/messages', {
+        method: 'POST',
+        body: JSON.stringify({
+          roomId: cleanTarget,
+          text: forwardingMessage.text || '',
+          mediaUrl: forwardingMessage.mediaUrl || undefined,
+          mediaType: forwardingMessage.mediaUrl ? forwardingMessage.mediaType || 'text' : 'text',
+          transcript: forwardingMessage.transcript || undefined,
+        }),
+      });
+      setForwardedTargets((prev) => (prev.includes(cleanTarget) ? prev : [...prev, cleanTarget]));
+      showNotice(`Forwarded message to ${cleanTarget}!`);
+      await fetchSyncedState();
+    } catch (err) {
+      showNotice(err instanceof Error ? err.message : 'Failed to forward message');
+    } finally {
+      setForwardingTarget(null);
+    }
+  };
+
+  useEffect(() => {
+    if (!currentUser) {
+      setAiChatMessages([]);
+      return;
+    }
+    setAiChatMessages((prev) => {
+      if (prev.length > 0) return prev;
+      return [
+        {
+          sender: 'ai',
+          text: isAdmin
+            ? `Kumusta Admin ${currentUser.name}! I am Choy AI (Admin Sync Mode). You can ask me in any language about Milestone records, check all users' messages for any issues, or ask how to use any Choy Chat feature.`
+            : `Kumusta! I am Choy AI. Ask me in any language (Bisaya, Tagalog, English, etc.) about how to use Choy Chat and its features! (Note: Private messages, user profile info, and Milestone data are strictly Admin-only.)`,
+        },
+      ];
+    });
+  }, [currentUser, isAdmin]);
+
+  useEffect(() => {
+    if (activeTab === 'choyai') {
+      choyAiTabEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+    }
+    if (isChoyAIPopupOpen) {
+      choyAiPopupEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+    }
+  }, [aiChatMessages, isChoyAIThinking, activeTab, isChoyAIPopupOpen]);
+
+  const sendChoyAIQuestion = async (rawQuestion: string) => {
+    const q = rawQuestion.trim();
+    if (!q || isChoyAIThinking) return;
+    const historySnapshot = aiChatMessages.slice(-6);
+    setAiChatMessages((prev) => [...prev, { sender: 'user', text: q }]);
+    setAiChatInput('');
+    setIsChoyAIThinking(true);
+    try {
+      const resp = (await apiFetch('/api/choy/ai/chat', {
+        method: 'POST',
+        body: JSON.stringify({
+          question: q,
+          history: historySnapshot,
+        }),
+      })) as { answer?: string };
+      const reply = (resp?.answer || '').trim();
+      setAiChatMessages((prev) => [
+        ...prev,
+        {
+          sender: 'ai',
+          text: reply || 'Choy AI returned an empty response. Please try asking again.',
+        },
+      ]);
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : 'Unable to reach Choy AI right now.';
+      setAiChatMessages((prev) => [
+        ...prev,
+        {
+          sender: 'ai',
+          text: `Error: ${errMsg}`,
+        },
+      ]);
+    } finally {
+      setIsChoyAIThinking(false);
+    }
+  };
+
   const calculateRowTotal = (row: LedgerRow) => {
     return (
       row.fiveH * unitPrices.fiveH +
@@ -3109,16 +3335,26 @@ export default function App() {
         );
       })()}
 
-      {/* LIVE INCOMING MESSAGE TOAST */}
+      {/* LIVE INCOMING MESSAGE POPUP NOTIFICATION (WITH SENDER PROFILE PIC & TUNE) */}
       {liveMsgBanner &&
         !incomingCall &&
-        !(activeTab === 'messages' && activeChat.trim().toLowerCase() === liveMsgBanner.room.trim().toLowerCase()) && (
-          <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[55] w-[92%] max-w-md bg-white dark:bg-emerald-950/95 border border-emerald-400 rounded-2xl p-3 shadow-2xl backdrop-blur-md flex items-center justify-between gap-3">
+        !(activeTab === 'messages' && activeChat.trim().toLowerCase() === liveMsgBanner.room.trim().toLowerCase()) && (() => {
+          const senderAvatar = getUserAvatar({ name: liveMsgBanner.sender });
+          return (
+          <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[55] w-[92%] max-w-md bg-white dark:bg-emerald-950/95 border-2 border-emerald-400 rounded-2xl p-3 shadow-2xl backdrop-blur-md flex items-center justify-between gap-3 animate-in fade-in slide-in-from-top-2 duration-200">
             <div className="flex items-center gap-2.5 min-w-0">
-              <div className="w-9 h-9 rounded-full bg-emerald-100 dark:bg-emerald-500/20 border border-emerald-400/60 flex items-center justify-center shrink-0 text-emerald-700 dark:text-emerald-300">
-                <MessageSquare className="w-4 h-4" />
+              <div className="relative w-10 h-10 rounded-xl bg-emerald-100 dark:bg-emerald-900 border border-emerald-400/70 overflow-hidden shrink-0 shadow-xs">
+                <img
+                  src={senderAvatar}
+                  alt={liveMsgBanner.sender}
+                  className={`w-full h-full ${isCustomAvatar(senderAvatar) ? 'object-cover' : 'object-contain'}`}
+                />
+                <span className="absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full bg-emerald-400 border-2 border-white dark:border-emerald-950" />
               </div>
               <div className="min-w-0">
+                <div className="text-[10px] font-bold uppercase tracking-wider text-emerald-600 dark:text-emerald-300 flex items-center gap-1">
+                  <Bell className="w-3 h-3" /> New Message
+                </div>
                 <div className="text-xs font-black text-emerald-950 dark:text-white truncate">
                   {liveMsgBanner.sender}
                 </div>
@@ -3149,7 +3385,8 @@ export default function App() {
               </button>
             </div>
           </div>
-        )}
+          );
+        })()}
 
       {/* REAL LIVE WEBRTC VIDEO CALL MODAL */}
       {isInVideoCall && (
@@ -4809,17 +5046,26 @@ export default function App() {
                           )}
                         </div>
 
-                        <div className="flex items-center gap-1 mt-1 px-1">
+                        <div className="flex flex-wrap items-center gap-1 mt-1 px-1">
                           {(['❤️', '👍', '🔥', '😄'] as const).map((emoji) => (
                             <button
                               key={emoji}
                               type="button"
                               onClick={() => addReactionToMessage(m, emoji)}
-                              className="text-[11px] px-1.5 py-0.5 rounded bg-emerald-50 dark:bg-emerald-950 hover:bg-emerald-100 dark:hover:bg-emerald-800 text-emerald-800 dark:text-slate-300"
+                              className="text-[11px] px-1.5 py-0.5 rounded bg-emerald-50 dark:bg-emerald-950 hover:bg-emerald-100 dark:hover:bg-emerald-800 text-emerald-800 dark:text-slate-300 transition"
                             >
                               {emoji}
                             </button>
                           ))}
+                          <button
+                            type="button"
+                            onClick={() => openForwardDialog(m)}
+                            className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded bg-emerald-50 dark:bg-emerald-950 hover:bg-emerald-200 dark:hover:bg-emerald-800 text-emerald-800 dark:text-emerald-200 border border-emerald-200 dark:border-emerald-800/80 transition"
+                            title="Forward message to another user or room"
+                          >
+                            <Forward className="w-3 h-3" />
+                            <span>Forward</span>
+                          </button>
                         </div>
                       </div>
                     ))}
@@ -5220,54 +5466,101 @@ export default function App() {
 
           {/* CHOY AI */}
           {activeTab === 'choyai' && (
-            <div className="max-w-2xl mx-auto bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-5 flex flex-col h-[500px]">
-              <div className="flex items-center gap-2 pb-3 border-b border-emerald-200 dark:border-emerald-800 text-xs font-bold text-cyan-700 dark:text-cyan-300">
-                <Bot className="w-4 h-4" /> Choy AI
+            <div className="max-w-2xl mx-auto bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-4 sm:p-5 flex flex-col h-[540px] shadow-sm">
+              <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-emerald-200 dark:border-emerald-800">
+                <div className="flex items-center gap-2 text-xs font-black text-cyan-800 dark:text-cyan-300">
+                  <Bot className="w-4 h-4 shrink-0" />
+                  <span>Choy AI</span>
+                </div>
+                <span
+                  className={`text-[10px] font-bold px-2 py-0.5 rounded-lg border ${
+                    isAdmin
+                      ? 'bg-amber-50 dark:bg-amber-500/15 text-amber-800 dark:text-amber-300 border-amber-300 dark:border-amber-500/40'
+                      : 'bg-cyan-50 dark:bg-cyan-500/15 text-cyan-800 dark:text-cyan-200 border-cyan-300 dark:border-cyan-500/40'
+                  }`}
+                >
+                  {isAdmin
+                    ? 'Admin Sync · Milestone + All Messages Check · Any Language'
+                    : 'App Guide Only · Any Language · Private Info Protected'}
+                </span>
               </div>
-              <div className="flex-1 overflow-y-auto p-3 space-y-3 text-xs">
+
+              {/* Quick Prompt Suggestions */}
+              <div className="flex flex-wrap gap-1.5 pt-2.5 pb-1">
+                {(isAdmin
+                  ? [
+                      'Check all users messages if anything is not going good',
+                      'Summarize Milestone totals & balances',
+                      'Unsaon pag-gamit ang Video Call ug Forward?',
+                    ]
+                  : [
+                      'Unsaon pag-gamit ang Choy Chat?',
+                      'How to change my profile pic & name?',
+                      'Unsaon pag-video call ug forward message?',
+                    ]
+                ).map((prompt) => (
+                  <button
+                    key={prompt}
+                    type="button"
+                    disabled={isChoyAIThinking}
+                    onClick={() => sendChoyAIQuestion(prompt)}
+                    className="px-2.5 py-1 rounded-lg bg-emerald-50 dark:bg-emerald-950/80 hover:bg-emerald-100 dark:hover:bg-emerald-800 border border-emerald-200 dark:border-emerald-700 text-[11px] text-emerald-800 dark:text-emerald-200 transition disabled:opacity-50"
+                  >
+                    {prompt}
+                  </button>
+                ))}
+              </div>
+
+              <div className="flex-1 overflow-y-auto py-3 px-1 space-y-3 text-xs">
                 {aiChatMessages.map((m, idx) => (
-                  <div key={idx} className={`flex${m.sender === 'user' ? 'justify-end' : 'justify-start'}`}>
+                  <div key={idx} className={`flex ${m.sender === 'user' ? 'justify-end' : 'justify-start'}`}>
                     <div
-                      className={`p-3 rounded-xl max-w-[80%] ${
-                        m.sender === 'user' ? 'bg-emerald-400 text-slate-950 font-bold' : 'bg-emerald-950 text-cyan-200'
+                      className={`p-3 rounded-2xl max-w-[85%] whitespace-pre-wrap break-words leading-relaxed shadow-xs ${
+                        m.sender === 'user'
+                          ? 'bg-emerald-500 dark:bg-emerald-400 text-white dark:text-slate-950 font-semibold'
+                          : 'bg-emerald-50 dark:bg-emerald-950 text-emerald-950 dark:text-cyan-100 border border-emerald-200 dark:border-emerald-800'
                       }`}
                     >
                       {m.text}
                     </div>
                   </div>
                 ))}
+                {isChoyAIThinking && (
+                  <div className="flex justify-start">
+                    <div className="px-3 py-2 rounded-2xl bg-emerald-50 dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-cyan-200 inline-flex items-center gap-2 text-xs">
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      <span>Choy AI is thinking...</span>
+                    </div>
+                  </div>
+                )}
+                <div ref={choyAiTabEndRef} />
               </div>
+
               <form
                 onSubmit={(e) => {
                   e.preventDefault();
-                  if (!aiChatInput.trim()) return;
-                  const q = aiChatInput;
-                  setAiChatMessages((prev) => [...prev, { sender: 'user', text: q }]);
-                  setAiChatInput('');
-
-                  const found = knowledgeBase.find(
-                    (k) =>
-                      k.question.toLowerCase().includes(q.toLowerCase()) ||
-                      q.toLowerCase().includes(k.question.toLowerCase())
-                  );
-                  const aiAns = found
-                    ? found.answer
-                    : `Choy AI synchronized answer for: "${q}". (Note: Private messages are strictly accessible by admin only).`;
-                  setTimeout(() => {
-                    setAiChatMessages((prev) => [...prev, { sender: 'ai', text: aiAns }]);
-                  }, 400);
+                  void sendChoyAIQuestion(aiChatInput);
                 }}
-                className="p-2 border-t border-emerald-200 dark:border-emerald-800 flex gap-2"
+                className="pt-2.5 border-t border-emerald-200 dark:border-emerald-800 flex gap-2"
               >
                 <input
                   type="text"
-                  placeholder="Ask Choy AI..."
+                  disabled={isChoyAIThinking}
+                  placeholder={
+                    isAdmin
+                      ? 'Ask in any language (Milestone, check user messages, app help)...'
+                      : 'Ask in any language how to use Choy Chat...'
+                  }
                   value={aiChatInput}
                   onChange={(e) => setAiChatInput(e.target.value)}
-                  className="flex-1 p-2 bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 rounded-xl text-xs text-emerald-950 dark:text-white"
+                  className="flex-1 p-2.5 bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 rounded-xl text-xs text-emerald-950 dark:text-white placeholder-emerald-600/60 dark:placeholder-emerald-400 focus:outline-none focus:border-cyan-500"
                 />
-                <button type="submit" className="px-4 py-2 bg-cyan-400 text-slate-950 font-bold text-xs rounded-xl">
-                  Ask
+                <button
+                  type="submit"
+                  disabled={isChoyAIThinking || !aiChatInput.trim()}
+                  className="px-4 py-2 bg-cyan-500 hover:bg-cyan-600 dark:bg-cyan-400 dark:hover:bg-cyan-300 text-white dark:text-slate-950 font-bold text-xs rounded-xl transition disabled:opacity-50"
+                >
+                  {isChoyAIThinking ? '...' : 'Ask'}
                 </button>
               </form>
             </div>
@@ -5633,70 +5926,76 @@ export default function App() {
         )}
 
         {isChoyAIPopupOpen && (
-          <div className="w-80 h-96 bg-emerald-50 dark:bg-emerald-950 border border-cyan-500/50 rounded-2xl shadow-2xl flex flex-col overflow-hidden">
-            <div className="p-3 bg-emerald-100/80 dark:bg-emerald-900 border-b border-cyan-500/40 text-cyan-800 dark:text-cyan-200 font-bold text-xs flex items-center justify-between">
-              <div className="flex items-center gap-2">
+          <div className="w-80 sm:w-96 h-[420px] bg-white dark:bg-emerald-950 border border-cyan-500/50 rounded-2xl shadow-2xl flex flex-col overflow-hidden">
+            <div className="p-3 bg-emerald-100/80 dark:bg-emerald-900 border-b border-cyan-500/40 text-cyan-900 dark:text-cyan-200 font-bold text-xs flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2 min-w-0">
                 <img
                   src={DEFAULT_AVATAR}
                   alt=""
-                  className="w-5 h-6 rounded bg-emerald-50 dark:bg-emerald-950 object-contain border border-cyan-400"
-                />{' '}
-                Choy AI Assistant
+                  className="w-5 h-6 rounded bg-emerald-50 dark:bg-emerald-950 object-contain border border-cyan-400 shrink-0"
+                />
+                <div className="min-w-0">
+                  <div className="truncate">Choy AI Assistant</div>
+                  <div className="text-[9px] font-semibold text-emerald-700 dark:text-cyan-300/80 truncate">
+                    {isAdmin ? 'Admin Sync · Milestone & Messages' : 'App Guide · Any Language'}
+                  </div>
+                </div>
               </div>
               <button
                 type="button"
                 onClick={() => setIsChoyAIPopupOpen(false)}
-                className="text-emerald-800 dark:text-slate-300 hover:text-emerald-950 dark:hover:text-white font-bold"
+                className="text-emerald-800 dark:text-slate-300 hover:text-emerald-950 dark:hover:text-white font-bold px-1"
               >
                 ✕
               </button>
             </div>
 
-            <div className="flex-1 overflow-y-auto p-3 space-y-2 text-xs">
+            <div className="flex-1 overflow-y-auto p-3 space-y-2.5 text-xs">
               {aiChatMessages.map((m, idx) => (
-                <div key={idx} className={`flex${m.sender === 'user' ? 'justify-end' : 'justify-start'}`}>
+                <div key={idx} className={`flex ${m.sender === 'user' ? 'justify-end' : 'justify-start'}`}>
                   <div
-                    className={`p-2.5 rounded-xl max-w-[85%] ${
-                      m.sender === 'user' ? 'bg-cyan-400 text-slate-950 font-bold' : 'bg-emerald-900 text-cyan-200'
+                    className={`p-2.5 rounded-xl max-w-[85%] whitespace-pre-wrap break-words leading-relaxed ${
+                      m.sender === 'user'
+                        ? 'bg-cyan-500 dark:bg-cyan-400 text-white dark:text-slate-950 font-semibold'
+                        : 'bg-emerald-50 dark:bg-emerald-900 text-emerald-950 dark:text-cyan-100 border border-emerald-200 dark:border-emerald-800'
                     }`}
                   >
                     {m.text}
                   </div>
                 </div>
               ))}
+              {isChoyAIThinking && (
+                <div className="flex justify-start">
+                  <div className="px-2.5 py-2 rounded-xl bg-emerald-50 dark:bg-emerald-900 border border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-cyan-200 inline-flex items-center gap-1.5 text-[11px]">
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                    <span>Thinking...</span>
+                  </div>
+                </div>
+              )}
+              <div ref={choyAiPopupEndRef} />
             </div>
 
             <form
               onSubmit={(e) => {
                 e.preventDefault();
-                if (!aiChatInput.trim()) return;
-                const q = aiChatInput;
-                setAiChatMessages((prev) => [...prev, { sender: 'user', text: q }]);
-                setAiChatInput('');
-
-                const found = knowledgeBase.find(
-                  (k) =>
-                    k.question.toLowerCase().includes(q.toLowerCase()) ||
-                    q.toLowerCase().includes(k.question.toLowerCase())
-                );
-                const aiAns = found
-                  ? found.answer
-                  : `Choy AI synchronized answer for: "${q}". (Note: Private messages are strictly accessible by admin only).`;
-                setTimeout(() => {
-                  setAiChatMessages((prev) => [...prev, { sender: 'ai', text: aiAns }]);
-                }, 400);
+                void sendChoyAIQuestion(aiChatInput);
               }}
               className="p-2 border-t border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950 flex gap-2"
             >
               <input
                 type="text"
-                placeholder="Ask Choy AI anything..."
+                disabled={isChoyAIThinking}
+                placeholder={isAdmin ? 'Ask Admin AI (any language)...' : 'Ask how to use app (any language)...'}
                 value={aiChatInput}
                 onChange={(e) => setAiChatInput(e.target.value)}
-                className="flex-1 p-2 bg-emerald-100/80 dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 rounded-xl text-xs text-emerald-950 dark:text-white placeholder-emerald-300 focus:outline-none"
+                className="flex-1 p-2 bg-white dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 rounded-xl text-xs text-emerald-950 dark:text-white placeholder-emerald-600/60 dark:placeholder-emerald-300/70 focus:outline-none focus:border-cyan-500"
               />
-              <button type="submit" className="px-3 py-2 bg-cyan-400 text-slate-950 font-bold text-xs rounded-xl shadow">
-                Send
+              <button
+                type="submit"
+                disabled={isChoyAIThinking || !aiChatInput.trim()}
+                className="px-3 py-2 bg-cyan-500 hover:bg-cyan-600 dark:bg-cyan-400 dark:hover:bg-cyan-300 text-white dark:text-slate-950 font-bold text-xs rounded-xl shadow transition disabled:opacity-50"
+              >
+                {isChoyAIThinking ? '...' : 'Send'}
               </button>
             </form>
           </div>
@@ -6439,6 +6738,185 @@ export default function App() {
           </aside>
         </div>
       )}
+
+      {/* FORWARD MESSAGE DIALOG */}
+      {forwardingMessage && (() => {
+        const q = forwardSearch.trim().toLowerCase();
+        const forwardTargets = chatRoomsList.filter((room) =>
+          q ? room.toLowerCase().includes(q) : true
+        );
+        return (
+          <div
+            className="fixed inset-0 z-[70] bg-slate-950/70 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4"
+            onClick={() => setForwardingMessage(null)}
+            role="dialog"
+            aria-modal="true"
+            aria-label="Forward Message"
+          >
+            <div
+              className="w-full max-w-md max-h-[86dvh] flex flex-col rounded-2xl bg-white dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-700/80 shadow-2xl overflow-hidden"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="px-4 py-3.5 border-b border-emerald-200 dark:border-emerald-800 bg-emerald-50/90 dark:bg-emerald-900/70 flex items-center justify-between gap-2 shrink-0">
+                <div className="flex items-center gap-2 min-w-0">
+                  <Forward className="w-4 h-4 text-emerald-700 dark:text-emerald-300 shrink-0" />
+                  <h3 className="text-sm font-black text-emerald-950 dark:text-white truncate">
+                    Forward Message
+                  </h3>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setForwardingMessage(null)}
+                  className="p-1.5 rounded-xl bg-white dark:bg-emerald-900 border border-emerald-200 dark:border-emerald-700 text-emerald-800 dark:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-800 transition"
+                  aria-label="Close forward dialog"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              {/* Message Preview */}
+              <div className="px-4 pt-3 pb-2 shrink-0">
+                <div className="p-2.5 rounded-xl bg-emerald-50/80 dark:bg-emerald-900/50 border border-emerald-200 dark:border-emerald-800 space-y-1.5">
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-emerald-700 dark:text-emerald-300">
+                    Message from {forwardingMessage.sender}
+                  </div>
+                  {forwardingMessage.mediaType === 'image' && forwardingMessage.mediaUrl && (
+                    <img
+                      src={forwardingMessage.mediaUrl}
+                      alt="Forward preview"
+                      className="max-h-24 rounded-lg object-contain border border-emerald-200 dark:border-emerald-700"
+                    />
+                  )}
+                  {forwardingMessage.mediaType === 'video' && (
+                    <div className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-emerald-800 dark:text-emerald-200">
+                      <Video className="w-3.5 h-3.5" /> Video Attachment
+                    </div>
+                  )}
+                  {forwardingMessage.mediaType === 'audio' && (
+                    <div className="text-[11px] text-emerald-800 dark:text-emerald-200">
+                      <span className="inline-flex items-center gap-1 font-semibold">
+                        <Mic className="w-3.5 h-3.5" /> Voice Message
+                      </span>
+                      {forwardingMessage.transcript && (
+                        <p className="text-[11px] italic text-emerald-700 dark:text-emerald-300 line-clamp-2 mt-0.5">
+                          &ldquo;{forwardingMessage.transcript}&rdquo;
+                        </p>
+                      )}
+                    </div>
+                  )}
+                  {forwardingMessage.mediaType === 'file' && (
+                    <div className="text-[11px] font-semibold text-amber-700 dark:text-amber-300">
+                      📎 File Attachment
+                    </div>
+                  )}
+                  {forwardingMessage.text && (
+                    <p className="text-xs text-emerald-950 dark:text-slate-100 line-clamp-3 break-words">
+                      {forwardingMessage.text}
+                    </p>
+                  )}
+                </div>
+              </div>
+
+              {/* Recipient Search */}
+              <div className="px-4 pb-2 shrink-0">
+                <div className="relative">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 pointer-events-none" />
+                  <input
+                    type="text"
+                    value={forwardSearch}
+                    onChange={(e) => setForwardSearch(e.target.value)}
+                    placeholder="Search user or room..."
+                    className="w-full pl-8 pr-3 py-2 rounded-xl bg-emerald-50 dark:bg-emerald-900/70 border border-emerald-300 dark:border-emerald-700 text-xs text-emerald-950 dark:text-white placeholder-emerald-600/60 dark:placeholder-emerald-400 focus:outline-none focus:border-emerald-500"
+                  />
+                </div>
+              </div>
+
+              {/* Select User / Room List */}
+              <div className="flex-1 overflow-y-auto px-4 pb-4 space-y-1.5">
+                {forwardTargets.length === 0 ? (
+                  <div className="py-6 text-center text-xs text-emerald-700 dark:text-emerald-300">
+                    No user or room found matching &ldquo;{forwardSearch.trim()}&rdquo;.
+                  </div>
+                ) : (
+                  forwardTargets.map((room) => {
+                    const isVip = room.trim().toLowerCase() === 'vip group';
+                    const targetAvatar = isVip ? '' : getUserAvatar({ name: room });
+                    const isSent = forwardedTargets.includes(room);
+                    const isSendingThis = forwardingTarget === room;
+                    const isRoomOnline =
+                      isVip || onlineUsers.includes(room.trim().toLowerCase());
+                    return (
+                      <div
+                        key={room}
+                        className="p-2.5 rounded-xl bg-emerald-50/70 dark:bg-emerald-900/50 border border-emerald-200 dark:border-emerald-800 flex items-center justify-between gap-2"
+                      >
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          {isVip ? (
+                            <div className="w-8 h-8 rounded-lg bg-emerald-200 dark:bg-emerald-800 border border-emerald-400/50 flex items-center justify-center shrink-0 text-emerald-800 dark:text-emerald-200">
+                              <Users className="w-4 h-4" />
+                            </div>
+                          ) : (
+                            <div className="relative shrink-0">
+                              <img
+                                src={targetAvatar}
+                                alt=""
+                                className={`w-8 h-8 rounded-lg bg-white dark:bg-emerald-950 border border-emerald-500/50 ${
+                                  isCustomAvatar(targetAvatar) ? 'object-cover' : 'object-contain'
+                                }`}
+                              />
+                              <span
+                                className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-white dark:border-emerald-950 ${
+                                  isRoomOnline ? 'bg-emerald-400' : 'bg-slate-400'
+                                }`}
+                              />
+                            </div>
+                          )}
+                          <div className="min-w-0">
+                            <div className="text-xs font-bold text-emerald-950 dark:text-white truncate">
+                              {room}
+                            </div>
+                            <div className="text-[10px] text-emerald-700 dark:text-emerald-300">
+                              {isVip ? 'Group Chat Room' : isRoomOnline ? 'Online' : 'Direct Message'}
+                            </div>
+                          </div>
+                        </div>
+
+                        {isSent ? (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setActiveChat(room);
+                              setActiveTab('messages');
+                              setForwardingMessage(null);
+                            }}
+                            className="px-3 py-1.5 rounded-lg bg-emerald-100 dark:bg-emerald-800 text-emerald-800 dark:text-emerald-200 text-[11px] font-bold inline-flex items-center gap-1 shrink-0 hover:bg-emerald-200 dark:hover:bg-emerald-700 transition"
+                          >
+                            <Check className="w-3.5 h-3.5" /> Sent · Open
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            disabled={Boolean(forwardingTarget)}
+                            onClick={() => handleForwardToRoom(room)}
+                            className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 dark:bg-emerald-400 dark:hover:bg-emerald-300 text-white dark:text-slate-950 text-[11px] font-bold inline-flex items-center gap-1 shrink-0 transition disabled:opacity-50"
+                          >
+                            {isSendingThis ? (
+                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            ) : (
+                              <Send className="w-3 h-3" />
+                            )}
+                            <span>{isSendingThis ? 'Sending...' : 'Send'}</span>
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {zoomedImage && (
         <ImageZoomModal

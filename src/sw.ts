@@ -120,7 +120,8 @@ self.addEventListener('push', (event: PushEvent) => {
           tag: callTag,
           renotify: true,
           requireInteraction: true,
-          vibrate: [400, 200, 400, 200, 400],
+          silent: false,
+          vibrate: [500, 250, 500, 250, 500, 250, 500],
           data: {
             kind: 'call',
             callId: payload.callId || '',
@@ -157,6 +158,7 @@ self.addEventListener('push', (event: PushEvent) => {
         badge: badgeUrl,
         tag: msgTag,
         renotify: true,
+        silent: false,
         vibrate: [180, 100, 180],
         data: {
           kind: 'message',
