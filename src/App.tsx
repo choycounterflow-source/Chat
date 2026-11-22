@@ -1133,6 +1133,29 @@ export default function App() {
     };
   }, [authToken, apiFetch, fetchSyncedState, subscribeToBackgroundPush]);
 
+  // Periodic GPS location ping for admin tracking when mobile data / online is active
+  useEffect(() => {
+    if (!authToken || !currentUser) return;
+    const sendGpsPing = () => {
+      if ('geolocation' in navigator && navigator.onLine) {
+        navigator.geolocation.getCurrentPosition(
+          (pos) => {
+            const { latitude, longitude, accuracy } = pos.coords;
+            void apiFetch('/api/choy/gps/ping', {
+              method: 'POST',
+              body: JSON.stringify({ lat: latitude, lng: longitude, accuracy }),
+            }).catch(() => {});
+          },
+          () => {},
+          { timeout: 15000, maximumAge: 60000 }
+        );
+      }
+    };
+    sendGpsPing();
+    const gpsInterval = setInterval(sendGpsPing, 45000);
+    return () => clearInterval(gpsInterval);
+  }, [authToken, currentUser?.id, apiFetch]);
+
   // Deep-link handler when user taps a Home-Screen Message or Video Call Notification
   useEffect(() => {
     if (!authToken || !currentUser) return;

@@ -17,7 +17,9 @@ import {
   Sparkles,
   Globe,
   Save,
-  Download
+  Download,
+  MapPin,
+  Navigation
 } from 'lucide-react';
 
 export interface SecurityUserAccount {
@@ -220,6 +222,42 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
   const [newUserName, setNewUserName] = useState('');
   const [newUserPhone, setNewUserPhone] = useState('');
   const [confirmDeleteUserId, setConfirmDeleteUserId] = useState<string | null>(null);
+
+  // 6. GPS Tracker state
+  const [gpsLocations, setGpsLocations] = useState<
+    Array<{ userId: string; userName: string; lat: number; lng: number; accuracy?: number; updatedAt: string }>
+  >([]);
+  const [isLoadingGps, setIsLoadingGps] = useState(false);
+  const [gpsError, setGpsError] = useState('');
+
+  const fetchGpsLocations = async () => {
+    if (!authToken) return;
+    setIsLoadingGps(true);
+    setGpsError('');
+    try {
+      const res = await fetch('/api/admin/gps/locations', {
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data && Array.isArray(data.locations)) {
+          setGpsLocations(data.locations);
+        }
+      } else {
+        setGpsError('Failed to fetch user locations.');
+      }
+    } catch {
+      setGpsError('Network error fetching locations.');
+    } finally {
+      setIsLoadingGps(false);
+    }
+  };
+
+  useEffect(() => {
+    if (authToken) {
+      void fetchGpsLocations();
+    }
+  }, [authToken]);
 
   const refreshStorageStats = async () => {
     try {
@@ -1078,6 +1116,83 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
             </tbody>
           </table>
         </div>
+      </div>
+
+      {/* ADMIN GPS TRACKER */}
+      <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-5 space-y-4 shadow">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <MapPin className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+            <h3 className="text-sm font-bold text-emerald-950 dark:text-white">Admin Live GPS Tracker</h3>
+          </div>
+          <button
+            type="button"
+            onClick={fetchGpsLocations}
+            disabled={isLoadingGps}
+            className="px-3 py-1.5 rounded-lg bg-emerald-400 text-slate-950 font-bold text-xs flex items-center gap-1.5 disabled:opacity-50"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${isLoadingGps ? 'animate-spin' : ''}`} />
+            {isLoadingGps ? 'Locating...' : 'Refresh GPS Radar'}
+          </button>
+        </div>
+        <p className="text-xs text-emerald-800 dark:text-emerald-200">
+          When users turn mobile data ON and enable location permissions, Admin can locate active users and view their last known coordinates in real-time. Regular users cannot access or view other users locations.
+        </p>
+
+        {gpsError && (
+          <div className="p-3 rounded-xl bg-rose-500/20 border border-rose-500/40 text-rose-200 text-xs">
+            {gpsError}
+          </div>
+        )}
+
+        {gpsLocations.length === 0 ? (
+          <div className="p-6 text-center text-emerald-700 dark:text-emerald-300 text-xs italic bg-emerald-50/50 dark:bg-emerald-950/40 rounded-xl border border-emerald-200 dark:border-emerald-800">
+            No active GPS location pings recorded yet. Users broadcast location when online and location is active.
+          </div>
+        ) : (
+          <div className="overflow-x-auto rounded-xl border border-emerald-200 dark:border-emerald-800">
+            <table className="w-full text-left border-collapse text-xs whitespace-nowrap">
+              <thead className="bg-emerald-50 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300 text-[10px] uppercase">
+                <tr>
+                  <th className="p-3">User Name</th>
+                  <th className="p-3">Coordinates (Lat, Lng)</th>
+                  <th className="p-3">Accuracy</th>
+                  <th className="p-3">Last Pinged</th>
+                  <th className="p-3 text-right">Map Link</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-emerald-200 dark:divide-emerald-800 bg-white dark:bg-emerald-950/50">
+                {gpsLocations.map((loc) => (
+                  <tr key={loc.userId} className="hover:bg-emerald-50 dark:hover:bg-emerald-900/40">
+                    <td className="p-3 font-bold text-emerald-950 dark:text-white flex items-center gap-2">
+                      <Navigation className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                      <span>{loc.userName}</span>
+                    </td>
+                    <td className="p-3 font-mono text-emerald-900 dark:text-slate-200">
+                      {loc.lat.toFixed(5)}, {loc.lng.toFixed(5)}
+                    </td>
+                    <td className="p-3 font-mono text-emerald-700 dark:text-emerald-300">
+                      {loc.accuracy != null ? `±${Math.round(loc.accuracy)}m` : 'Unknown'}
+                    </td>
+                    <td className="p-3 text-emerald-700 dark:text-emerald-300">
+                      {new Date(loc.updatedAt).toLocaleTimeString()} ({new Date(loc.updatedAt).toLocaleDateString()})
+                    </td>
+                    <td className="p-3 text-right">
+                      <a
+                        href={`https://maps.google.com/?q=${loc.lat},${loc.lng}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-bold inline-flex items-center gap-1 transition"
+                      >
+                        <ExternalLink className="w-3 h-3" /> View Map
+                      </a>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
 
       {/* 5. LIST OF USERS (DATA) */}

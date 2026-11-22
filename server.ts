@@ -911,6 +911,35 @@ app.get('/api/choy/rtc/poll', requireAuth, (req: AuthedRequest, res: Response) =
   });
 });
 
+app.post('/api/choy/gps/ping', requireAuth, async (req: AuthedRequest, res: Response) => {
+  try {
+    const user = req.choyUser!;
+    const { lat, lng, accuracy } = req.body || {};
+    if (typeof lat !== 'number' || typeof lng !== 'number') {
+      return res.status(400).json({ error: 'Valid lat and lng required' });
+    }
+    await store.upsertLocation(user.id, user.name, lat, lng, typeof accuracy === 'number' ? accuracy : undefined);
+    res.json({ success: true });
+  } catch (err) {
+    console.error('[GPS Ping Error]:', err);
+    res.status(500).json({ error: 'Failed to record location' });
+  }
+});
+
+app.get('/api/admin/gps/locations', requireAuth, async (req: AuthedRequest, res: Response) => {
+  try {
+    const user = req.choyUser!;
+    if (user.role !== 'admin') {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
+    const locations = await store.getAllLocations();
+    res.json({ locations });
+  } catch (err) {
+    console.error('[Get GPS Locations Error]:', err);
+    res.status(500).json({ error: 'Failed to fetch locations' });
+  }
+});
+
 app.post('/api/choy/rtc/signal', requireAuth, async (req: AuthedRequest, res: Response) => {
   try {
     const user = req.choyUser!;

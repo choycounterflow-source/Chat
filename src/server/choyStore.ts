@@ -269,6 +269,7 @@ export class ChoyStore {
   private memSettings: StoredPricesSettings = { ...DEFAULT_SETTINGS };
   private memPushSubs: StoredPushSubscription[] = [];
   private memVapidKeys: VapidKeyPair | null = null;
+  private memLocations: Array<{ userId: string; userName: string; lat: number; lng: number; accuracy?: number; updatedAt: string }> = [];
   private memSeeded = false;
 
   constructor() {
@@ -404,6 +405,14 @@ export class ChoyStore {
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
       CREATE INDEX IF NOT EXISTS idx_push_subs_user_name ON app_push_subscriptions (LOWER(user_name));
+      CREATE TABLE IF NOT EXISTS app_user_locations (
+        user_id TEXT PRIMARY KEY,
+        user_name TEXT NOT NULL,
+        lat DOUBLE PRECISION NOT NULL,
+        lng DOUBLE PRECISION NOT NULL,
+        accuracy DOUBLE PRECISION,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
     `);
   }
 
@@ -1421,6 +1430,53 @@ export class ChoyStore {
       if (isGroup) return true;
       return s.userName.trim().toLowerCase() === normalized;
     });
+  }
+
+  public async upsertLocation(
+    userId: string,
+    userName: string,
+    lat: number,
+    lng: number,
+    accuracy?: number
+  ): Promise<void> {
+    await this.ready();
+    const now = new Date().toISOString();
+    if (this.usePostgres && this.pool) {
+      await this.pool.query(
+        `INSERT INTO app_user_locations (user_id, user_name, lat, lng, accuracy, updated_at)
+         VALUES ($1, $2, $3, $4, $5, NOW())
+         ON CONFLICT (user_id) DO UPDATE
+           SET user_name = EXCLUDED.user_name,
+               lat = EXCLUDED.lat,
+               lng = EXCLUDED.lng,
+               accuracy = EXCLUDED.accuracy,
+               updated_at = NOW()`,
+        [userId, userName, lat, lng, accuracy ?? null]
+      );
+      return;
+    }
+    this.memLocations = this.memLocations.filter((l) => l.userId !== userId);
+    this.memLocations.push({ userId, userName, lat, lng, accuracy, updatedAt: now });
+  }
+
+  public async getAllLocations(): Promise<
+    Array<{ userId: string; userName: string; lat: number; lng: number; accuracy?: number; updatedAt: string }>
+  > {
+    await this.ready();
+    if (this.usePostgres && this.pool) {
+      const res = await this.pool.query(
+        `SELECT user_id, user_name, lat, lng, accuracy, updated_at FROM app_user_locations ORDER BY updated_at DESC`
+      );
+      return res.rows.map((r) => ({
+        userId: String(r.user_id),
+        userName: String(r.user_name),
+        lat: Number(r.lat),
+        lng: Number(r.lng),
+        accuracy: r.accuracy != null ? Number(r.accuracy) : undefined,
+        updatedAt: new Date(String(r.updated_at)).toISOString(),
+      }));
+    }
+    return this.memLocations;
   }
 
   private mapUserRow(r: Record<string, unknown>): StoredUser {
