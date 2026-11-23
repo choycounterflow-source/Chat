@@ -34,7 +34,9 @@ import {
   Pin,
   FileText,
   Folder,
-  Code2
+  Code2,
+  ArrowLeft,
+  LayoutGrid
 } from 'lucide-react';
 import {
   type EmojiLinkItem,
@@ -337,8 +339,20 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
   const [isFingerprinting, setIsFingerprinting] = useState(false);
   const [expandedToolId, setExpandedToolId] = useState<string | null>(null);
 
-  // 9. Type Notes (Feature Planner & Auto-Summarise File Builder)
-  const [showTypeNotesPanel, setShowTypeNotesPanel] = useState(true);
+  // 9. Active Dashboard Module & Type Notes
+  const [activeStudioModule, setActiveStudioModule] = useState<
+    | 'home'
+    | 'type_notes'
+    | 'emoji_links'
+    | 'quick_links'
+    | 'keys_env'
+    | 'analytics'
+    | 'storage'
+    | 'newsfeeds'
+    | 'gps_tracker'
+    | 'users'
+    | 'tools_guide'
+  >('home');
   const [studioNotes, setStudioNotes] = useState<StudioNoteFile[]>([]);
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
   const [showNewNoteFileForm, setShowNewNoteFileForm] = useState(false);
@@ -1392,16 +1406,21 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          {activeStudioModule !== 'home' && (
+            <button
+              type="button"
+              onClick={() => setActiveStudioModule('home')}
+              className="px-3.5 py-2 rounded-xl bg-emerald-400 hover:bg-emerald-300 text-slate-950 font-black flex items-center gap-1.5 shadow transition"
+            >
+              <ArrowLeft className="w-3.5 h-3.5" />
+              <span>All Dashboards</span>
+            </button>
+          )}
           <button
             type="button"
-            onClick={() => {
-              setShowTypeNotesPanel((prev) => !prev);
-              setTimeout(() => {
-                document.getElementById('studio-type-notes')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-              }, 60);
-            }}
+            onClick={() => setActiveStudioModule(activeStudioModule === 'type_notes' ? 'home' : 'type_notes')}
             className={`px-3.5 py-2 rounded-xl font-bold flex items-center gap-1.5 shadow transition border ${
-              showTypeNotesPanel
+              activeStudioModule === 'type_notes'
                 ? 'bg-emerald-400 text-slate-950 border-emerald-300'
                 : 'bg-emerald-500/20 border-emerald-400/50 text-emerald-900 dark:text-emerald-200 hover:bg-emerald-500/30'
             }`}
@@ -1423,7 +1442,7 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
             disabled={isClearingCache}
             className="px-4 py-2 rounded-xl bg-amber-400 text-slate-950 font-bold hover:bg-amber-300 flex items-center gap-2 shadow transition disabled:opacity-60"
           >
-            <RefreshCw className={`w-3.5 h-3.5${isClearingCache ? 'animate-spin' : ''}`} />
+            <RefreshCw className={`w-3.5 h-3.5 ${isClearingCache ? 'animate-spin' : ''}`} />
             {isClearingCache ? 'Clearing Cache...' : 'Clear App Cache'}
           </button>
         </div>
@@ -1483,8 +1502,187 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
         </div>
       )}
 
+      {/* SECURITY STUDIO CLEAN DASHBOARD HUB (CLICK ANY SETUP BUTTON TO OPEN ITS OWN DASHBOARD) */}
+      {(() => {
+        const dashboardCards = [
+          {
+            id: 'type_notes' as const,
+            title: 'Type Notes & AI Prompt Builder',
+            subtitle: 'Create note files, auto-summarise & connect updates for AI Studio',
+            badge: `${studioNotes.length} file${studioNotes.length === 1 ? '' : 's'}`,
+            icon: <FileText className="w-5 h-5 text-emerald-600 dark:text-emerald-300" />,
+            accent: 'border-emerald-300 dark:border-emerald-600/70 hover:border-emerald-400',
+          },
+          {
+            id: 'emoji_links' as const,
+            title: 'Emoji Link & App Icon Share',
+            subtitle: 'Live website URL to emoji link, App Icon image & Auto Push/Sync',
+            badge: `${emojiLinksList.length} link${emojiLinksList.length === 1 ? '' : 's'}`,
+            icon: <Sparkles className="w-5 h-5 text-amber-500 dark:text-amber-300" />,
+            accent: 'border-amber-300 dark:border-amber-500/60 hover:border-amber-400',
+          },
+          {
+            id: 'keys_env' as const,
+            title: 'Keys & .env Code Vault',
+            subtitle: 'Render, Supabase, Gemini AI & categorized .env auto-synced vault',
+            badge: `${envVaultEntries.length} synced`,
+            icon: <Key className="w-5 h-5 text-indigo-600 dark:text-indigo-300" />,
+            accent: 'border-indigo-300 dark:border-indigo-500/60 hover:border-indigo-400',
+          },
+          {
+            id: 'quick_links' as const,
+            title: 'Quick Links (Render & AI Studio)',
+            subtitle: 'Direct links to AI Studio Chat, Render Dashboard, Live URL & Postgres',
+            badge: 'Direct Links',
+            icon: <Cloud className="w-5 h-5 text-cyan-600 dark:text-cyan-300" />,
+            accent: 'border-cyan-300 dark:border-cyan-500/60 hover:border-cyan-400',
+          },
+          {
+            id: 'newsfeeds' as const,
+            title: 'Newsfeeds A & B Assignment',
+            subtitle: 'Rename Newsfeed channels and assign each user to A, B, or Both',
+            badge: `${usersList.length} users`,
+            icon: <Globe className="w-5 h-5 text-emerald-600 dark:text-emerald-300" />,
+            accent: 'border-emerald-300 dark:border-emerald-600/70 hover:border-emerald-400',
+          },
+          {
+            id: 'users' as const,
+            title: 'Users Data & Accounts',
+            subtitle: 'Add cloud accounts, export backup, copy IDs & manage users',
+            badge: `${usersList.length} users`,
+            icon: <Users className="w-5 h-5 text-emerald-600 dark:text-emerald-300" />,
+            accent: 'border-emerald-300 dark:border-emerald-600/70 hover:border-emerald-400',
+          },
+          {
+            id: 'gps_tracker' as const,
+            title: 'Admin Live GPS Tracker',
+            subtitle: 'Monitor active member coordinates, accuracy & open Google Maps',
+            badge: `${gpsLocations.length} pinned`,
+            icon: <MapPin className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />,
+            accent: 'border-emerald-300 dark:border-emerald-600/70 hover:border-emerald-400',
+          },
+          {
+            id: 'storage' as const,
+            title: 'Cloud Storage & Cache Monitor',
+            subtitle: 'Supabase storage bucket usage, Render DB & browser cache controls',
+            badge: mediaStorageMode === 'supabase' ? 'Supabase' : 'Server DB',
+            icon: <HardDrive className="w-5 h-5 text-cyan-600 dark:text-cyan-300" />,
+            accent: 'border-cyan-300 dark:border-cyan-500/60 hover:border-cyan-400',
+          },
+          {
+            id: 'analytics' as const,
+            title: 'App Analytics Overview',
+            subtitle: 'Live stats for posts, messages, ledger value, blocked & AI Q&A',
+            badge: `${postsCount} posts`,
+            icon: <BarChart3 className="w-5 h-5 text-emerald-600 dark:text-emerald-300" />,
+            accent: 'border-emerald-300 dark:border-emerald-600/70 hover:border-emerald-400',
+          },
+          {
+            id: 'tools_guide' as const,
+            title: 'Tech Stack, Tools & Pricing Guide',
+            subtitle: 'Spreadsheet of all app tools, free vs paid plans & setup instructions',
+            badge: `${TOOLS_PRICING_GUIDE.length} tools`,
+            icon: <Layers className="w-5 h-5 text-indigo-600 dark:text-indigo-300" />,
+            accent: 'border-indigo-300 dark:border-indigo-500/60 hover:border-indigo-400',
+          },
+        ];
+
+        if (activeStudioModule === 'home') {
+          return (
+            <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-5 space-y-4 shadow">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <LayoutGrid className="w-4 h-4 text-emerald-600 dark:text-emerald-300" />
+                  <div>
+                    <h3 className="text-sm font-black text-emerald-950 dark:text-white">
+                      Security Studio Setup Dashboards
+                    </h3>
+                    <p className="text-[11px] text-emerald-700 dark:text-emerald-300">
+                      Click any button below to open its own setup dashboard. Everything stays clean and organized.
+                    </p>
+                  </div>
+                </div>
+                <span className="px-2.5 py-1 rounded-lg bg-emerald-100 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 text-emerald-800 dark:text-emerald-200 font-bold text-[10px]">
+                  {dashboardCards.length} Setup Dashboards
+                </span>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                {dashboardCards.map((card) => (
+                  <button
+                    key={card.id}
+                    type="button"
+                    onClick={() => setActiveStudioModule(card.id)}
+                    className={`group text-left p-4 rounded-2xl bg-emerald-50/80 dark:bg-emerald-950/80 border ${card.accent} hover:bg-emerald-100/80 dark:hover:bg-emerald-900/80 transition shadow-sm flex flex-col justify-between gap-3`}
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="w-10 h-10 rounded-xl bg-white dark:bg-emerald-900 border border-emerald-200 dark:border-emerald-700 flex items-center justify-center shrink-0 shadow-xs group-hover:scale-105 transition">
+                        {card.icon}
+                      </div>
+                      <span className="px-2 py-0.5 rounded-full bg-white dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 text-[10px] font-bold text-emerald-800 dark:text-emerald-200">
+                        {card.badge}
+                      </span>
+                    </div>
+                    <div className="space-y-1">
+                      <div className="text-xs font-black text-emerald-950 dark:text-white group-hover:text-emerald-700 dark:group-hover:text-emerald-300">
+                        {card.title}
+                      </div>
+                      <p className="text-[11px] text-emerald-700 dark:text-emerald-300/90 leading-snug">
+                        {card.subtitle}
+                      </p>
+                    </div>
+                    <div className="text-[10px] font-black uppercase tracking-wider text-emerald-700 dark:text-emerald-300 flex items-center gap-1 pt-0.5">
+                      <span>Open Dashboard</span>
+                      <span className="group-hover:translate-x-0.5 transition-transform">→</span>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </div>
+          );
+        }
+
+        const currentCard = dashboardCards.find((c) => c.id === activeStudioModule);
+        return (
+          <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-3 space-y-2.5 shadow-sm">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <button
+                type="button"
+                onClick={() => setActiveStudioModule('home')}
+                className="px-3 py-1.5 rounded-xl bg-emerald-100 dark:bg-emerald-950 hover:bg-emerald-200 dark:hover:bg-emerald-800 border border-emerald-300 dark:border-emerald-700 text-emerald-950 dark:text-white font-bold text-xs inline-flex items-center gap-1.5 transition"
+              >
+                <ArrowLeft className="w-3.5 h-3.5" />
+                <span>Back to Security Studio Dashboards</span>
+              </button>
+              {currentCard && (
+                <div className="flex items-center gap-1.5 text-xs font-black text-emerald-950 dark:text-white">
+                  {currentCard.icon}
+                  <span>{currentCard.title}</span>
+                </div>
+              )}
+            </div>
+            <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
+              {dashboardCards.map((card) => (
+                <button
+                  key={card.id}
+                  type="button"
+                  onClick={() => setActiveStudioModule(card.id)}
+                  className={`px-2.5 py-1 rounded-lg text-[11px] font-bold whitespace-nowrap shrink-0 border transition ${
+                    activeStudioModule === card.id
+                      ? 'bg-emerald-400 text-slate-950 border-emerald-400 shadow-xs'
+                      : 'bg-emerald-50 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-200 border-emerald-200 dark:border-emerald-800 hover:bg-emerald-100 dark:hover:bg-emerald-900'
+                  }`}
+                >
+                  {card.title}
+                </button>
+              ))}
+            </div>
+          </div>
+        );
+      })()}
+
       {/* TYPE NOTES: AI FEATURE PLANNER & AUTO-SUMMARISE NOTEBOOK */}
-      {showTypeNotesPanel && (
+      {activeStudioModule === 'type_notes' && (
         <div
           id="studio-type-notes"
           className="bg-white dark:bg-emerald-900/65 border-2 border-emerald-400/70 dark:border-emerald-400/50 rounded-2xl p-5 space-y-4 shadow-lg"
@@ -1800,6 +1998,7 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
       )}
 
       {/* 0. LIVE WEBSITE EMOJI LINK GENERATOR & APP ICON COMPOSER (AUTO PUSH & SYNC) */}
+      {activeStudioModule === 'emoji_links' && (
       <div className="bg-white dark:bg-emerald-900/60 border-2 border-amber-400/60 dark:border-amber-400/50 rounded-2xl p-5 space-y-4 shadow-lg">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2">
@@ -2111,8 +2310,10 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
           )}
         </div>
       </div>
+      )}
 
       {/* 1. DIRECT LINKS: RENDER DOCKER & AI STUDIO */}
+      {activeStudioModule === 'quick_links' && (
       <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-5 space-y-4 shadow">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2">
@@ -2234,8 +2435,10 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
           </form>
         )}
       </div>
+      )}
 
       {/* 2. SIMPLE ALL-IN-ONE KEYS SETUP (NO CLUTTER, DIRECT "GET KEY" LINKS) */}
+      {activeStudioModule === 'keys_env' && (
       <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-5 space-y-4 shadow">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2">
@@ -2621,8 +2824,10 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
           })()}
         </div>
       </div>
+      )}
 
       {/* 3. ANALYTICS OVERVIEW */}
+      {activeStudioModule === 'analytics' && (
       <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-5 space-y-4 shadow">
         <div className="flex items-center gap-2">
           <BarChart3 className="w-4 h-4 text-emerald-700 dark:text-emerald-300" />
@@ -2661,8 +2866,10 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
           </div>
         </div>
       </div>
+      )}
 
       {/* 4. STORAGE MONITORING (SUPABASE CLOUD STORAGE + CACHE) */}
+      {activeStudioModule === 'storage' && (
       <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-5 space-y-4 shadow">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2">
@@ -2784,8 +2991,10 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
           </div>
         </div>
       </div>
+      )}
 
       {/* NEWSFEEDS A & B SETUP & USER ASSIGNMENT */}
+      {activeStudioModule === 'newsfeeds' && (
       <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-5 space-y-4 shadow">
         <div className="flex items-center gap-2">
           <Globe className="w-4 h-4 text-emerald-700 dark:text-emerald-300" />
@@ -2902,8 +3111,10 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
           </table>
         </div>
       </div>
+      )}
 
       {/* ADMIN GPS TRACKER */}
+      {activeStudioModule === 'gps_tracker' && (
       <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-5 space-y-4 shadow">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2">
@@ -2979,8 +3190,10 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
           </div>
         )}
       </div>
+      )}
 
       {/* 5. LIST OF USERS (DATA) */}
+      {activeStudioModule === 'users' && (
       <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-5 space-y-4 shadow">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2">
@@ -3120,8 +3333,10 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
           </table>
         </div>
       </div>
+      )}
 
       {/* TOOLS & PRICING PLANS GUIDE (SPREADSHEET) */}
+      {activeStudioModule === 'tools_guide' && (
       <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-5 space-y-4 shadow">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2">
@@ -3196,6 +3411,7 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
           </table>
         </div>
       </div>
+      )}
     </div>
   );
 };

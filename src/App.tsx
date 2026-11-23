@@ -63,7 +63,8 @@ import {
   MapPin,
   Copy,
   ExternalLink,
-  Globe
+  Globe,
+  Smile
 } from 'lucide-react';
 import { PWAInstallButton } from './components/PWAInstallButton';
 import { OfflineIndicator } from './components/OfflineIndicator';
@@ -643,6 +644,8 @@ export default function App() {
     }
   }, [cloudMessages, localMessages, chatHeadBubbleEnabled, currentUser, activeTab, activeChat]);
   const [msgInput, setMsgInput] = useState('');
+  const [openReactionPickerMsgId, setOpenReactionPickerMsgId] = useState<string | null>(null);
+  const [showMsgEmojiPicker, setShowMsgEmojiPicker] = useState(false);
   const [msgMediaType, setMsgMediaType] = useState<'text' | 'image' | 'video' | 'audio' | 'file'>('text');
   const [msgTranscript, setMsgTranscript] = useState('');
   const [msgMediaUrl, setMsgMediaUrl] = useState('');
@@ -652,6 +655,29 @@ export default function App() {
   const [msgSearchQuery, setMsgSearchQuery] = useState('');
   const [msgSearchScope, setMsgSearchScope] = useState<'all' | 'room'>('all');
   const [highlightedMsgId, setHighlightedMsgId] = useState<string | null>(null);
+
+  useEffect(() => {
+    setOpenReactionPickerMsgId(null);
+    setShowMsgEmojiPicker(false);
+  }, [activeChat]);
+
+  useEffect(() => {
+    if (!openReactionPickerMsgId) return;
+    const handleClose = (e: MouseEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (target?.closest('[data-emoji-reaction-menu="true"]')) return;
+      setOpenReactionPickerMsgId(null);
+    };
+    const handleEsc = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpenReactionPickerMsgId(null);
+    };
+    document.addEventListener('mousedown', handleClose);
+    window.addEventListener('keydown', handleEsc);
+    return () => {
+      document.removeEventListener('mousedown', handleClose);
+      window.removeEventListener('keydown', handleEsc);
+    };
+  }, [openReactionPickerMsgId]);
   const msgFileInputRef = useRef<HTMLInputElement>(null);
   const msgImageInputRef = useRef<HTMLInputElement>(null);
   const [isRecordingAudio, setIsRecordingAudio] = useState(false);
@@ -1787,6 +1813,16 @@ export default function App() {
         }
       };
 
+      pc.oniceconnectionstatechange = () => {
+        if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
+          setCallStatus('connected');
+          setCallPeerOfflineHint(false);
+        } else if (pc.iceConnectionState === 'failed') {
+          setCallError('Connection lost. Tap Retry Call to reconnect.');
+          setCallStatus('error');
+        }
+      };
+
       return pc;
     },
     [sendRtcSignalToServer]
@@ -1891,7 +1927,6 @@ export default function App() {
         targetName: callData.fromUserName,
         sdp: answer
       });
-      setCallStatus('connected');
     } catch (err) {
       setCallStatus('error');
       setCallError(err instanceof Error ? err.message : 'Failed to accept video call.');
@@ -2044,6 +2079,9 @@ export default function App() {
       }
 
       if (payload.type === 'decline') {
+        pendingIceCandidatesRef.current = pendingIceCandidatesRef.current.filter(
+          (item) => item.callId !== payload.callId
+        );
         if (activeCallIdRef.current === payload.callId) {
           showNotice(`${payload.fromUserName || 'User'} declined the video call.`);
           endVideoCall(false);
@@ -2052,6 +2090,9 @@ export default function App() {
       }
 
       if (payload.type === 'hangup') {
+        pendingIceCandidatesRef.current = pendingIceCandidatesRef.current.filter(
+          (item) => item.callId !== payload.callId
+        );
         if (incomingCall?.callId === payload.callId) {
           setIncomingCall(null);
         }
@@ -3297,6 +3338,7 @@ export default function App() {
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!currentUser || isSendingMsg || (!msgInput.trim() && !msgMediaUrl)) return;
+    setShowMsgEmojiPicker(false);
 
     const isLocalBlob = Boolean(msgMediaUrl) && msgMediaUrl.startsWith('blob:');
 
@@ -4306,6 +4348,8 @@ export default function App() {
                     <div className="text-xs font-bold text-emerald-300">
                       {callStatus === 'connected'
                         ? 'Connected (Audio Live)'
+                        : callStatus === 'ringing'
+                        ? `Connecting video & audio with ${callPartnerName || activeChat}...`
                         : callPeerOfflineHint
                         ? `Camera live — waiting for ${callPartnerName || activeChat} to open Choy Chat...`
                         : `Calling ${callPartnerName || activeChat}...`}
@@ -6403,17 +6447,47 @@ export default function App() {
                         </div>
 
                         {!m.isQueuedOffline && (
-                          <div className="flex flex-wrap items-center gap-1 mt-1 px-1">
-                            {(['❤️', '👍', '🔥', '😄'] as const).map((emoji) => (
-                              <button
-                                key={emoji}
-                                type="button"
-                                onClick={() => addReactionToMessage(m, emoji)}
-                                className="text-[11px] px-1.5 py-0.5 rounded bg-emerald-50 dark:bg-emerald-950 hover:bg-emerald-100 dark:hover:bg-emerald-800 text-emerald-800 dark:text-slate-300 transition"
+                          <div className="relative flex flex-wrap items-center gap-1 mt-1 px-1" data-emoji-reaction-menu="true">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setOpenReactionPickerMsgId((prev) => (prev === m.id ? null : m.id))
+                              }
+                              className={`inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded border transition ${
+                                openReactionPickerMsgId === m.id
+                                  ? 'bg-emerald-400 text-slate-950 border-emerald-400 shadow-sm'
+                                  : 'bg-emerald-50 dark:bg-emerald-950 hover:bg-emerald-200 dark:hover:bg-emerald-800 text-emerald-800 dark:text-emerald-200 border-emerald-200 dark:border-emerald-800/80'
+                              }`}
+                              title="React with emoji"
+                              aria-label="React with emoji"
+                              aria-expanded={openReactionPickerMsgId === m.id}
+                            >
+                              <Smile className="w-3 h-3" />
+                            </button>
+
+                            {openReactionPickerMsgId === m.id && (
+                              <div
+                                className={`absolute bottom-full mb-1.5 z-20 flex items-center gap-0.5 p-1 rounded-2xl bg-white dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-600 shadow-lg ${
+                                  m.isMe ? 'right-0' : 'left-0'
+                                }`}
                               >
-                                {emoji}
-                              </button>
-                            ))}
+                                {(['❤️', '👍', '🔥', '😄', '😂', '😮', '😢', '🙏'] as const).map((emoji) => (
+                                  <button
+                                    key={emoji}
+                                    type="button"
+                                    onClick={() => {
+                                      setOpenReactionPickerMsgId(null);
+                                      void addReactionToMessage(m, emoji);
+                                    }}
+                                    className="text-sm w-7 h-7 flex items-center justify-center rounded-xl hover:bg-emerald-100 dark:hover:bg-emerald-800 hover:scale-110 transition"
+                                    title={`React ${emoji}`}
+                                  >
+                                    {emoji}
+                                  </button>
+                                ))}
+                              </div>
+                            )}
+
                             <button
                               type="button"
                               onClick={() => openForwardDialog(m)}
@@ -6616,69 +6690,117 @@ export default function App() {
                       </div>
                     </div>
                   ) : (
-                    <form onSubmit={handleSendMessage} className="flex items-center gap-1.5 sm:gap-2">
-                      <button
-                        type="button"
-                        disabled={isUploadingMsgMedia || isSendingMsg}
-                        onClick={() => msgImageInputRef.current?.click()}
-                        className="p-2.5 rounded-xl bg-emerald-100/80 dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 text-emerald-700 dark:text-emerald-300 hover:text-emerald-950 dark:hover:text-white hover:bg-emerald-100 dark:hover:bg-emerald-800 transition shrink-0 disabled:opacity-50"
-                        title="Send Photo / Image"
-                      >
-                        {isUploadingMsgMedia ? <Loader2 className="w-4 h-4 animate-spin" /> : <ImageIcon className="w-4 h-4" />}
-                      </button>
-                      <button
-                        type="button"
-                        disabled={isUploadingMsgMedia || isSendingMsg}
-                        onClick={() => msgFileInputRef.current?.click()}
-                        className="p-2.5 rounded-xl bg-emerald-100/80 dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 text-emerald-700 dark:text-emerald-300 hover:text-emerald-950 dark:hover:text-white hover:bg-emerald-100 dark:hover:bg-emerald-800 transition shrink-0 disabled:opacity-50"
-                        title="Attach Video, Audio, or File"
-                      >
-                        <Plus className="w-4 h-4" />
-                      </button>
-                      <button
-                        type="button"
-                        disabled={isProcessingAudio || isUploadingMsgMedia || isSendingMsg}
-                        onClick={startAudioRecording}
-                        className="p-2.5 rounded-xl bg-emerald-100/80 dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 text-emerald-700 dark:text-emerald-300 hover:text-emerald-950 dark:hover:text-white hover:bg-emerald-100 dark:hover:bg-emerald-800 transition shrink-0 disabled:opacity-50"
-                        title="Record voice message"
-                      >
-                        <Mic className="w-4 h-4" />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setShowMsgLinkInput(!showMsgLinkInput)}
-                        className={`p-2.5 rounded-xl border transition shrink-0 ${
-                          showMsgLinkInput
-                            ? 'bg-cyan-400 text-slate-950 border-cyan-300'
-                            : 'bg-emerald-100/80 dark:bg-emerald-900 border-emerald-300 dark:border-emerald-700 text-cyan-700 dark:text-cyan-300 hover:text-emerald-950 dark:hover:text-white hover:bg-emerald-100 dark:hover:bg-emerald-800'
-                        }`}
-                        title="Attach synced Video/Image URL"
-                      >
-                        <Link2 className="w-4 h-4" />
-                      </button>
-                      <input
-                        type="text"
-                        placeholder={
-                          isUploadingMsgMedia
-                            ? 'Preparing photo/media...'
-                            : isSendingMsg
-                            ? 'Sending...'
-                            : isProcessingAudio
-                            ? 'Uploading voice clip...'
-                            : `Message ${activeChat}...`
-                        }
-                        value={msgInput}
-                        onChange={(e) => setMsgInput(e.target.value)}
-                        className="flex-1 min-w-0 p-2.5 bg-emerald-100/80 dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 rounded-xl text-xs text-emerald-950 dark:text-white placeholder-emerald-600/60 dark:placeholder-emerald-400 focus:outline-none"
-                      />
-                      <button
-                        type="submit"
-                        disabled={isProcessingAudio || isUploadingMsgMedia || isSendingMsg || (!msgInput.trim() && !msgMediaUrl)}
-                        className="px-3.5 sm:px-4 py-2.5 bg-emerald-400 text-slate-950 font-bold text-xs rounded-xl shadow hover:bg-emerald-300 transition shrink-0 disabled:opacity-50"
-                      >
-                        {isSendingMsg ? 'Sending...' : 'Send'}
-                      </button>
-                    </form>
+                    <div className="space-y-2">
+                      {showMsgEmojiPicker && (
+                        <div className="flex flex-wrap items-center justify-between gap-1.5 p-2 rounded-xl bg-white dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 shadow-sm">
+                          <div className="flex flex-wrap items-center gap-1">
+                            {(
+                              [
+                                '😀', '😄', '😂', '🥰', '😍', '😎', '😉', '😊',
+                                '😭', '😮', '🤔', '😅', '❤️', '🔥', '👍', '👏',
+                                '🙏', '🎉', '✨', '👌', '💯', '🤝', '🚀', '💬'
+                              ] as const
+                            ).map((emoji) => (
+                              <button
+                                key={emoji}
+                                type="button"
+                                onClick={() => setMsgInput((prev) => `${prev}${emoji}`)}
+                                className="w-8 h-8 rounded-lg flex items-center justify-center text-base hover:bg-emerald-100 dark:hover:bg-emerald-800 transition"
+                                title={`Insert ${emoji}`}
+                              >
+                                {emoji}
+                              </button>
+                            ))}
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setShowMsgEmojiPicker(false)}
+                            className="p-1.5 rounded-lg text-emerald-700 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-emerald-800 transition shrink-0"
+                            title="Hide emojis"
+                            aria-label="Hide emojis"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      )}
+                      <form onSubmit={handleSendMessage} className="flex items-center gap-1.5 sm:gap-2">
+                        <button
+                          type="button"
+                          disabled={isUploadingMsgMedia || isSendingMsg}
+                          onClick={() => msgImageInputRef.current?.click()}
+                          className="p-2.5 rounded-xl bg-emerald-100/80 dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 text-emerald-700 dark:text-emerald-300 hover:text-emerald-950 dark:hover:text-white hover:bg-emerald-100 dark:hover:bg-emerald-800 transition shrink-0 disabled:opacity-50"
+                          title="Send Photo / Image"
+                        >
+                          {isUploadingMsgMedia ? <Loader2 className="w-4 h-4 animate-spin" /> : <ImageIcon className="w-4 h-4" />}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={isUploadingMsgMedia || isSendingMsg}
+                          onClick={() => msgFileInputRef.current?.click()}
+                          className="p-2.5 rounded-xl bg-emerald-100/80 dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 text-emerald-700 dark:text-emerald-300 hover:text-emerald-950 dark:hover:text-white hover:bg-emerald-100 dark:hover:bg-emerald-800 transition shrink-0 disabled:opacity-50"
+                          title="Attach Video, Audio, or File"
+                        >
+                          <Plus className="w-4 h-4" />
+                        </button>
+                        <button
+                          type="button"
+                          disabled={isProcessingAudio || isUploadingMsgMedia || isSendingMsg}
+                          onClick={startAudioRecording}
+                          className="p-2.5 rounded-xl bg-emerald-100/80 dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 text-emerald-700 dark:text-emerald-300 hover:text-emerald-950 dark:hover:text-white hover:bg-emerald-100 dark:hover:bg-emerald-800 transition shrink-0 disabled:opacity-50"
+                          title="Record voice message"
+                        >
+                          <Mic className="w-4 h-4" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setShowMsgLinkInput(!showMsgLinkInput)}
+                          className={`p-2.5 rounded-xl border transition shrink-0 ${
+                            showMsgLinkInput
+                              ? 'bg-cyan-400 text-slate-950 border-cyan-300'
+                              : 'bg-emerald-100/80 dark:bg-emerald-900 border-emerald-300 dark:border-emerald-700 text-cyan-700 dark:text-cyan-300 hover:text-emerald-950 dark:hover:text-white hover:bg-emerald-100 dark:hover:bg-emerald-800'
+                          }`}
+                          title="Attach synced Video/Image URL"
+                        >
+                          <Link2 className="w-4 h-4" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setShowMsgEmojiPicker((prev) => !prev)}
+                          className={`p-2.5 rounded-xl border transition shrink-0 ${
+                            showMsgEmojiPicker
+                              ? 'bg-emerald-400 text-slate-950 border-emerald-300'
+                              : 'bg-emerald-100/80 dark:bg-emerald-900 border-emerald-300 dark:border-emerald-700 text-emerald-700 dark:text-emerald-300 hover:text-emerald-950 dark:hover:text-white hover:bg-emerald-100 dark:hover:bg-emerald-800'
+                          }`}
+                          title={showMsgEmojiPicker ? 'Hide emojis' : 'Open emojis'}
+                          aria-label={showMsgEmojiPicker ? 'Hide emojis' : 'Open emojis'}
+                          aria-expanded={showMsgEmojiPicker}
+                        >
+                          <Smile className="w-4 h-4" />
+                        </button>
+                        <input
+                          type="text"
+                          placeholder={
+                            isUploadingMsgMedia
+                              ? 'Preparing photo/media...'
+                              : isSendingMsg
+                              ? 'Sending...'
+                              : isProcessingAudio
+                              ? 'Uploading voice clip...'
+                              : `Message ${activeChat}...`
+                          }
+                          value={msgInput}
+                          onChange={(e) => setMsgInput(e.target.value)}
+                          className="flex-1 min-w-0 p-2.5 bg-emerald-100/80 dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 rounded-xl text-xs text-emerald-950 dark:text-white placeholder-emerald-600/60 dark:placeholder-emerald-400 focus:outline-none"
+                        />
+                        <button
+                          type="submit"
+                          disabled={isProcessingAudio || isUploadingMsgMedia || isSendingMsg || (!msgInput.trim() && !msgMediaUrl)}
+                          className="px-3.5 sm:px-4 py-2.5 bg-emerald-400 text-slate-950 font-bold text-xs rounded-xl shadow hover:bg-emerald-300 transition shrink-0 disabled:opacity-50"
+                        >
+                          {isSendingMsg ? 'Sending...' : 'Send'}
+                        </button>
+                      </form>
+                    </div>
                   )}
                 </div>
               </div>
