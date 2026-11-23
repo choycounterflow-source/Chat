@@ -937,6 +937,8 @@ export default function App() {
   const soundCtxRef = useRef<AudioContext | null>(null);
   const syncSeqRef = useRef(0);
 
+  const [callRingtoneBlocked, setCallRingtoneBlocked] = useState(false);
+
   const getUnlockedAudioContext = useCallback((): AudioContext | null => {
     try {
       const AudioCtx =
@@ -955,10 +957,27 @@ export default function App() {
     }
   }, []);
 
+  const ensureAudioContextReady = useCallback(async (): Promise<AudioContext | null> => {
+    const ctx = getUnlockedAudioContext();
+    if (!ctx) return null;
+    if (ctx.state === 'suspended') {
+      try {
+        await ctx.resume();
+      } catch {
+        // Autoplay policy still blocking until user gesture
+      }
+    }
+    if (ctx.state === 'running') {
+      setCallRingtoneBlocked(false);
+      return ctx;
+    }
+    return null;
+  }, [getUnlockedAudioContext]);
+
   // Unlock Web Audio on first user interaction so message chimes & call ringtones always play audibly on mobile
   useEffect(() => {
     const unlock = () => {
-      getUnlockedAudioContext();
+      void ensureAudioContextReady();
     };
     window.addEventListener('pointerdown', unlock, { passive: true });
     window.addEventListener('touchstart', unlock, { passive: true });
@@ -968,38 +987,91 @@ export default function App() {
       window.removeEventListener('touchstart', unlock);
       window.removeEventListener('keydown', unlock);
     };
-  }, [getUnlockedAudioContext]);
+  }, [ensureAudioContextReady]);
+
+  // Classic bright modern phone ringtone melody (two lively rings per cycle)
+  const playSingleRingtoneBurst = useCallback(
+    async (activeOscs?: Set<OscillatorNode>): Promise<boolean> => {
+      try {
+        const ctx = await ensureAudioContextReady();
+        if (!ctx) {
+          setCallRingtoneBlocked(true);
+          return false;
+        }
+        const now = ctx.currentTime + 0.02;
+        const pattern = [
+          { freq: 784, start: 0.0, dur: 0.14 },
+          { freq: 987.77, start: 0.14, dur: 0.14 },
+          { freq: 1174.66, start: 0.28, dur: 0.16 },
+          { freq: 987.77, start: 0.44, dur: 0.2 },
+          { freq: 784, start: 0.78, dur: 0.14 },
+          { freq: 987.77, start: 0.92, dur: 0.14 },
+          { freq: 1174.66, start: 1.06, dur: 0.16 },
+          { freq: 987.77, start: 1.22, dur: 0.24 },
+        ];
+        for (const step of pattern) {
+          const osc = ctx.createOscillator();
+          const harmonic = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.type = 'sine';
+          harmonic.type = 'triangle';
+          osc.frequency.setValueAtTime(step.freq, now + step.start);
+          harmonic.frequency.setValueAtTime(step.freq * 1.5, now + step.start);
+          gain.gain.setValueAtTime(0.001, now + step.start);
+          gain.gain.linearRampToValueAtTime(0.24, now + step.start + 0.02);
+          gain.gain.exponentialRampToValueAtTime(0.001, now + step.start + step.dur);
+          osc.connect(gain);
+          harmonic.connect(gain);
+          gain.connect(ctx.destination);
+          activeOscs?.add(osc);
+          activeOscs?.add(harmonic);
+          osc.onended = () => activeOscs?.delete(osc);
+          harmonic.onended = () => activeOscs?.delete(harmonic);
+          osc.start(now + step.start);
+          harmonic.start(now + step.start);
+          osc.stop(now + step.start + step.dur + 0.02);
+          harmonic.stop(now + step.start + step.dur + 0.02);
+        }
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    [ensureAudioContextReady]
+  );
 
   // Crisp messenger notification tune when a new message arrives
   const playMessageNotificationTune = useCallback(() => {
-    try {
-      if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
-        navigator.vibrate([120, 60, 120]);
+    void (async () => {
+      try {
+        if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
+          navigator.vibrate([120, 60, 120]);
+        }
+        const ctx = await ensureAudioContextReady();
+        if (!ctx) return;
+        const now = ctx.currentTime + 0.01;
+        const notes = [
+          { freq: 880, start: 0, dur: 0.14, vol: 0.22 },
+          { freq: 1318.5, start: 0.12, dur: 0.24, vol: 0.24 },
+        ];
+        for (const n of notes) {
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.type = 'triangle';
+          osc.frequency.setValueAtTime(n.freq, now + n.start);
+          gain.gain.setValueAtTime(0.001, now + n.start);
+          gain.gain.linearRampToValueAtTime(n.vol, now + n.start + 0.015);
+          gain.gain.exponentialRampToValueAtTime(0.001, now + n.start + n.dur);
+          osc.connect(gain);
+          gain.connect(ctx.destination);
+          osc.start(now + n.start);
+          osc.stop(now + n.start + n.dur + 0.02);
+        }
+      } catch {
+        // Audio playback may wait for browser gesture policy
       }
-      const ctx = getUnlockedAudioContext();
-      if (!ctx) return;
-      const now = ctx.currentTime;
-      const notes = [
-        { freq: 880, start: 0, dur: 0.14, vol: 0.22 },
-        { freq: 1318.5, start: 0.12, dur: 0.24, vol: 0.24 },
-      ];
-      for (const n of notes) {
-        const osc = ctx.createOscillator();
-        const gain = ctx.createGain();
-        osc.type = 'triangle';
-        osc.frequency.setValueAtTime(n.freq, now + n.start);
-        gain.gain.setValueAtTime(0.001, now + n.start);
-        gain.gain.linearRampToValueAtTime(n.vol, now + n.start + 0.015);
-        gain.gain.exponentialRampToValueAtTime(0.001, now + n.start + n.dur);
-        osc.connect(gain);
-        gain.connect(ctx.destination);
-        osc.start(now + n.start);
-        osc.stop(now + n.start + n.dur + 0.02);
-      }
-    } catch {
-      // Audio playback may wait for browser gesture policy
-    }
-  }, [getUnlockedAudioContext]);
+    })();
+  }, [ensureAudioContextReady]);
 
   const showNotice = (msg: string) => {
     setSyncNotice(msg);
@@ -2035,6 +2107,7 @@ export default function App() {
 
   const startVideoCall = useCallback(
     async (explicitTarget?: string) => {
+      getUnlockedAudioContext();
       const targetName = (explicitTarget || activeChat || 'VIP Group').trim();
       cleanupVideoCallResources();
       setIncomingCall(null);
@@ -2081,11 +2154,12 @@ export default function App() {
         setCallError(err instanceof Error ? err.message : 'Unable to start video call.');
       }
     },
-    [activeChat, acquireCallMedia, cleanupVideoCallResources, createPeerConnection, sendRtcSignalToServer]
+    [activeChat, acquireCallMedia, cleanupVideoCallResources, createPeerConnection, getUnlockedAudioContext, sendRtcSignalToServer]
   );
 
   const acceptIncomingCall = useCallback(async () => {
     if (!incomingCall) return;
+    getUnlockedAudioContext();
     const callData = incomingCall;
     setIncomingCall(null);
     // Preserve queued ICE candidates received while ringing!
@@ -2324,57 +2398,23 @@ export default function App() {
 
   // Continuous audible phone ringtone + strong vibration while an incoming video call is ringing
   useEffect(() => {
-    if (!incomingCall || isInVideoCall) return;
+    if (!incomingCall || isInVideoCall) {
+      setCallRingtoneBlocked(false);
+      return;
+    }
     let cancelled = false;
-    const activeOscs: OscillatorNode[] = [];
+    const activeOscs = new Set<OscillatorNode>();
 
-    const playRingBurst = () => {
+    const triggerRingBurst = () => {
       if (cancelled) return;
-      try {
-        if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
-          navigator.vibrate([450, 200, 450, 200, 450]);
-        }
-        const ctx = getUnlockedAudioContext();
-        if (!ctx) return;
-        const now = ctx.currentTime;
-        // Classic bright modern phone ringtone melody (two lively rings per cycle)
-        const pattern = [
-          { freq: 784, start: 0.0, dur: 0.14 },
-          { freq: 987.77, start: 0.14, dur: 0.14 },
-          { freq: 1174.66, start: 0.28, dur: 0.16 },
-          { freq: 987.77, start: 0.44, dur: 0.2 },
-          { freq: 784, start: 0.78, dur: 0.14 },
-          { freq: 987.77, start: 0.92, dur: 0.14 },
-          { freq: 1174.66, start: 1.06, dur: 0.16 },
-          { freq: 987.77, start: 1.22, dur: 0.24 },
-        ];
-        for (const step of pattern) {
-          const osc = ctx.createOscillator();
-          const harmonic = ctx.createOscillator();
-          const gain = ctx.createGain();
-          osc.type = 'sine';
-          harmonic.type = 'triangle';
-          osc.frequency.setValueAtTime(step.freq, now + step.start);
-          harmonic.frequency.setValueAtTime(step.freq * 1.5, now + step.start);
-          gain.gain.setValueAtTime(0.001, now + step.start);
-          gain.gain.linearRampToValueAtTime(0.24, now + step.start + 0.02);
-          gain.gain.exponentialRampToValueAtTime(0.001, now + step.start + step.dur);
-          osc.connect(gain);
-          harmonic.connect(gain);
-          gain.connect(ctx.destination);
-          osc.start(now + step.start);
-          harmonic.start(now + step.start);
-          osc.stop(now + step.start + step.dur + 0.02);
-          harmonic.stop(now + step.start + step.dur + 0.02);
-          activeOscs.push(osc, harmonic);
-        }
-      } catch {
-        // Autoplay may be restricted until user interacts
+      if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
+        navigator.vibrate([450, 200, 450, 200, 450]);
       }
+      void playSingleRingtoneBurst(activeOscs);
     };
 
-    playRingBurst();
-    const ringInterval = window.setInterval(playRingBurst, 2100);
+    triggerRingBurst();
+    const ringInterval = window.setInterval(triggerRingBurst, 2100);
     return () => {
       cancelled = true;
       window.clearInterval(ringInterval);
@@ -2388,8 +2428,63 @@ export default function App() {
           // Already stopped
         }
       });
+      activeOscs.clear();
     };
-  }, [incomingCall, isInVideoCall, getUnlockedAudioContext]);
+  }, [incomingCall, isInVideoCall, playSingleRingtoneBurst]);
+
+  // Audible outgoing caller ringback tone while calling and waiting for peer to answer
+  useEffect(() => {
+    if (!isInVideoCall || callStatus !== 'calling') return;
+    let cancelled = false;
+    const activeOscs = new Set<OscillatorNode>();
+
+    const playRingbackBurst = async () => {
+      if (cancelled) return;
+      try {
+        const ctx = await ensureAudioContextReady();
+        if (!ctx || cancelled) return;
+        const now = ctx.currentTime + 0.02;
+        const freqs = [440, 480];
+        const gain = ctx.createGain();
+        gain.gain.setValueAtTime(0.001, now);
+        gain.gain.linearRampToValueAtTime(0.11, now + 0.04);
+        gain.gain.setValueAtTime(0.11, now + 0.88);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.96);
+        gain.connect(ctx.destination);
+
+        for (const freq of freqs) {
+          const osc = ctx.createOscillator();
+          osc.type = 'sine';
+          osc.frequency.setValueAtTime(freq, now);
+          osc.connect(gain);
+          activeOscs.add(osc);
+          osc.onended = () => activeOscs.delete(osc);
+          osc.start(now);
+          osc.stop(now + 0.98);
+        }
+      } catch {
+        // Ignore ringback errors
+      }
+    };
+
+    void playRingbackBurst();
+    const ringbackTimer = window.setInterval(() => {
+      void playRingbackBurst();
+    }, 2800);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(ringbackTimer);
+      activeOscs.forEach((osc) => {
+        try {
+          osc.stop();
+        } catch {
+          // Already stopped
+        }
+      });
+      activeOscs.clear();
+    };
+  }, [isInVideoCall, callStatus, ensureAudioContextReady]);
 
   // Auto-dismiss live incoming message banner after 5s
   useEffect(() => {
@@ -4421,7 +4516,14 @@ export default function App() {
       {incomingCall && !isInVideoCall && (() => {
         const callerAvatar = getUserAvatar({ id: incomingCall.fromUserId, name: incomingCall.fromUserName });
         return (
-        <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[60] w-[94%] max-w-md bg-emerald-950/95 border-2 border-emerald-400 rounded-2xl p-4 shadow-2xl text-white backdrop-blur-md">
+        <div
+          onClick={() => {
+            if (callRingtoneBlocked) {
+              void playSingleRingtoneBurst();
+            }
+          }}
+          className="fixed top-4 left-1/2 -translate-x-1/2 z-[60] w-[94%] max-w-md bg-emerald-950/95 border-2 border-emerald-400 rounded-2xl p-4 shadow-2xl text-white backdrop-blur-md"
+        >
           <div className="flex items-center justify-between gap-3">
             <div className="flex items-center gap-3 min-w-0">
               <div className="relative w-12 h-14 rounded-xl bg-emerald-900 border-2 border-emerald-400 overflow-hidden shrink-0 shadow-md">
@@ -4437,7 +4539,9 @@ export default function App() {
                   <Video className="w-3 h-3" /> Incoming Video Call
                 </div>
                 <div className="text-sm font-black truncate">{incomingCall.fromUserName}</div>
-                <div className="text-[10px] text-emerald-200/80 truncate">Tap Accept to join live video</div>
+                <div className="text-[10px] text-emerald-200/80 truncate">
+                  {callRingtoneBlocked ? 'Tap banner to play ringtone' : 'Tap Accept to join live video'}
+                </div>
               </div>
             </div>
             <div className="flex items-center gap-2 shrink-0">
@@ -8586,6 +8690,19 @@ export default function App() {
                     </button>
                   )}
                 </div>
+
+                {/* Test Video Call Ringtone */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    void playSingleRingtoneBurst().then((ok) => {
+                      showNotice(ok ? 'Playing video call ringtone!' : 'Tap again or check device volume.');
+                    });
+                  }}
+                  className="w-full px-3.5 py-2.5 rounded-xl bg-emerald-100 dark:bg-emerald-900/70 border border-emerald-300 dark:border-emerald-700 text-emerald-950 dark:text-emerald-100 hover:bg-emerald-200/80 dark:hover:bg-emerald-800 text-xs font-bold inline-flex items-center justify-center gap-1.5 transition"
+                >
+                  <PhoneCall className="w-3.5 h-3.5 text-emerald-700 dark:text-emerald-300" /> Test Video Call Ringtone
+                </button>
 
                 {isAdmin && (
                   <button
