@@ -349,6 +349,25 @@ export default function App() {
     resetAppearance
   } = useThemePreferences();
 
+  const [msgBgMode, setMsgBgMode] = useState<'default' | 'black' | 'white'>(() => {
+    try {
+      const saved = localStorage.getItem('choychat_msg_bg_mode_v1');
+      if (saved === 'black' || saved === 'white' || saved === 'default') return saved;
+    } catch {
+      // ignore storage errors
+    }
+    return 'default';
+  });
+
+  const selectMsgBgMode = useCallback((mode: 'default' | 'black' | 'white') => {
+    setMsgBgMode(mode);
+    try {
+      localStorage.setItem('choychat_msg_bg_mode_v1', mode);
+    } catch {
+      // ignore storage errors
+    }
+  }, []);
+
   // Auth state (Bearer session token held strictly in JS/React memory)
   const [authToken, setAuthToken] = useState<string | null>(null);
   const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
@@ -6431,11 +6450,25 @@ export default function App() {
                 )}
               </div>
 
-              <div className={`md:col-span-2 bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl flex flex-col min-h-[430px] md:min-h-0 md:h-full overflow-hidden ${
-                activeChatMobileView ? 'flex' : 'hidden md:flex'
-              }`}>
+              <div
+                className={`md:col-span-2 rounded-2xl flex flex-col min-h-[430px] md:min-h-0 md:h-full overflow-hidden border transition-colors ${
+                  msgBgMode === 'black'
+                    ? 'bg-black border-neutral-800 text-white'
+                    : msgBgMode === 'white'
+                    ? 'bg-white border-slate-300 text-black'
+                    : 'bg-white dark:bg-emerald-900/60 border-emerald-200 dark:border-emerald-700/50'
+                } ${activeChatMobileView ? 'flex' : 'hidden md:flex'}`}
+              >
                 {/* Responsive Swipeable Chat Header */}
-                <div className="p-3 border-b border-emerald-200 dark:border-emerald-800 space-y-2 text-xs font-bold text-emerald-950 dark:text-white shrink-0">
+                <div
+                  className={`p-3 border-b space-y-2 text-xs font-bold shrink-0 ${
+                    msgBgMode === 'black'
+                      ? 'border-neutral-800 bg-neutral-950 text-white'
+                      : msgBgMode === 'white'
+                      ? 'border-slate-200 bg-white text-black'
+                      : 'border-emerald-200 dark:border-emerald-800 text-emerald-950 dark:text-white'
+                  }`}
+                >
                   <div className="flex items-center justify-between gap-2">
                     <div className="flex items-center gap-2 min-w-0">
                       <button
@@ -6448,12 +6481,28 @@ export default function App() {
                         <ArrowLeft className="w-4 h-4" />
                       </button>
                       {activeChat === 'VIP Group' ? (
-                        <span className="text-sm font-black text-emerald-950 dark:text-white truncate">{activeChat}</span>
+                        <span
+                          className={`text-sm font-black truncate ${
+                            msgBgMode === 'black'
+                              ? 'text-white'
+                              : msgBgMode === 'white'
+                              ? 'text-black'
+                              : 'text-emerald-950 dark:text-white'
+                          }`}
+                        >
+                          {activeChat}
+                        </span>
                       ) : (
                         <button
                           type="button"
                           onClick={() => openUserProfile({ name: activeChat })}
-                          className="group flex items-center gap-2 min-w-0 text-left rounded-lg px-1.5 py-1 -ml-1 hover:bg-emerald-50 dark:hover:bg-emerald-800/60 transition"
+                          className={`group flex items-center gap-2 min-w-0 text-left rounded-lg px-1.5 py-1 -ml-1 transition ${
+                            msgBgMode === 'black'
+                              ? 'hover:bg-neutral-800'
+                              : msgBgMode === 'white'
+                              ? 'hover:bg-slate-100'
+                              : 'hover:bg-emerald-50 dark:hover:bg-emerald-800/60'
+                          }`}
                           title={`View ${activeChat}'s profile`}
                         >
                           <img
@@ -6463,7 +6512,15 @@ export default function App() {
                               isCustomAvatar(getUserAvatar({ name: activeChat })) ? 'object-cover' : 'object-contain'
                             }`}
                           />
-                          <span className="text-sm font-black text-emerald-950 dark:text-white truncate group-hover:text-emerald-700 dark:group-hover:text-emerald-300 group-hover:underline">
+                          <span
+                            className={`text-sm font-black truncate group-hover:underline ${
+                              msgBgMode === 'black'
+                                ? 'text-white'
+                                : msgBgMode === 'white'
+                                ? 'text-black'
+                                : 'text-emerald-950 dark:text-white group-hover:text-emerald-700 dark:group-hover:text-emerald-300'
+                            }`}
+                          >
                             {activeChat}
                           </span>
                         </button>
@@ -6598,6 +6655,62 @@ export default function App() {
                           This Chat
                         </button>
                       </div>
+                      <div
+                        className={`inline-flex items-center gap-1 rounded-lg border p-0.5 shrink-0 ${
+                          msgBgMode === 'black'
+                            ? 'bg-neutral-900 border-neutral-700'
+                            : msgBgMode === 'white'
+                            ? 'bg-slate-100 border-slate-300'
+                            : 'bg-emerald-100/80 dark:bg-emerald-950 border-emerald-300 dark:border-emerald-700'
+                        }`}
+                        title="Message Background Color"
+                      >
+                        <button
+                          type="button"
+                          onClick={() => selectMsgBgMode('default')}
+                          className={`px-2 py-1 rounded-md text-[10px] font-bold inline-flex items-center gap-1 transition ${
+                            msgBgMode === 'default'
+                              ? 'bg-emerald-400 text-slate-950 shadow-2xs'
+                              : msgBgMode === 'black'
+                              ? 'text-neutral-300 hover:text-white'
+                              : 'text-slate-700 hover:text-black'
+                          }`}
+                          title="Default Emerald Chat Background"
+                        >
+                          <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 border border-emerald-700 shrink-0" />
+                          <span>Default</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => selectMsgBgMode('black')}
+                          className={`px-2 py-1 rounded-md text-[10px] font-bold inline-flex items-center gap-1 transition ${
+                            msgBgMode === 'black'
+                              ? 'bg-black text-white border border-white/60 shadow-2xs'
+                              : msgBgMode === 'white'
+                              ? 'text-slate-800 hover:bg-slate-200'
+                              : 'text-emerald-900 dark:text-emerald-200 hover:bg-emerald-200/70 dark:hover:bg-emerald-800'
+                          }`}
+                          title="Black Background / White Font"
+                        >
+                          <span className="w-2.5 h-2.5 rounded-full bg-black border border-neutral-400 shrink-0" />
+                          <span>Black</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => selectMsgBgMode('white')}
+                          className={`px-2 py-1 rounded-md text-[10px] font-bold inline-flex items-center gap-1 transition ${
+                            msgBgMode === 'white'
+                              ? 'bg-white text-black border border-slate-400 shadow-2xs'
+                              : msgBgMode === 'black'
+                              ? 'text-neutral-200 hover:bg-neutral-800'
+                              : 'text-emerald-900 dark:text-emerald-200 hover:bg-emerald-200/70 dark:hover:bg-emerald-800'
+                          }`}
+                          title="White Background / Black Font"
+                        >
+                          <span className="w-2.5 h-2.5 rounded-full bg-white border border-slate-500 shrink-0" />
+                          <span>White</span>
+                        </button>
+                      </div>
                     </div>
                     {msgSearchQuery.trim() && (() => {
                       const q = msgSearchQuery.trim();
@@ -6627,7 +6740,15 @@ export default function App() {
                   </div>
                 </div>
 
-                <div className="flex-1 overflow-y-auto overscroll-y-auto touch-pan-y [-webkit-overflow-scrolling:touch] p-3 space-y-3 min-h-[240px] max-h-[55dvh] md:max-h-none">
+                <div
+                  className={`flex-1 overflow-y-auto overscroll-y-auto touch-pan-y [-webkit-overflow-scrolling:touch] p-3 space-y-3 min-h-[240px] max-h-[55dvh] md:max-h-none transition-colors ${
+                    msgBgMode === 'black'
+                      ? 'bg-black text-white'
+                      : msgBgMode === 'white'
+                      ? 'bg-white text-black'
+                      : ''
+                  }`}
+                >
                   {(() => {
                     const trimmedMsgQuery = msgSearchQuery.trim();
                     const isCrossRoomSearch = Boolean(trimmedMsgQuery) && msgSearchScope === 'all';
@@ -6684,7 +6805,15 @@ export default function App() {
                         id={`chat-msg-${m.id}`}
                         className={`flex flex-col ${isCrossRoomSearch ? 'items-start' : m.isMe ? 'items-end' : 'items-start'}`}
                       >
-                        <div className="text-[10px] text-emerald-700 dark:text-emerald-300 px-1 mb-0.5 flex flex-wrap items-center gap-1.5">
+                        <div
+                          className={`text-[10px] px-1 mb-0.5 flex flex-wrap items-center gap-1.5 ${
+                            msgBgMode === 'black'
+                              ? 'text-neutral-300'
+                              : msgBgMode === 'white'
+                              ? 'text-slate-700'
+                              : 'text-emerald-700 dark:text-emerald-300'
+                          }`}
+                        >
                           {isCrossRoomSearch && (
                             <button
                               type="button"
@@ -6699,7 +6828,13 @@ export default function App() {
                           <button
                             type="button"
                             onClick={() => openUserProfile({ id: m.senderId, name: m.sender })}
-                            className="font-bold hover:text-emerald-950 dark:hover:text-white hover:underline transition"
+                            className={`font-bold hover:underline transition ${
+                              msgBgMode === 'black'
+                                ? 'hover:text-white'
+                                : msgBgMode === 'white'
+                                ? 'hover:text-black'
+                                : 'hover:text-emerald-950 dark:hover:text-white'
+                            }`}
                             title={`View ${m.sender}'s profile`}
                           >
                             {trimmedMsgQuery ? highlightSearchMatches(m.sender, trimmedMsgQuery) : m.sender}
@@ -6712,7 +6847,17 @@ export default function App() {
                           )}
                         </div>
                         <div
-                          className={`p-3 rounded-2xl text-xs bg-emerald-50 dark:bg-emerald-950 text-emerald-950 dark:text-slate-100 space-y-2 max-w-[85%] transition-all ${
+                          className={`p-3 rounded-2xl text-xs space-y-2 max-w-[85%] transition-all ${
+                            msgBgMode === 'black'
+                              ? m.isMe
+                                ? 'bg-neutral-800 border border-neutral-700 text-white'
+                                : 'bg-neutral-900 border border-neutral-800 text-white'
+                              : msgBgMode === 'white'
+                              ? m.isMe
+                                ? 'bg-slate-200/80 border border-slate-300 text-black'
+                                : 'bg-slate-50 border border-slate-300 text-black shadow-2xs'
+                              : 'bg-emerald-50 dark:bg-emerald-950 text-emerald-950 dark:text-slate-100'
+                          } ${
                             m.isQueuedOffline ? 'border border-amber-400/80 opacity-90' : ''
                           } ${
                             isJumpHighlighted ? 'ring-2 ring-amber-400 dark:ring-amber-300 shadow-lg' : ''
@@ -6737,12 +6882,37 @@ export default function App() {
                           {m.mediaType === 'audio' && m.mediaUrl && (
                             <div className="space-y-1.5 w-full">
                               <audio src={m.mediaUrl} controls className="w-full h-8" />
-                              <div className="text-[11px] bg-white/80 dark:bg-emerald-900/70 p-2.5 rounded-xl border border-emerald-300/70 dark:border-emerald-700/70 text-emerald-950 dark:text-emerald-100 flex flex-col gap-1 shadow-xs">
-                                <div className="flex items-center gap-1.5 font-bold text-emerald-700 dark:text-emerald-300">
+                              <div
+                                className={`text-[11px] p-2.5 rounded-xl border flex flex-col gap-1 shadow-xs ${
+                                  msgBgMode === 'black'
+                                    ? 'bg-neutral-950 border-neutral-700 text-white'
+                                    : msgBgMode === 'white'
+                                    ? 'bg-white border-slate-300 text-black'
+                                    : 'bg-white/80 dark:bg-emerald-900/70 border-emerald-300/70 dark:border-emerald-700/70 text-emerald-950 dark:text-emerald-100'
+                                }`}
+                              >
+                                <div
+                                  className={`flex items-center gap-1.5 font-bold ${
+                                    msgBgMode === 'black'
+                                      ? 'text-neutral-300'
+                                      : msgBgMode === 'white'
+                                      ? 'text-slate-800'
+                                      : 'text-emerald-700 dark:text-emerald-300'
+                                  }`}
+                                >
                                   <Mic className="w-3.5 h-3.5 shrink-0" />
                                   <span>Voice Transcription:</span>
                                 </div>
-                                <p translate="no" className="notranslate italic text-emerald-950 dark:text-slate-100 break-words leading-relaxed">
+                                <p
+                                  translate="no"
+                                  className={`notranslate italic break-words leading-relaxed ${
+                                    msgBgMode === 'black'
+                                      ? 'text-white'
+                                      : msgBgMode === 'white'
+                                      ? 'text-black'
+                                      : 'text-emerald-950 dark:text-slate-100'
+                                  }`}
+                                >
                                   {trimmedMsgQuery
                                     ? highlightSearchMatches(
                                         m.transcript || m.text || 'Voice message transcription',
@@ -6786,6 +6956,10 @@ export default function App() {
                               className={`inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded border transition ${
                                 openReactionPickerMsgId === m.id
                                   ? 'bg-emerald-400 text-slate-950 border-emerald-400 shadow-sm'
+                                  : msgBgMode === 'black'
+                                  ? 'bg-neutral-900 hover:bg-neutral-800 text-white border-neutral-700'
+                                  : msgBgMode === 'white'
+                                  ? 'bg-slate-100 hover:bg-slate-200 text-black border-slate-300'
                                   : 'bg-emerald-50 dark:bg-emerald-950 hover:bg-emerald-200 dark:hover:bg-emerald-800 text-emerald-800 dark:text-emerald-200 border-emerald-200 dark:border-emerald-800/80'
                               }`}
                               title="React with emoji"
@@ -6821,7 +6995,13 @@ export default function App() {
                             <button
                               type="button"
                               onClick={() => openForwardDialog(m)}
-                              className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded bg-emerald-50 dark:bg-emerald-950 hover:bg-emerald-200 dark:hover:bg-emerald-800 text-emerald-800 dark:text-emerald-200 border border-emerald-200 dark:border-emerald-800/80 transition"
+                              className={`inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded border transition ${
+                                msgBgMode === 'black'
+                                  ? 'bg-neutral-900 hover:bg-neutral-800 text-white border-neutral-700'
+                                  : msgBgMode === 'white'
+                                  ? 'bg-slate-100 hover:bg-slate-200 text-black border-slate-300'
+                                  : 'bg-emerald-50 dark:bg-emerald-950 hover:bg-emerald-200 dark:hover:bg-emerald-800 text-emerald-800 dark:text-emerald-200 border-emerald-200 dark:border-emerald-800/80'
+                              }`}
                               title="Forward message to another user or room"
                             >
                               <Forward className="w-3 h-3" />
@@ -6836,7 +7016,15 @@ export default function App() {
                   <div ref={messagesEndRef} />
                 </div>
 
-                <div className="p-3 border-t border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950 space-y-2">
+                <div
+                  className={`p-3 border-t space-y-2 transition-colors ${
+                    msgBgMode === 'black'
+                      ? 'border-neutral-800 bg-neutral-950 text-white'
+                      : msgBgMode === 'white'
+                      ? 'border-slate-200 bg-slate-50 text-black'
+                      : 'border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950'
+                  }`}
+                >
                   {(() => {
                     const myQueuedCount = currentUser
                       ? offlineQueue.filter((q) => q.userId === currentUser.id).length
@@ -7124,7 +7312,13 @@ export default function App() {
                             }
                             value={msgInput}
                             onChange={(e) => setMsgInput(e.target.value)}
-                            className="notranslate flex-1 min-w-0 px-3 py-2.5 bg-emerald-100/80 dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 rounded-xl text-sm sm:text-xs text-emerald-950 dark:text-white placeholder-emerald-600/60 dark:placeholder-emerald-400 focus:outline-none focus:border-amber-500 dark:focus:border-amber-300/80"
+                            className={`notranslate flex-1 min-w-0 px-3 py-2.5 border rounded-xl text-sm sm:text-xs focus:outline-none ${
+                              msgBgMode === 'black'
+                                ? 'bg-neutral-900 border-neutral-700 text-white placeholder-neutral-400 focus:border-amber-400'
+                                : msgBgMode === 'white'
+                                ? 'bg-white border-slate-300 text-black placeholder-slate-500 focus:border-emerald-600'
+                                : 'bg-emerald-100/80 dark:bg-emerald-900 border-emerald-300 dark:border-emerald-700 text-emerald-950 dark:text-white placeholder-emerald-600/60 dark:placeholder-emerald-400 focus:border-amber-500 dark:focus:border-amber-300/80'
+                            }`}
                           />
                           <button
                             type="submit"
@@ -8770,6 +8964,43 @@ export default function App() {
                         >
                           <Icon className="w-3.5 h-3.5 shrink-0" />
                           <span>{opt.label}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Message Background Color Selector */}
+                <div className="space-y-2 pt-2 border-t border-emerald-200 dark:border-emerald-800">
+                  <div className="text-[11px] font-bold text-emerald-950 dark:text-white">Message Background Color</div>
+                  <div
+                    role="radiogroup"
+                    aria-label="Message background color"
+                    className="grid grid-cols-3 gap-1.5 p-1 rounded-xl bg-white dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-800"
+                  >
+                    {(
+                      [
+                        { id: 'default', label: 'Default', swatch: 'bg-emerald-500 border-emerald-700' },
+                        { id: 'black', label: 'Black / White', swatch: 'bg-black border-neutral-400' },
+                        { id: 'white', label: 'White / Black', swatch: 'bg-white border-slate-500' },
+                      ] as const
+                    ).map((opt) => {
+                      const isActive = msgBgMode === opt.id;
+                      return (
+                        <button
+                          key={opt.id}
+                          type="button"
+                          role="radio"
+                          aria-checked={isActive}
+                          onClick={() => selectMsgBgMode(opt.id)}
+                          className={`min-h-[40px] px-2 py-2 rounded-lg flex items-center justify-center gap-1.5 text-[11px] font-semibold transition ${
+                            isActive
+                              ? 'bg-emerald-600 text-white dark:bg-emerald-400 dark:text-slate-950 shadow-xs'
+                              : 'text-emerald-800 hover:bg-emerald-100 dark:text-emerald-200 dark:hover:bg-emerald-900'
+                          }`}
+                        >
+                          <span className={`w-3 h-3 rounded-full border shrink-0 ${opt.swatch}`} />
+                          <span className="truncate">{opt.label}</span>
                         </button>
                       );
                     })}
