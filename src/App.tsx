@@ -2937,7 +2937,7 @@ export default function App() {
               resolve(err.code === err.POSITION_UNAVAILABLE ? 'granted' : 'prompt');
             }
           },
-          { enableHighAccuracy: false, timeout: 15000, maximumAge: 120000 }
+          { enableHighAccuracy: false, timeout: 4000, maximumAge: 120000 }
         );
       });
     } else {
@@ -2982,18 +2982,11 @@ export default function App() {
     try {
       if (authMode === 'register') {
         const needsPrompt =
-          appPermissions.camera !== 'granted' ||
-          appPermissions.music !== 'granted' ||
-          appPermissions.location !== 'granted';
-        const perms = needsPrompt ? await requestRequiredAppPermissions() : appPermissions;
-        if (perms.camera !== 'granted' || perms.music !== 'granted' || perms.location !== 'granted') {
-          const missing: string[] = [];
-          if (perms.camera !== 'granted') missing.push('Camera');
-          if (perms.music !== 'granted') missing.push('Music & Audio');
-          if (perms.location !== 'granted') missing.push('Location');
-          throw new Error(
-            `Required app permissions (${missing.join(', ')}) must be Allowed to create your account.`
-          );
+          appPermissions.camera === 'prompt' ||
+          appPermissions.music === 'prompt' ||
+          appPermissions.location === 'prompt';
+        if (needsPrompt) {
+          await requestRequiredAppPermissions().catch(() => null);
         }
       }
 
@@ -4246,12 +4239,16 @@ export default function App() {
     }
   };
 
-  const handleAddCloudUser = async (name: string, phone: string) => {
+  const handleAddCloudUser = async (name: string, phone: string, pin?: string) => {
     if (!isAdmin) return;
     try {
       await apiFetch('/api/choy/users', {
         method: 'POST',
-        body: JSON.stringify({ name, phone: phone || `member_${Date.now()}` })
+        body: JSON.stringify({
+          name,
+          phone: phone || `member_${Date.now()}`,
+          ...(pin && pin.trim().length >= 4 ? { pin: pin.trim() } : {}),
+        }),
       });
       showNotice(`Added account for ${name}.`);
       await fetchSyncedState();
@@ -4844,7 +4841,7 @@ export default function App() {
                 )}
                 <button
                   type="submit"
-                  disabled={authSubmitting || isRequestingPermissions}
+                  disabled={authSubmitting}
                   className="w-full py-3 bg-emerald-400 hover:bg-emerald-300 text-slate-950 font-bold rounded-xl shadow transition disabled:opacity-60"
                 >
                   {authSubmitting ? 'Please wait...' : authMode === 'register' ? 'Create Account' : 'Login'}
@@ -8622,7 +8619,7 @@ export default function App() {
             <SecurityStudio
               usersList={usersList}
               setUsersList={setUsersList}
-              onAddUser={(name, phone) => handleAddCloudUser(name, phone)}
+              onAddUser={(name, phone, pin) => handleAddCloudUser(name, phone, pin)}
               onDeleteUser={handleDeleteCloudUser}
               onUpdateUserNewsfeed={handleUpdateUserNewsfeed}
               deletingUserIds={deletingUserIds}

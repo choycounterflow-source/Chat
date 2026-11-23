@@ -91,7 +91,7 @@ export interface KeyValueItem {
 interface SecurityStudioProps {
   usersList: SecurityUserAccount[];
   setUsersList: React.Dispatch<React.SetStateAction<SecurityUserAccount[]>>;
-  onAddUser?: (name: string, phone: string) => Promise<void> | void;
+  onAddUser?: (name: string, phone: string, pin?: string) => Promise<void> | void;
   onDeleteUser?: (userId: string) => Promise<void> | void;
   onUpdateUserNewsfeed?: (userId: string, newsfeed: StudioNewsfeedChannel) => Promise<void> | void;
   deletingUserIds?: string[];
@@ -362,6 +362,7 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
   // 5. Add user quick form
   const [newUserName, setNewUserName] = useState('');
   const [newUserPhone, setNewUserPhone] = useState('');
+  const [newUserPin, setNewUserPin] = useState('');
   const [confirmDeleteUserId, setConfirmDeleteUserId] = useState<string | null>(null);
 
   // 6. GPS Tracker state
@@ -4082,8 +4083,9 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
           onSubmit={(e) => {
             e.preventDefault();
             if (!newUserName.trim()) return;
+            const cleanPin = newUserPin.trim();
             if (onAddUser) {
-              onAddUser(newUserName.trim(), newUserPhone.trim());
+              onAddUser(newUserName.trim(), newUserPhone.trim(), cleanPin.length >= 4 ? cleanPin : undefined);
             } else {
               setUsersList([
                 ...usersList,
@@ -4098,8 +4100,9 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
             }
             setNewUserName('');
             setNewUserPhone('');
+            setNewUserPin('');
           }}
-          className="grid grid-cols-1 sm:grid-cols-3 gap-2"
+          className="grid grid-cols-1 sm:grid-cols-4 gap-2"
         >
           <input
             type="text"
@@ -4113,6 +4116,14 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
             placeholder="Phone Number..."
             value={newUserPhone}
             onChange={(e) => setNewUserPhone(e.target.value)}
+            className="p-2 bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 rounded-xl text-emerald-950 dark:text-white"
+          />
+          <input
+            type="text"
+            minLength={4}
+            placeholder="Login PIN (min 4)..."
+            value={newUserPin}
+            onChange={(e) => setNewUserPin(e.target.value)}
             className="p-2 bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 rounded-xl text-emerald-950 dark:text-white"
           />
           <button type="submit" className="px-4 py-2 bg-emerald-400 text-slate-950 font-bold rounded-xl flex items-center justify-center gap-1.5">
