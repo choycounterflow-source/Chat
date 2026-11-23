@@ -6638,7 +6638,7 @@ export default function App() {
                                   <Mic className="w-3.5 h-3.5 shrink-0" />
                                   <span>Voice Transcription:</span>
                                 </div>
-                                <p className="italic text-emerald-950 dark:text-slate-100 break-words leading-relaxed">
+                                <p translate="no" className="notranslate italic text-emerald-950 dark:text-slate-100 break-words leading-relaxed">
                                   {trimmedMsgQuery
                                     ? highlightSearchMatches(
                                         m.transcript || m.text || 'Voice message transcription',
@@ -6653,7 +6653,7 @@ export default function App() {
                             <div className="text-amber-700 dark:text-amber-300 text-[10px]">📎 File Attachment</div>
                           )}
                           {m.text && (
-                            <div className="break-words">
+                            <div translate="no" className="notranslate break-words">
                               {trimmedMsgQuery ? highlightSearchMatches(m.text, trimmedMsgQuery) : m.text}
                             </div>
                           )}
@@ -7008,6 +7008,7 @@ export default function App() {
                         <div className="order-1 sm:order-2 flex items-center gap-2 w-full sm:w-auto sm:flex-1 min-w-0">
                           <input
                             type="text"
+                            translate="no"
                             placeholder={
                               isUploadingMsgMedia
                                 ? 'Preparing photo/media...'
@@ -7019,7 +7020,7 @@ export default function App() {
                             }
                             value={msgInput}
                             onChange={(e) => setMsgInput(e.target.value)}
-                            className="flex-1 min-w-0 px-3 py-2.5 bg-emerald-100/80 dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 rounded-xl text-sm sm:text-xs text-emerald-950 dark:text-white placeholder-emerald-600/60 dark:placeholder-emerald-400 focus:outline-none focus:border-amber-500 dark:focus:border-amber-300/80"
+                            className="notranslate flex-1 min-w-0 px-3 py-2.5 bg-emerald-100/80 dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 rounded-xl text-sm sm:text-xs text-emerald-950 dark:text-white placeholder-emerald-600/60 dark:placeholder-emerald-400 focus:outline-none focus:border-amber-500 dark:focus:border-amber-300/80"
                           />
                           <button
                             type="submit"
