@@ -396,6 +396,8 @@ export class ChoyStore {
   private usePostgres = false;
   private _storageStatus: 'postgres_connected' | 'no_database_url' | 'auth_failed' | 'connection_failed' = 'no_database_url';
   private readyPromise: Promise<void>;
+  private poolSource: 'pooler_url' | 'database_url' | 'none' = 'none';
+  private poolMax = clampNum(process.env.PG_POOL_MAX || 15, 2, 50);
 
   // In-memory fallback when DATABASE_URL is not yet configured
   private memUsers: StoredUser[] = [];
@@ -447,6 +449,24 @@ export class ChoyStore {
 
   public get storageStatus(): 'postgres_connected' | 'no_database_url' | 'auth_failed' | 'connection_failed' {
     return this._storageStatus;
+  }
+
+  public getPoolStats(): {
+    enabled: boolean;
+    source: 'pooler_url' | 'database_url' | 'none';
+    max: number;
+    totalCount: number;
+    idleCount: number;
+    waitingCount: number;
+  } {
+    return {
+      enabled: this.usePostgres && Boolean(this.pool),
+      source: this.poolSource,
+      max: this.poolMax,
+      totalCount: this.pool?.totalCount ?? 0,
+      idleCount: this.pool?.idleCount ?? 0,
+      waitingCount: this.pool?.waitingCount ?? 0,
+    };
   }
 
   public async ready(): Promise<void> {
@@ -555,39 +575,70 @@ export class ChoyStore {
     }
   }
 
+  private stripEnvQuotes(raw: string | undefined): string {
+    const trimmed = (raw || '').trim();
+    if (
+      (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+      (trimmed.startsWith("'") && trimmed.endsWith("'"))
+    ) {
+      return trimmed.slice(1, -1).trim();
+    }
+    return trimmed;
+  }
+
   private async init(): Promise<void> {
-    const rawUrl = (process.env.DATABASE_URL || '').trim();
-    const dbUrl =
-      (rawUrl.startsWith('"') && rawUrl.endsWith('"')) || (rawUrl.startsWith("'") && rawUrl.endsWith("'"))
-        ? rawUrl.slice(1, -1).trim()
-        : rawUrl;
-    if (dbUrl) {
-      try {
-        const isLocal = dbUrl.includes('localhost') || dbUrl.includes('127.0.0.1');
-        this.pool = new Pool({
-          connectionString: dbUrl,
-          ssl: isLocal ? false : { rejectUnauthorized: false },
-          max: 10,
-          idleTimeoutMillis: 30000,
-          connectionTimeoutMillis: 10000,
-        });
-        await this.pool.query('SELECT 1');
-        await this.createTables();
-        await this.seedIfEmptyPostgres();
-        this.usePostgres = true;
-        this._storageStatus = 'postgres_connected';
-        console.log('[ChoyStore] Connected to PostgreSQL cloud database.');
-        return;
-      } catch (err) {
-        const msg = err instanceof Error ? err.message.toLowerCase() : '';
-        this._storageStatus =
-          msg.includes('password') || msg.includes('authentication') || msg.includes('28p01')
-            ? 'auth_failed'
-            : 'connection_failed';
-        console.error('[ChoyStore] PostgreSQL connection failed, falling back to local disk store:', err instanceof Error ? err.message : err);
-        this.pool = null;
-        this.usePostgres = false;
+    const poolerUrl = this.stripEnvQuotes(process.env.DATABASE_POOL_URL);
+    const directUrl = this.stripEnvQuotes(process.env.DATABASE_URL);
+    const candidates: Array<{ url: string; source: 'pooler_url' | 'database_url' }> = [];
+    if (poolerUrl) candidates.push({ url: poolerUrl, source: 'pooler_url' });
+    if (directUrl && directUrl !== poolerUrl) candidates.push({ url: directUrl, source: 'database_url' });
+
+    if (candidates.length > 0) {
+      for (const candidate of candidates) {
+        try {
+          const isLocal = candidate.url.includes('localhost') || candidate.url.includes('127.0.0.1');
+          const pool = new Pool({
+            connectionString: candidate.url,
+            ssl: isLocal ? false : { rejectUnauthorized: false },
+            max: this.poolMax,
+            idleTimeoutMillis: 30000,
+            connectionTimeoutMillis: 10000,
+            keepAlive: true,
+            keepAliveInitialDelayMillis: 10000,
+          });
+          pool.on('error', (err) => {
+            console.error(
+              '[ChoyStore] Idle PostgreSQL pool client error:',
+              err instanceof Error ? err.message : err
+            );
+          });
+          await pool.query('SELECT 1');
+          this.pool = pool;
+          this.poolSource = candidate.source;
+          await this.createTables();
+          await this.seedIfEmptyPostgres();
+          this.usePostgres = true;
+          this._storageStatus = 'postgres_connected';
+          console.log(
+            `[ChoyStore] Connected to PostgreSQL cloud database (pool max=${this.poolMax}, source=${candidate.source}).`
+          );
+          return;
+        } catch (err) {
+          const msg = err instanceof Error ? err.message.toLowerCase() : '';
+          this._storageStatus =
+            msg.includes('password') || msg.includes('authentication') || msg.includes('28p01')
+              ? 'auth_failed'
+              : 'connection_failed';
+          console.error(
+            `[ChoyStore] PostgreSQL connection (${candidate.source}) failed:`,
+            err instanceof Error ? err.message : err
+          );
+          this.pool = null;
+          this.poolSource = 'none';
+          this.usePostgres = false;
+        }
       }
+      console.error('[ChoyStore] All PostgreSQL URLs failed, falling back to local disk store.');
     } else {
       this._storageStatus = 'no_database_url';
     }

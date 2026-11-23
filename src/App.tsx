@@ -1755,7 +1755,7 @@ export default function App() {
 
   const restoreBackupFromFirebase = useCallback(
     async (silent = true) => {
-      if (!isAdmin || !authToken || !isVerifiedAdminFirebaseUser(firebaseUser)) return;
+      if (!authToken || !isVerifiedAdminFirebaseUser(firebaseUser)) return;
       setFirebaseSyncState('syncing');
       setFirebaseSyncError('');
       try {
@@ -1792,7 +1792,7 @@ export default function App() {
         if (!silent) showNotice(msg);
       }
     },
-    [isAdmin, authToken, firebaseUser, apiFetch, fetchSyncedState]
+    [authToken, firebaseUser, apiFetch, fetchSyncedState]
   );
 
   const handleConnectFirebaseAdmin = useCallback(async () => {
@@ -1802,19 +1802,20 @@ export default function App() {
       setFirebaseUser(user);
       if (!isVerifiedAdminFirebaseUser(user)) {
         setFirebaseSyncState('error');
-        const msg = `Connected ${user.email || 'account'}, but Admin email (choyjiez07@gmail.com) is required for Firebase Cloud Sync.`;
+        const msg = `Connected ${user.email || 'account'}, but Admin email (choycounterflow@gmail.com or choyjiez07@gmail.com) is required for Firebase Cloud Sync.`;
         setFirebaseSyncError(msg);
         showNotice(msg);
         return;
       }
-      showNotice(`Connected Firebase Cloud (${user.email})!`);
+      showNotice(`Connected Firebase Cloud (${user.email})! Auto-restoring cloud backup...`);
+      await restoreBackupFromFirebase(false);
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Google sign-in failed';
       setFirebaseSyncState('error');
       setFirebaseSyncError(msg);
       showNotice(msg);
     }
-  }, []);
+  }, [restoreBackupFromFirebase]);
 
   const handleDisconnectFirebaseAdmin = useCallback(async () => {
     await disconnectFirebaseGoogle();
@@ -1826,14 +1827,14 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!isAdmin || !authToken || !isVerifiedAdminFirebaseUser(firebaseUser) || !firebaseUser) return;
-    if (firebaseInitialSyncUidRef.current === `${currentUser?.id}:${firebaseUser.uid}`) return;
-    firebaseInitialSyncUidRef.current = `${currentUser?.id}:${firebaseUser.uid}`;
+    if (!authToken || !isVerifiedAdminFirebaseUser(firebaseUser) || !firebaseUser) return;
+    if (firebaseInitialSyncUidRef.current === `${currentUser?.id || 'anon'}:${firebaseUser.uid}`) return;
+    firebaseInitialSyncUidRef.current = `${currentUser?.id || 'anon'}:${firebaseUser.uid}`;
     void (async () => {
       await restoreBackupFromFirebase(true);
       await pushBackupToFirebase(true);
     })();
-  }, [isAdmin, authToken, currentUser?.id, firebaseUser, restoreBackupFromFirebase, pushBackupToFirebase]);
+  }, [authToken, currentUser?.id, firebaseUser, restoreBackupFromFirebase, pushBackupToFirebase]);
 
   useEffect(() => {
     if (!isAdmin || !authToken || !isVerifiedAdminFirebaseUser(firebaseUser)) return;
@@ -10478,7 +10479,7 @@ export default function App() {
                   {
                     key: 'location',
                     label: 'Location',
-                    sub: 'GPS & Access',
+                    sub: 'Device Location',
                     icon: <MapPin className="w-4 h-4" />,
                     status: appPermissions.location,
                   },
@@ -10565,22 +10566,20 @@ export default function App() {
                   )}
                 </button>
 
-                {permAttemptedOnce && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      try {
-                        localStorage.setItem(`choychat_perm_prompt_v1_${currentUser.id}`, 'done');
-                      } catch {
-                        // ignore storage errors
-                      }
-                      setShowDashboardPermissionModal(false);
-                    }}
-                    className="w-full py-2 rounded-xl bg-emerald-100 dark:bg-emerald-900/70 hover:bg-emerald-200 dark:hover:bg-emerald-800 text-emerald-900 dark:text-emerald-100 font-bold text-[11px] transition"
-                  >
-                    Continue to Dashboard
-                  </button>
-                )}
+                <button
+                  type="button"
+                  onClick={() => {
+                    try {
+                      localStorage.setItem(`choychat_perm_prompt_v1_${currentUser.id}`, 'done');
+                    } catch {
+                      // ignore storage errors
+                    }
+                    setShowDashboardPermissionModal(false);
+                  }}
+                  className="w-full py-2.5 rounded-xl bg-emerald-100 dark:bg-emerald-900/70 hover:bg-emerald-200 dark:hover:bg-emerald-800 text-emerald-900 dark:text-emerald-100 font-bold text-xs transition"
+                >
+                  Continue to Dashboard / Skip
+                </button>
               </div>
             </div>
           </div>

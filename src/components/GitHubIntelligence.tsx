@@ -26,6 +26,12 @@ import {
   WrapText,
   ChevronsUpDown,
   X,
+  Sparkles,
+  ShieldCheck,
+  Gauge,
+  CheckCircle2,
+  AlertTriangle,
+  Info,
 } from 'lucide-react';
 
 interface GitHubIntelligenceProps {
@@ -148,6 +154,49 @@ interface IntelligencePayload {
   contributors: ContributorSummary[];
   readme: ReadmeDocument | null;
   authenticatedWithToken: boolean;
+}
+
+type ReviewType = 'performance' | 'security';
+
+interface AiCodeReviewFinding {
+  severity: 'critical' | 'high' | 'medium' | 'low' | 'info';
+  title: string;
+  lineHint: string;
+  impact: string;
+  recommendation: string;
+  codeExample?: string;
+}
+
+interface AiCodeReviewResult {
+  reviewType: ReviewType;
+  filePath: string;
+  branch: string;
+  repoFullName: string;
+  model: string;
+  analyzedChars: number;
+  truncated: boolean;
+  generatedAt: string;
+  score: number;
+  rating: 'Excellent' | 'Good' | 'Needs Attention' | 'Critical Risk';
+  summary: string;
+  findings: AiCodeReviewFinding[];
+  strengths: string[];
+  quickWins: string[];
+}
+
+const NON_TEXT_EXTENSIONS = new Set([
+  '.png', '.jpg', '.jpeg', '.gif', '.webp', '.ico', '.bmp', '.tiff',
+  '.pdf', '.zip', '.tar', '.gz', '.7z', '.rar',
+  '.woff', '.woff2', '.ttf', '.otf', '.eot',
+  '.mp4', '.webm', '.mov', '.mp3', '.wav', '.ogg',
+  '.exe', '.dll', '.so', '.dylib', '.bin', '.wasm', '.pyc', '.class', '.jar',
+]);
+
+function isReviewableFilePath(filePath: string): boolean {
+  const lower = filePath.toLowerCase();
+  const dotIdx = lower.lastIndexOf('.');
+  if (dotIdx <= 0) return true;
+  return !NON_TEXT_EXTENSIONS.has(lower.slice(dotIdx));
 }
 
 const LANGUAGE_BAR_COLORS: string[] = [
@@ -588,10 +637,20 @@ export const GitHubIntelligence: React.FC<GitHubIntelligenceProps> = ({ authToke
   const [commitSearch, setCommitSearch] = useState('');
   const [expandedCommitSha, setExpandedCommitSha] = useState<string | null>(null);
   const [copiedSha, setCopiedSha] = useState<string | null>(null);
-  const [mobilePanel, setMobilePanel] = useState<'files' | 'structure' | 'commits' | 'readme'>('files');
+  const [mobilePanel, setMobilePanel] = useState<'files' | 'review' | 'structure' | 'commits' | 'readme'>('files');
   const [readmeViewMode, setReadmeViewMode] = useState<'preview' | 'raw'>('preview');
   const [readmeExpanded, setReadmeExpanded] = useState(false);
   const [copiedReadme, setCopiedReadme] = useState(false);
+
+  const [reviewFocus, setReviewFocus] = useState<ReviewType>('security');
+  const [reviewTargetPath, setReviewTargetPath] = useState('');
+  const [isReviewing, setIsReviewing] = useState(false);
+  const [reviewError, setReviewError] = useState('');
+  const [reviewResult, setReviewResult] = useState<AiCodeReviewResult | null>(null);
+  const [copiedReviewReport, setCopiedReviewReport] = useState(false);
+  const reviewCacheRef = useRef<Map<string, AiCodeReviewResult>>(new Map());
+  const reviewReqSeqRef = useRef(0);
+  const aiReviewSectionRef = useRef<HTMLElement | null>(null);
 
   const fetchIntelligence = async (targetUrl: string, token: string, branchOverride?: string) => {
     const trimmedUrl = targetUrl.trim();
@@ -637,6 +696,9 @@ export const GitHubIntelligence: React.FC<GitHubIntelligenceProps> = ({ authToke
       setSelectedFilePath(null);
       setFilePreview(null);
       setFileError('');
+      setReviewTargetPath('');
+      setReviewResult(null);
+      setReviewError('');
       // Auto-expand the first top-level folder (for example: src) so users immediately see nested structure
       const firstFolder = (payload as IntelligencePayload)?.structure?.topLevelFolders?.find(
         (f) => f.name && f.name !== '(root)'
@@ -675,6 +737,10 @@ export const GitHubIntelligence: React.FC<GitHubIntelligenceProps> = ({ authToke
     setFilePreview(null);
     setFileError('');
     fileCacheRef.current.clear();
+    reviewCacheRef.current.clear();
+    setReviewTargetPath('');
+    setReviewResult(null);
+    setReviewError('');
     setReadmeExpanded(false);
     setReadmeViewMode('preview');
     setErrorMsg('');
@@ -708,6 +774,9 @@ export const GitHubIntelligence: React.FC<GitHubIntelligenceProps> = ({ authToke
     }
 
     setSelectedFilePath(filePath);
+    if (isReviewableFilePath(filePath)) {
+      setReviewTargetPath(filePath);
+    }
     setFileError('');
     setCopiedFileCode(false);
 
@@ -790,6 +859,129 @@ export const GitHubIntelligence: React.FC<GitHubIntelligenceProps> = ({ authToke
     setTimeout(() => setCopiedFileCode(false), 1500);
   };
 
+  const handleRunCodeReview = async (
+    typeOverride?: ReviewType,
+    pathOverride?: string,
+    forceRefresh = false,
+    scrollToPanel = false
+  ) => {
+    if (!linkedRepoUrl || !data) return;
+    const targetPath = (pathOverride ?? reviewTargetPath ?? selectedFilePath ?? '').trim();
+    const targetType = typeOverride ?? reviewFocus;
+
+    setReviewFocus(targetType);
+    if (targetPath) {
+      setReviewTargetPath(targetPath);
+    }
+
+    if (!targetPath) {
+      setReviewError('Select a repository file first to run a Gemini code review.');
+      return;
+    }
+
+    if (scrollToPanel) {
+      setMobilePanel('review');
+      window.setTimeout(() => {
+        aiReviewSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }, 60);
+    }
+
+    const activeBranch = selectedBranch || data.repo.selectedBranch;
+    const cacheKey = `${linkedRepoUrl}::${activeBranch}::${targetPath}::${targetType}`;
+    if (!forceRefresh) {
+      const cached = reviewCacheRef.current.get(cacheKey);
+      if (cached) {
+        setReviewResult(cached);
+        setReviewError('');
+        setIsReviewing(false);
+        return;
+      }
+    }
+
+    const reqId = ++reviewReqSeqRef.current;
+    setIsReviewing(true);
+    setReviewError('');
+    setCopiedReviewReport(false);
+
+    try {
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        'X-Requested-With': 'XMLHttpRequest',
+      };
+      if (authToken) {
+        headers.Authorization = `Bearer ${authToken}`;
+      }
+
+      const cachedPreview = fileCacheRef.current.get(`${linkedRepoUrl}::${activeBranch}::${targetPath}`);
+      const reusableContent =
+        filePreview && filePreview.path === targetPath && !filePreview.isBinary && !filePreview.tooLarge
+          ? filePreview.content
+          : cachedPreview && !cachedPreview.isBinary && !cachedPreview.tooLarge
+          ? cachedPreview.content
+          : undefined;
+
+      const res = await fetch('/api/github/file-review', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers,
+        body: JSON.stringify({
+          repoUrl: linkedRepoUrl,
+          token: patInput.trim() || undefined,
+          branch: activeBranch || undefined,
+          path: targetPath,
+          reviewType: targetType,
+          content: reusableContent,
+        }),
+      });
+
+      const payload = await res.json().catch(() => ({}));
+      if (reqId !== reviewReqSeqRef.current) return;
+
+      if (!res.ok) {
+        throw new Error(payload.error || `AI Code Review failed (HTTP ${res.status})`);
+      }
+
+      const result = payload as AiCodeReviewResult;
+      reviewCacheRef.current.set(cacheKey, result);
+      setReviewResult(result);
+    } catch (err) {
+      if (reqId !== reviewReqSeqRef.current) return;
+      setReviewError(err instanceof Error ? err.message : 'Failed to run AI Code Review');
+    } finally {
+      if (reqId === reviewReqSeqRef.current) {
+        setIsReviewing(false);
+      }
+    }
+  };
+
+  const handleCopyReviewReport = () => {
+    if (!reviewResult) return;
+    const lines = [
+      `# Gemini ${reviewResult.reviewType === 'security' ? 'Security' : 'Performance'} Review: ${reviewResult.filePath}`,
+      `Repository: ${reviewResult.repoFullName} (${reviewResult.branch})`,
+      `Score: ${reviewResult.score}/100 (${reviewResult.rating})`,
+      '',
+      `## Summary`,
+      reviewResult.summary,
+      '',
+      `## Findings (${reviewResult.findings.length})`,
+      ...reviewResult.findings.flatMap((f, idx) => [
+        `${idx + 1}. [${f.severity.toUpperCase()}] ${f.title} (${f.lineHint})`,
+        `   - Impact: ${f.impact}`,
+        `   - Recommendation: ${f.recommendation}`,
+      ]),
+      '',
+      `## Strengths`,
+      ...reviewResult.strengths.map((s) => `- ${s}`),
+      '',
+      `## Quick Wins`,
+      ...reviewResult.quickWins.map((q) => `- ${q}`),
+    ];
+    navigator.clipboard?.writeText(lines.join('\n')).catch(() => {});
+    setCopiedReviewReport(true);
+    setTimeout(() => setCopiedReviewReport(false), 1500);
+  };
+
   const fullTreeNodes = useMemo(() => {
     if (!data) return [];
     return buildHierarchicalTree(data.structure.tree, activeFolderFilter);
@@ -806,6 +998,13 @@ export const GitHubIntelligence: React.FC<GitHubIntelligenceProps> = ({ authToke
     if (filePreview.content === '') return [];
     return filePreview.content.split(/\r?\n/);
   }, [filePreview]);
+
+  const reviewableFiles = useMemo(() => {
+    if (!data) return [];
+    return data.structure.tree
+      .filter((entry) => entry.type === 'blob' && isReviewableFilePath(entry.path))
+      .sort((a, b) => a.path.localeCompare(b.path, undefined, { sensitivity: 'base' }));
+  }, [data]);
 
   const renderTreeNodes = (nodes: FileTreeNode[], depth = 0): React.ReactNode => {
     const forceExpand = Boolean(treeSearch.trim());
@@ -916,7 +1115,7 @@ export const GitHubIntelligence: React.FC<GitHubIntelligenceProps> = ({ authToke
               GitHub Intelligence
             </h2>
             <p className="text-xs text-emerald-800 dark:text-emerald-200/80 max-w-2xl leading-relaxed">
-              Link a GitHub repository with your repository URL and personal access token to inspect directory architecture, language composition, and recent commit activity.
+              Link a GitHub repository with your repository URL and personal access token to inspect directory architecture, browse source files, and run Gemini AI performance or security reviews.
             </p>
           </div>
           {data && (
@@ -1252,11 +1451,11 @@ export const GitHubIntelligence: React.FC<GitHubIntelligenceProps> = ({ authToke
           </section>
 
           {/* Mobile Segmented Panel Switcher */}
-          <div className="grid grid-cols-4 lg:hidden gap-1 p-1 bg-white dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-800 rounded-xl">
+          <div className="grid grid-cols-5 lg:hidden gap-1 p-1 bg-white dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-800 rounded-xl">
             <button
               type="button"
               onClick={() => setMobilePanel('files')}
-              className={`min-h-[40px] px-2 py-2 rounded-lg text-[11px] font-semibold whitespace-nowrap transition ${
+              className={`min-h-[40px] px-1.5 py-2 rounded-lg text-[11px] font-semibold whitespace-nowrap transition ${
                 mobilePanel === 'files'
                   ? 'bg-emerald-600 text-white dark:bg-emerald-400 dark:text-slate-950'
                   : 'text-emerald-800 hover:text-emerald-950 dark:text-emerald-200 dark:hover:text-white'
@@ -1266,8 +1465,19 @@ export const GitHubIntelligence: React.FC<GitHubIntelligenceProps> = ({ authToke
             </button>
             <button
               type="button"
+              onClick={() => setMobilePanel('review')}
+              className={`min-h-[40px] px-1.5 py-2 rounded-lg text-[11px] font-semibold whitespace-nowrap transition ${
+                mobilePanel === 'review'
+                  ? 'bg-emerald-600 text-white dark:bg-emerald-400 dark:text-slate-950'
+                  : 'text-emerald-800 hover:text-emerald-950 dark:text-emerald-200 dark:hover:text-white'
+              }`}
+            >
+              AI Review
+            </button>
+            <button
+              type="button"
               onClick={() => setMobilePanel('structure')}
-              className={`min-h-[40px] px-2 py-2 rounded-lg text-[11px] font-semibold whitespace-nowrap transition ${
+              className={`min-h-[40px] px-1.5 py-2 rounded-lg text-[11px] font-semibold whitespace-nowrap transition ${
                 mobilePanel === 'structure'
                   ? 'bg-emerald-600 text-white dark:bg-emerald-400 dark:text-slate-950'
                   : 'text-emerald-800 hover:text-emerald-950 dark:text-emerald-200 dark:hover:text-white'
@@ -1278,18 +1488,18 @@ export const GitHubIntelligence: React.FC<GitHubIntelligenceProps> = ({ authToke
             <button
               type="button"
               onClick={() => setMobilePanel('commits')}
-              className={`min-h-[40px] px-2 py-2 rounded-lg text-[11px] font-semibold whitespace-nowrap transition ${
+              className={`min-h-[40px] px-1.5 py-2 rounded-lg text-[11px] font-semibold whitespace-nowrap transition ${
                 mobilePanel === 'commits'
                   ? 'bg-emerald-600 text-white dark:bg-emerald-400 dark:text-slate-950'
                   : 'text-emerald-800 hover:text-emerald-950 dark:text-emerald-200 dark:hover:text-white'
               }`}
             >
-              Commits ({recentCommits.length})
+              Commits
             </button>
             <button
               type="button"
               onClick={() => setMobilePanel('readme')}
-              className={`min-h-[40px] px-2 py-2 rounded-lg text-[11px] font-semibold whitespace-nowrap transition ${
+              className={`min-h-[40px] px-1.5 py-2 rounded-lg text-[11px] font-semibold whitespace-nowrap transition ${
                 mobilePanel === 'readme'
                   ? 'bg-emerald-600 text-white dark:bg-emerald-400 dark:text-slate-950'
                   : 'text-emerald-800 hover:text-emerald-950 dark:text-emerald-200 dark:hover:text-white'
@@ -1410,6 +1620,26 @@ export const GitHubIntelligence: React.FC<GitHubIntelligenceProps> = ({ authToke
 
                       {!filePreview.isBinary && !filePreview.tooLarge && (
                         <>
+                          <button
+                            type="button"
+                            disabled={isReviewing}
+                            onClick={() => handleRunCodeReview('performance', filePreview.path, false, true)}
+                            title="Run Gemini Performance Review on this file"
+                            className="px-2 py-1 rounded-lg bg-amber-50 dark:bg-amber-950/70 border border-amber-300 dark:border-amber-700/80 text-amber-800 dark:text-amber-200 hover:bg-amber-100 dark:hover:bg-amber-900/70 text-[11px] font-semibold inline-flex items-center gap-1 transition disabled:opacity-50"
+                          >
+                            <Gauge className="w-3 h-3" />
+                            <span>Perf</span>
+                          </button>
+                          <button
+                            type="button"
+                            disabled={isReviewing}
+                            onClick={() => handleRunCodeReview('security', filePreview.path, false, true)}
+                            title="Run Gemini Security Review on this file"
+                            className="px-2 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white dark:bg-emerald-400 dark:hover:bg-emerald-300 dark:text-slate-950 text-[11px] font-bold inline-flex items-center gap-1 transition disabled:opacity-50"
+                          >
+                            <ShieldCheck className="w-3 h-3" />
+                            <span>Security</span>
+                          </button>
                           <button
                             type="button"
                             onClick={() => setWrapCodeLines((w) => !w)}
@@ -1572,6 +1802,344 @@ export const GitHubIntelligence: React.FC<GitHubIntelligenceProps> = ({ authToke
                 </div>
               </div>
             </div>
+          </section>
+
+          {/* AI Code Review (Gemini Performance & Security Audit) */}
+          <section
+            ref={aiReviewSectionRef}
+            className={`bg-white dark:bg-emerald-900/50 border border-emerald-200 dark:border-emerald-800/80 rounded-2xl p-5 sm:p-6 space-y-4 shadow-xs ${
+              mobilePanel === 'review' ? 'block' : 'hidden lg:block'
+            }`}
+          >
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 border-b border-emerald-200 dark:border-emerald-800/70 pb-3">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <div className="w-8 h-8 rounded-xl bg-emerald-50 dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-800 flex items-center justify-center text-emerald-700 dark:text-amber-300 shrink-0">
+                  <Sparkles className="w-4 h-4" />
+                </div>
+                <div className="min-w-0">
+                  <h3 className="text-sm font-bold text-emerald-950 dark:text-white">
+                    AI Code Review (Gemini)
+                  </h3>
+                  <p className="text-[11px] text-emerald-700 dark:text-emerald-300/80 truncate">
+                    Select any repository file and run an automated performance or security audit.
+                  </p>
+                </div>
+              </div>
+
+              {reviewResult && (
+                <button
+                  type="button"
+                  onClick={handleCopyReviewReport}
+                  className="px-3 py-1.5 rounded-xl border border-emerald-300 dark:border-emerald-700 bg-emerald-50 dark:bg-emerald-950 text-emerald-900 dark:text-emerald-100 hover:bg-emerald-100 dark:hover:bg-emerald-800 text-[11px] font-semibold inline-flex items-center gap-1.5 self-start sm:self-auto whitespace-nowrap shrink-0 transition"
+                >
+                  {copiedReviewReport ? (
+                    <>
+                      <Check className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+                      <span>Copied Report</span>
+                    </>
+                  ) : (
+                    <>
+                      <Copy className="w-3.5 h-3.5" />
+                      <span>Copy Report</span>
+                    </>
+                  )}
+                </button>
+              )}
+            </div>
+
+            {/* File Picker + Focus Switcher + Run Button */}
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 items-end">
+              <div className="lg:col-span-6 space-y-1.5 min-w-0">
+                <label htmlFor="gh-review-file-select" className="block text-xs font-medium text-emerald-900 dark:text-emerald-200">
+                  Target Repository File
+                </label>
+                <select
+                  id="gh-review-file-select"
+                  value={reviewTargetPath}
+                  onChange={(e) => {
+                    const nextPath = e.target.value;
+                    setReviewTargetPath(nextPath);
+                    setReviewError('');
+                    if (nextPath && nextPath !== selectedFilePath) {
+                      void handleSelectFile(nextPath);
+                    }
+                  }}
+                  disabled={isReviewing || reviewableFiles.length === 0}
+                  className="w-full min-h-[42px] px-3 py-2 rounded-xl bg-emerald-50/70 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700/80 text-xs font-mono text-emerald-950 dark:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 dark:focus-visible:ring-emerald-400"
+                >
+                  <option value="">
+                    {reviewableFiles.length === 0
+                      ? 'No reviewable source files indexed'
+                      : `Select a file (${reviewableFiles.length} available)...`}
+                  </option>
+                  {reviewableFiles.map((file) => (
+                    <option key={file.path} value={file.path}>
+                      {file.path} ({formatBytes(file.size)})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="lg:col-span-4 space-y-1.5">
+                <span className="block text-xs font-medium text-emerald-900 dark:text-emerald-200">
+                  Review Focus
+                </span>
+                <div className="grid grid-cols-2 gap-1 p-1 bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-800 rounded-xl min-h-[42px]">
+                  <button
+                    type="button"
+                    onClick={() => setReviewFocus('performance')}
+                    className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold inline-flex items-center justify-center gap-1.5 transition ${
+                      reviewFocus === 'performance'
+                        ? 'bg-amber-500 text-white dark:bg-amber-400 dark:text-slate-950 shadow-xs'
+                        : 'text-emerald-800 hover:text-emerald-950 dark:text-emerald-200 dark:hover:text-white'
+                    }`}
+                  >
+                    <Gauge className="w-3.5 h-3.5 shrink-0" />
+                    <span>Performance</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setReviewFocus('security')}
+                    className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold inline-flex items-center justify-center gap-1.5 transition ${
+                      reviewFocus === 'security'
+                        ? 'bg-emerald-600 text-white dark:bg-emerald-400 dark:text-slate-950 shadow-xs'
+                        : 'text-emerald-800 hover:text-emerald-950 dark:text-emerald-200 dark:hover:text-white'
+                    }`}
+                  >
+                    <ShieldCheck className="w-3.5 h-3.5 shrink-0" />
+                    <span>Security</span>
+                  </button>
+                </div>
+              </div>
+
+              <div className="lg:col-span-2 flex items-center gap-2">
+                <button
+                  type="button"
+                  disabled={isReviewing || !reviewTargetPath}
+                  onClick={() => handleRunCodeReview(reviewFocus, reviewTargetPath, Boolean(reviewResult && reviewResult.filePath === reviewTargetPath && reviewResult.reviewType === reviewFocus))}
+                  className="w-full min-h-[42px] px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white dark:bg-emerald-400 dark:hover:bg-emerald-300 dark:text-slate-950 font-bold text-xs inline-flex items-center justify-center gap-1.5 whitespace-nowrap transition disabled:opacity-50"
+                >
+                  {isReviewing ? (
+                    <>
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin shrink-0" />
+                      <span>Reviewing...</span>
+                    </>
+                  ) : reviewResult && reviewResult.filePath === reviewTargetPath && reviewResult.reviewType === reviewFocus ? (
+                    <>
+                      <RefreshCw className="w-3.5 h-3.5 shrink-0" />
+                      <span>Re-run Review</span>
+                    </>
+                  ) : (
+                    <>
+                      <Sparkles className="w-3.5 h-3.5 shrink-0" />
+                      <span>Run Review</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+
+            {reviewError && (
+              <div
+                role="alert"
+                className="flex items-start gap-2.5 p-3.5 rounded-xl bg-rose-50 dark:bg-rose-950/70 border border-rose-300 dark:border-rose-700/70 text-xs text-rose-800 dark:text-rose-100"
+              >
+                <AlertCircle className="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5" />
+                <span>{reviewError}</span>
+              </div>
+            )}
+
+            {isReviewing && (
+              <div className="p-4 rounded-xl border border-emerald-200 dark:border-emerald-800/80 bg-emerald-50/50 dark:bg-emerald-950/60 space-y-3 animate-pulse">
+                <div className="flex items-center gap-2 text-xs font-semibold text-emerald-800 dark:text-emerald-200">
+                  <Sparkles className="w-4 h-4 text-amber-500 animate-spin" />
+                  <span>
+                    Gemini is running a {reviewFocus} audit on <span className="font-mono">{reviewTargetPath}</span>...
+                  </span>
+                </div>
+                <div className="h-4 w-3/4 bg-emerald-200/70 dark:bg-emerald-800/60 rounded" />
+                <div className="h-20 w-full bg-emerald-200/50 dark:bg-emerald-800/40 rounded-xl" />
+                <div className="h-20 w-full bg-emerald-200/50 dark:bg-emerald-800/40 rounded-xl" />
+              </div>
+            )}
+
+            {!isReviewing && !reviewResult && !reviewError && (
+              <div className="p-6 rounded-xl border border-dashed border-emerald-300 dark:border-emerald-800 bg-emerald-50/40 dark:bg-emerald-950/40 text-center space-y-1.5">
+                <p className="text-xs font-semibold text-emerald-950 dark:text-white">
+                  Ready for AI Code Review
+                </p>
+                <p className="text-[11px] text-emerald-700 dark:text-emerald-300/80 max-w-lg mx-auto">
+                  Pick a file from the dropdown above (or click any file in the File Browser tree), choose Performance or Security, and click Run Review to receive prioritized findings and fix suggestions.
+                </p>
+              </div>
+            )}
+
+            {!isReviewing && reviewResult && (
+              <div className="space-y-4">
+                {/* Summary & Score Header */}
+                <div className="p-4 rounded-xl border border-emerald-200 dark:border-emerald-800/80 bg-emerald-50/60 dark:bg-emerald-950/70 flex flex-col md:flex-row md:items-center justify-between gap-4">
+                  <div className="space-y-1.5 min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span
+                        className={`px-2 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wider inline-flex items-center gap-1 ${
+                          reviewResult.reviewType === 'security'
+                            ? 'bg-emerald-600 text-white dark:bg-emerald-400 dark:text-slate-950'
+                            : 'bg-amber-500 text-white dark:bg-amber-400 dark:text-slate-950'
+                        }`}
+                      >
+                        {reviewResult.reviewType === 'security' ? (
+                          <ShieldCheck className="w-3 h-3" />
+                        ) : (
+                          <Gauge className="w-3 h-3" />
+                        )}
+                        <span>{reviewResult.reviewType} Audit</span>
+                      </span>
+                      <span className="font-mono text-xs font-bold text-emerald-950 dark:text-white truncate">
+                        {reviewResult.filePath}
+                      </span>
+                      <span className="text-[10px] font-mono text-emerald-700 dark:text-emerald-300/80">
+                        · {reviewResult.model} · {formatRelativeDate(reviewResult.generatedAt)}
+                        {reviewResult.truncated ? ' · Truncated at 55 KB' : ''}
+                      </span>
+                    </div>
+                    <p className="text-xs text-emerald-900 dark:text-emerald-100/90 leading-relaxed">
+                      {reviewResult.summary}
+                    </p>
+                  </div>
+
+                  <div className="flex items-center gap-3 shrink-0 self-start md:self-center">
+                    <div
+                      className={`px-3.5 py-2 rounded-xl border text-center min-w-[92px] ${
+                        reviewResult.score >= 85
+                          ? 'bg-emerald-100 dark:bg-emerald-900/80 border-emerald-300 dark:border-emerald-600 text-emerald-950 dark:text-emerald-100'
+                          : reviewResult.score >= 65
+                          ? 'bg-amber-100 dark:bg-amber-950/80 border-amber-300 dark:border-amber-700 text-amber-950 dark:text-amber-100'
+                          : 'bg-rose-100 dark:bg-rose-950/80 border-rose-300 dark:border-rose-700 text-rose-950 dark:text-rose-100'
+                      }`}
+                    >
+                      <div className="text-xl font-extrabold font-mono tabular-nums leading-none">
+                        {reviewResult.score}
+                        <span className="text-[11px] font-normal opacity-75">/100</span>
+                      </div>
+                      <div className="text-[10px] font-bold uppercase tracking-wide mt-1">
+                        {reviewResult.rating}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Prioritized Findings */}
+                <div className="space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    <h4 className="text-xs font-bold text-emerald-950 dark:text-white uppercase tracking-wider">
+                      Findings ({reviewResult.findings.length})
+                    </h4>
+                  </div>
+
+                  {reviewResult.findings.length === 0 ? (
+                    <div className="p-4 rounded-xl border border-emerald-200 dark:border-emerald-800 bg-emerald-50/60 dark:bg-emerald-950/50 flex items-center gap-2.5 text-xs text-emerald-800 dark:text-emerald-200">
+                      <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                      <span>
+                        No significant {reviewResult.reviewType} issues detected in this file.
+                      </span>
+                    </div>
+                  ) : (
+                    <div className="space-y-2.5">
+                      {reviewResult.findings.map((finding, idx) => {
+                        const sevStyle =
+                          finding.severity === 'critical' || finding.severity === 'high'
+                            ? 'bg-rose-100 dark:bg-rose-950/80 text-rose-800 dark:text-rose-200 border-rose-300 dark:border-rose-700/80'
+                            : finding.severity === 'medium'
+                            ? 'bg-amber-100 dark:bg-amber-950/80 text-amber-800 dark:text-amber-200 border-amber-300 dark:border-amber-700/80'
+                            : 'bg-emerald-100 dark:bg-emerald-900/80 text-emerald-800 dark:text-emerald-200 border-emerald-300 dark:border-emerald-700/80';
+
+                        return (
+                          <div
+                            key={`${finding.title}-${idx}`}
+                            className="p-4 rounded-xl border border-emerald-200 dark:border-emerald-800/80 bg-emerald-50/40 dark:bg-emerald-950/60 space-y-2"
+                          >
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <div className="flex items-center gap-2 min-w-0">
+                                <span
+                                  className={`px-2 py-0.5 rounded-md border text-[10px] font-bold uppercase inline-flex items-center gap-1 shrink-0 ${sevStyle}`}
+                                >
+                                  {finding.severity === 'critical' || finding.severity === 'high' ? (
+                                    <AlertTriangle className="w-3 h-3" />
+                                  ) : (
+                                    <Info className="w-3 h-3" />
+                                  )}
+                                  <span>{finding.severity}</span>
+                                </span>
+                                <span className="text-xs font-bold text-emerald-950 dark:text-white break-words">
+                                  {finding.title}
+                                </span>
+                              </div>
+                              <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-white dark:bg-emerald-900/80 border border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-200 shrink-0">
+                                {finding.lineHint}
+                              </span>
+                            </div>
+
+                            {finding.impact && (
+                              <p className="text-xs text-emerald-900/90 dark:text-emerald-100/90 leading-relaxed">
+                                <span className="font-semibold text-emerald-950 dark:text-white">Impact: </span>
+                                {finding.impact}
+                              </p>
+                            )}
+                            {finding.recommendation && (
+                              <p className="text-xs text-emerald-900/90 dark:text-emerald-100/90 leading-relaxed">
+                                <span className="font-semibold text-emerald-950 dark:text-white">Fix: </span>
+                                {finding.recommendation}
+                              </p>
+                            )}
+                            {finding.codeExample && (
+                              <pre className="p-3 rounded-lg bg-white dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-800 overflow-x-auto text-[11px] font-mono text-emerald-950 dark:text-emerald-100 leading-relaxed">
+                                <code>{finding.codeExample}</code>
+                              </pre>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+
+                {/* Strengths & Quick Wins */}
+                {(reviewResult.strengths.length > 0 || reviewResult.quickWins.length > 0) && (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    {reviewResult.strengths.length > 0 && (
+                      <div className="p-3.5 rounded-xl border border-emerald-200 dark:border-emerald-800/80 bg-emerald-50/50 dark:bg-emerald-950/60 space-y-1.5">
+                        <div className="text-[11px] font-bold uppercase tracking-wider text-emerald-800 dark:text-emerald-300">
+                          What Works Well
+                        </div>
+                        <ul className="space-y-1 text-xs text-emerald-900 dark:text-emerald-100/90">
+                          {reviewResult.strengths.map((item, idx) => (
+                            <li key={idx} className="flex items-start gap-1.5">
+                              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" />
+                              <span>{item}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                    {reviewResult.quickWins.length > 0 && (
+                      <div className="p-3.5 rounded-xl border border-amber-200 dark:border-amber-800/60 bg-amber-50/50 dark:bg-amber-950/30 space-y-1.5">
+                        <div className="text-[11px] font-bold uppercase tracking-wider text-amber-800 dark:text-amber-300">
+                          Recommended Next Steps
+                        </div>
+                        <ul className="space-y-1 text-xs text-emerald-950 dark:text-emerald-100/90">
+                          {reviewResult.quickWins.map((item, idx) => (
+                            <li key={idx} className="flex items-start gap-1.5">
+                              <Sparkles className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+                              <span>{item}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
           </section>
 
           {/* Main 2-Column Intelligence Split */}

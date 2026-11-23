@@ -27,7 +27,7 @@ service cloud.firestore {
       return isVerified() && request.auth.uid == userId;
     }
     function isBootstrappedAdmin() {
-      return isVerified() && request.auth.token.email == 'choyjiez07@gmail.com';
+      return isVerified() && request.auth.token.email in ['choyjiez07@gmail.com', 'choycounterflow@gmail.com'];
     }
     function isAdmin() {
       return isBootstrappedAdmin() || (isVerified() && exists(/databases/$(database)/documents/admins/$(request.auth.uid)));
@@ -199,7 +199,7 @@ service cloud.firestore {
     // 1. PUBLIC USER PROFILES (NO PII) + SPLIT PRIVATE SUBCOLLECTION
     match /users/{userId} {
       allow get: if isVerified() && isValidId(userId) && (isOwner(userId) || isAdmin() || existing().visibility == 'public');
-      allow list: if isVerified() && existing().visibility == 'public';
+      allow list: if isVerified();
       allow create: if isVerified()
         && isValidId(userId)
         && isValidPublicUser(incoming(), userId)
@@ -251,7 +251,7 @@ service cloud.firestore {
     // 2. COMMUNITY NEWSFEED POSTS
     match /posts/{postId} {
       allow get: if isVerified() && isValidId(postId) && existing().visibility == 'public';
-      allow list: if isVerified() && existing().visibility == 'public';
+      allow list: if isVerified();
       allow create: if isVerified()
         && isValidId(postId)
         && isValidPost(incoming())
@@ -272,7 +272,7 @@ service cloud.firestore {
     // 3. REAL-TIME CHAT MESSAGES
     match /messages/{messageId} {
       allow get: if isVerified() && isValidId(messageId) && existing().visibility == 'members';
-      allow list: if isVerified() && existing().visibility == 'members';
+      allow list: if isVerified();
       allow create: if isVerified()
         && isValidId(messageId)
         && isValidMessage(incoming())
@@ -318,7 +318,7 @@ service cloud.firestore {
     // 5. CHOY AI BRAIN KNOWLEDGE Q&A (Admin writes, all verified users read)
     match /knowledge/{qaId} {
       allow get: if isVerified() && isValidId(qaId) && existing().visibility == 'public';
-      allow list: if isVerified() && existing().visibility == 'public';
+      allow list: if isVerified();
       allow create: if isVerified()
         && isValidId(qaId)
         && isValidKnowledgeQA(incoming())
@@ -358,7 +358,7 @@ service cloud.firestore {
     // 7. PUBLIC LEADERBOARD (NO PII - synced from admin ledger)
     match /leaderboard/{entryId} {
       allow get: if isVerified() && isValidId(entryId) && (isAdmin() || existing().visibility == 'public');
-      allow list: if isVerified() && existing().visibility == 'public';
+      allow list: if isVerified();
       allow create: if isVerified()
         && isValidId(entryId)
         && isValidLeaderboardEntry(incoming())

@@ -54,6 +54,17 @@ function formatTimeAgoShort(iso: string): string {
   return `${hr}h ago`;
 }
 
+function calculateHaversineDistanceKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const R = 6371; // Earth radius in km
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLon = ((lon2 - lon1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos((lat1 * Math.PI) / 180) * Math.cos((lat2 * Math.PI) / 180) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
+
 const TRAIL_COLORS = [
   '#10b981', // emerald
   '#06b6d4', // cyan
@@ -84,11 +95,30 @@ export const LiveGpsMap: React.FC<LiveGpsMapProps> = ({
   const tileLayerRef = useRef<L.TileLayer | null>(null);
   const markersRef = useRef<Map<string, L.Marker>>(new Map());
   const trailsRef = useRef<Map<string, L.Polyline>>(new Map());
+  const milestonesRef = useRef<Map<string, L.Marker[]>>(new Map());
   const accuracyCircleRef = useRef<L.Circle | null>(null);
   const animFramesRef = useRef<Map<string, number>>(new Map());
   const hasFittedInitialRef = useRef(false);
 
   const [mapLayer, setMapLayer] = useState<'street' | 'satellite'>('street');
+  const [userFilter, setUserFilter] = useState<'all' | 'active' | 'idle'>('all');
+
+  const isUserActive = React.useCallback((loc: LiveGpsUserLocation) => {
+    const ageMs = Date.now() - new Date(loc.updatedAt).getTime();
+    const isRecent = Number.isFinite(ageMs) && ageMs <= 180_000;
+    const isMoving = loc.speed != null && loc.speed > 0.3;
+    return isRecent || isMoving;
+  }, []);
+
+  const filteredLocations = useMemo(() => {
+    let base = locations;
+    if (userFilter === 'active') {
+      base = locations.filter((l) => isUserActive(l) || l.userId === selectedUserId);
+    } else if (userFilter === 'idle') {
+      base = locations.filter((l) => !isUserActive(l) || l.userId === selectedUserId);
+    }
+    return base;
+  }, [locations, userFilter, selectedUserId, isUserActive]);
 
   const selectedLocation = useMemo(
     () => locations.find((l) => l.userId === selectedUserId) || null,
@@ -128,6 +158,8 @@ export const LiveGpsMap: React.FC<LiveGpsMapProps> = ({
       animFramesRef.current.clear();
       markersRef.current.clear();
       trailsRef.current.clear();
+      milestonesRef.current.forEach((markers) => markers.forEach((m) => m.remove()));
+      milestonesRef.current.clear();
       accuracyCircleRef.current = null;
       map.remove();
       mapRef.current = null;
@@ -164,14 +196,14 @@ export const LiveGpsMap: React.FC<LiveGpsMapProps> = ({
     tileLayerRef.current = nextLayer;
   }, [mapLayer]);
 
-  // Smoothly update markers, route trails, and follow camera
+  // Smoothly update markers, route trails, 3km milestone marks, and follow camera
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
 
-    const activeIds = new Set(locations.map((l) => l.userId));
+    const activeIds = new Set(filteredLocations.map((l) => l.userId));
 
-    // Remove stale markers & trails for users no longer present
+    // Remove stale markers, trails & milestones for users no longer present
     for (const [uid, marker] of markersRef.current.entries()) {
       if (!activeIds.has(uid)) {
         const rafId = animFramesRef.current.get(uid);
@@ -189,8 +221,14 @@ export const LiveGpsMap: React.FC<LiveGpsMapProps> = ({
         trailsRef.current.delete(uid);
       }
     }
+    for (const [uid, msMarkers] of milestonesRef.current.entries()) {
+      if (!activeIds.has(uid)) {
+        msMarkers.forEach((m) => map.removeLayer(m));
+        milestonesRef.current.delete(uid);
+      }
+    }
 
-    locations.forEach((loc) => {
+    filteredLocations.forEach((loc) => {
       const color = getUserColor(loc.userId);
       const isSelected = loc.userId === selectedUserId;
       const ageMs = Date.now() - new Date(loc.updatedAt).getTime();
@@ -295,16 +333,41 @@ export const LiveGpsMap: React.FC<LiveGpsMapProps> = ({
         markersRef.current.set(loc.userId, marker);
       }
 
-      // Draw movement breadcrumb trail (delivery-style path)
-      const trailPoints: [number, number][] = (
-        loc.trail && loc.trail.length > 0 ? loc.trail : [{ lat: loc.lat, lng: loc.lng, ts: loc.updatedAt }]
-      ).map((pt) => [pt.lat, pt.lng]);
+      // Process trail points & place 3km milestone marks to avoid messy overlapping crisscrossing spiderwebs
+      const rawTrail =
+        loc.trail && loc.trail.length > 0 ? loc.trail : [{ lat: loc.lat, lng: loc.lng, ts: loc.updatedAt }];
+      const trailPoints: [number, number][] = [];
+      const newMilestones: Array<{ lat: number; lng: number; km: number }> = [];
+
+      let cumulativeDist = 0;
+      let lastPoint = rawTrail[0];
+      let nextMilestoneKm = 3.0; // 3km milestone interval
+
+      rawTrail.forEach((pt, idx) => {
+        if (idx === 0) {
+          trailPoints.push([pt.lat, pt.lng]);
+        } else {
+          const dist = calculateHaversineDistanceKm(lastPoint.lat, lastPoint.lng, pt.lat, pt.lng);
+          cumulativeDist += dist;
+          // Add point if significant move or final point
+          if (dist >= 0.08 || idx === rawTrail.length - 1) {
+            trailPoints.push([pt.lat, pt.lng]);
+            lastPoint = pt;
+          }
+          // Check if we hit or passed a 3km milestone
+          while (cumulativeDist >= nextMilestoneKm) {
+            newMilestones.push({ lat: pt.lat, lng: pt.lng, km: Math.round(nextMilestoneKm) });
+            nextMilestoneKm += 3.0; // next marker at 6km, 9km, etc.
+          }
+        }
+      });
 
       const lastPt = trailPoints[trailPoints.length - 1];
       if (!lastPt || Math.abs(lastPt[0] - loc.lat) > 0.00001 || Math.abs(lastPt[1] - loc.lng) > 0.00001) {
         trailPoints.push([loc.lat, loc.lng]);
       }
 
+      // Draw clean polyline trail
       const existingTrail = trailsRef.current.get(loc.userId);
       if (existingTrail) {
         existingTrail.setLatLngs(trailPoints);
@@ -322,6 +385,23 @@ export const LiveGpsMap: React.FC<LiveGpsMapProps> = ({
         }).addTo(map);
         trailsRef.current.set(loc.userId, poly);
       }
+
+      // Render clean 3km milestone markers
+      const oldMsMarkers = milestonesRef.current.get(loc.userId) || [];
+      oldMsMarkers.forEach((m) => map.removeLayer(m));
+
+      const createdMsMarkers: L.Marker[] = [];
+      newMilestones.forEach((ms) => {
+        const msIcon = L.divIcon({
+          className: 'choy-gps-milestone-icon',
+          html: `<div style="padding:2px 6px;border-radius:9999px;background:#022c22;color:#fbbf24;border:2px solid #f59e0b;font-size:9px;font-weight:900;white-space:nowrap;box-shadow:0 2px 6px rgba(0,0,0,0.4);">📍 ${ms.km} km</div>`,
+          iconSize: [60, 24],
+          iconAnchor: [30, 12],
+        });
+        const msMarker = L.marker([ms.lat, ms.lng], { icon: msIcon, zIndexOffset: 300 }).addTo(map);
+        createdMsMarkers.push(msMarker);
+      });
+      milestonesRef.current.set(loc.userId, createdMsMarkers);
     });
 
     // Accuracy circle around currently selected user
@@ -352,7 +432,7 @@ export const LiveGpsMap: React.FC<LiveGpsMapProps> = ({
     } else if (followSelected && selectedLocation) {
       map.panTo([selectedLocation.lat, selectedLocation.lng], { animate: true, duration: 0.75 });
     }
-  }, [locations, selectedUserId, selectedLocation, followSelected, defaultAvatar, onSelectUser, onToggleFollow]);
+  }, [filteredLocations, selectedUserId, selectedLocation, followSelected, defaultAvatar, onSelectUser, onToggleFollow]);
 
   const handleFitAll = () => {
     const map = mapRef.current;
@@ -379,10 +459,51 @@ export const LiveGpsMap: React.FC<LiveGpsMapProps> = ({
       <div className="absolute top-2.5 left-12 right-2.5 z-[400] flex flex-wrap items-center justify-between gap-1.5 pointer-events-none">
         <div className="pointer-events-auto inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-slate-950/85 border border-emerald-400/50 text-white text-[10px] font-extrabold shadow backdrop-blur-sm">
           <Radio className="w-3 h-3 text-emerald-400 animate-pulse" />
-          <span>LIVE MAP RADAR · {locations.length} ACTIVE</span>
+          <span>LIVE MAP RADAR · {filteredLocations.length} / {locations.length} SHOWN</span>
         </div>
 
         <div className="pointer-events-auto flex flex-wrap items-center gap-1.5">
+          {/* Active / Idle Filter Control */}
+          <div className="inline-flex items-center gap-0.5 bg-slate-950/90 border border-emerald-500/40 rounded-xl p-0.5 text-[10px]">
+            <button
+              type="button"
+              onClick={() => setUserFilter('all')}
+              className={`px-2 py-0.5 rounded-lg font-bold transition ${
+                userFilter === 'all'
+                  ? 'bg-emerald-500 text-slate-950 shadow'
+                  : 'text-emerald-300 hover:text-white'
+              }`}
+              title="Show all users"
+            >
+              All ({locations.length})
+            </button>
+            <button
+              type="button"
+              onClick={() => setUserFilter('active')}
+              className={`px-2 py-0.5 rounded-lg font-bold transition ${
+                userFilter === 'active'
+                  ? 'bg-emerald-500 text-slate-950 shadow'
+                  : 'text-emerald-300 hover:text-white'
+              }`}
+              title="Show active users only"
+            >
+              Active
+            </button>
+            <button
+              type="button"
+              onClick={() => setUserFilter('idle')}
+              className={`px-2 py-0.5 rounded-lg font-bold transition ${
+                userFilter === 'idle'
+                  ? 'bg-emerald-500 text-slate-950 shadow'
+                  : 'text-emerald-300 hover:text-white'
+              }`}
+              title="Show idle users only"
+            >
+              Idle
+            </button>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-1.5">
           <button
             type="button"
             onClick={() => setMapLayer((prev) => (prev === 'street' ? 'satellite' : 'street'))}
@@ -428,6 +549,7 @@ export const LiveGpsMap: React.FC<LiveGpsMapProps> = ({
           )}
         </div>
       </div>
+    </div>
 
       {/* Leaflet Canvas */}
       <div
@@ -448,8 +570,7 @@ export const LiveGpsMap: React.FC<LiveGpsMapProps> = ({
             </span>
           </div>
           <div className="font-mono text-[10px] text-emerald-200/90">
-            {selectedLocation.lat.toFixed(5)}, {selectedLocation.lng.toFixed(5)}
-            {selectedLocation.accuracy != null ? ` · ±${Math.round(selectedLocation.accuracy)}m` : ''}
+            Lat: {selectedLocation.lat.toFixed(4)}, Lng: {selectedLocation.lng.toFixed(4)}
           </div>
         </div>
       )}

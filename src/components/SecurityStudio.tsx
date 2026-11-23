@@ -1586,8 +1586,8 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
               {firebaseConnectedEmail
                 ? firebaseIsAdminVerified
                   ? `Connected: ${firebaseConnectedEmail} · Auto-syncs accounts to Firestore`
-                  : `Connected (${firebaseConnectedEmail}) — requires choyjiez07@gmail.com`
-                : 'Connect Google (choyjiez07@gmail.com) so accounts never get lost across server resets.'}
+                  : `Connected (${firebaseConnectedEmail}) — requires choycounterflow@gmail.com`
+                : 'Connect Google (choycounterflow@gmail.com) so accounts never get lost across server resets.'}
             </div>
           </div>
         </div>
@@ -4443,16 +4443,16 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
                   <td className="p-3">
                     <span
                       className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
-                        u.role === 'admin' || u.phone === '09361223978' || u.phone === 'choyjiez07@gmail.com'
+                        u.role === 'admin' || u.phone === '09361223978' || u.phone === 'choyjiez07@gmail.com' || u.phone === 'choycounterflow@gmail.com'
                           ? 'bg-amber-100 dark:bg-amber-500/20 text-amber-800 dark:text-amber-300'
                           : 'bg-emerald-100 dark:bg-emerald-500/20 text-emerald-800 dark:text-emerald-300'
                       }`}
                     >
-                      {u.role === 'admin' || u.phone === '09361223978' || u.phone === 'choyjiez07@gmail.com' ? 'Admin' : 'Active'}
+                      {u.role === 'admin' || u.phone === '09361223978' || u.phone === 'choyjiez07@gmail.com' || u.phone === 'choycounterflow@gmail.com' ? 'Admin' : 'Active'}
                     </span>
                   </td>
                   <td className="p-3 text-right space-x-2">
-                    {u.role !== 'admin' && u.phone !== '09361223978' && u.phone !== 'choyjiez07@gmail.com' ? (
+                    {u.role !== 'admin' && u.phone !== '09361223978' && u.phone !== 'choyjiez07@gmail.com' && u.phone !== 'choycounterflow@gmail.com' ? (
                       confirmDeleteUserId === u.id ? (
                         <span className="inline-flex items-center gap-1.5">
                           <button

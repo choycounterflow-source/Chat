@@ -9,7 +9,7 @@ import {
 } from 'firebase/firestore';
 import {
   auth,
-  BOOTSTRAPPED_ADMIN_EMAIL,
+  BOOTSTRAPPED_ADMIN_EMAILS,
   db,
   googleProvider,
   handleFirestoreError,
@@ -137,15 +137,32 @@ function normalizeNewsfeed(raw: unknown): 'feed_a' | 'feed_b' | 'feed_c' | 'feed
 
 export function isVerifiedAdminFirebaseUser(user: User | null): boolean {
   if (!user || !user.emailVerified || !user.email) return false;
-  return user.email.trim().toLowerCase() === BOOTSTRAPPED_ADMIN_EMAIL.toLowerCase();
+  const normalized = user.email.trim().toLowerCase();
+  return BOOTSTRAPPED_ADMIN_EMAILS.some((allowed) => allowed.toLowerCase() === normalized);
 }
 
 export async function connectFirebaseGoogleAdmin(): Promise<User> {
-  const result = await signInWithPopup(auth, googleProvider);
-  if (!result.user.emailVerified) {
-    throw new Error('Google account email must be verified.');
+  try {
+    const result = await signInWithPopup(auth, googleProvider);
+    if (!result.user.emailVerified) {
+      throw new Error('Google account email must be verified.');
+    }
+    return result.user;
+  } catch (err: unknown) {
+    const code = typeof err === 'object' && err !== null && 'code' in err ? String((err as { code?: unknown }).code) : '';
+    if (code === 'auth/popup-blocked') {
+      throw new Error('Popup was blocked by your browser. Please allow popups for this site and try again.');
+    }
+    if (code === 'auth/popup-closed-by-user') {
+      throw new Error('Google sign-in popup was closed before completing login.');
+    }
+    if (code === 'auth/unauthorized-domain') {
+      throw new Error(
+        `Domain "${window.location.hostname}" is not yet authorized in Firebase Authentication. Connect from the AI Studio app URL or add this domain in Firebase Console -> Authentication -> Settings -> Authorized domains.`
+      );
+    }
+    throw err;
   }
-  return result.user;
 }
 
 export async function disconnectFirebaseGoogle(): Promise<void> {

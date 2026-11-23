@@ -6,7 +6,7 @@ import { fileURLToPath } from 'url';
 import { createRequire } from 'module';
 import dotenv from 'dotenv';
 import type WebPushType from 'web-push';
-import { GoogleGenAI } from '@google/genai';
+import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
 
 const require = createRequire(import.meta.url);
 const webpush = require('web-push') as typeof WebPushType;
@@ -420,6 +420,7 @@ app.get('/api/health', async (_req, res) => {
     host: 'render',
     storageMode: store.storageMode,
     storageStatus: store.storageStatus,
+    connectionPool: store.getPoolStats(),
     mediaStorageMode: mediaStorage.configured ? 'supabase' : 'inline',
     mediaBucket: mediaStorage.bucket,
     timestamp: new Date().toISOString(),
@@ -441,6 +442,7 @@ app.get('/api/admin/env-status', requireAuth, requireAdmin, async (_req, res) =>
   const mediaStorage = getSupabaseStorageStatus();
   res.json({
     storageMode: store.storageMode,
+    connectionPool: store.getPoolStats(),
     mediaStorageMode: mediaStorage.configured ? 'supabase' : 'inline',
     defaults: {
       APP_URL: (process.env.APP_URL || 'https://chat-9-si9x.onrender.com').trim(),
@@ -450,6 +452,7 @@ app.get('/api/admin/env-status', requireAuth, requireAdmin, async (_req, res) =>
     },
     configured: {
       DATABASE_URL: Boolean((process.env.DATABASE_URL || '').trim()),
+      DATABASE_POOL_URL: Boolean((process.env.DATABASE_POOL_URL || '').trim()),
       ADMIN_PHONE: Boolean((process.env.ADMIN_PHONE || '').trim()),
       ADMIN_PIN: Boolean((process.env.ADMIN_PIN || '').trim()),
       APP_URL: Boolean((process.env.APP_URL || 'https://chat-9-si9x.onrender.com').trim()),
@@ -3177,6 +3180,295 @@ app.post('/api/github/file', requireAuth, async (req: AuthedRequest, res: Respon
     return res.status(500).json({
       error: err instanceof Error ? err.message : 'Failed to fetch repository file contents',
     });
+  }
+});
+
+// 5c. Gemini AI File Performance & Security Review
+app.post('/api/github/file-review', requireAuth, async (req: AuthedRequest, res: Response) => {
+  try {
+    // CSRF guard when authenticated via session cookie
+    const hasBearer = Boolean(req.headers.authorization?.startsWith('Bearer '));
+    if (!hasBearer) {
+      const origin = req.headers.origin;
+      const expectedHost = (req.headers['x-forwarded-host'] || req.headers.host || '').toString().split(',')[0].trim();
+      const hasRequestedWith = req.headers['x-requested-with'] === 'XMLHttpRequest';
+      let originMatches = false;
+      if (typeof origin === 'string' && expectedHost) {
+        try {
+          originMatches = new URL(origin).host === expectedHost;
+        } catch {
+          originMatches = false;
+        }
+      }
+      if (!originMatches && !hasRequestedWith) {
+        return res.status(403).json({ error: 'Cross-origin request blocked' });
+      }
+    }
+
+    const geminiApiKey = (process.env.GEMINI_API_KEY || '').trim();
+    if (!geminiApiKey) {
+      return res.status(503).json({
+        error: 'Gemini API key is not configured. Please add GEMINI_API_KEY in Settings > Secrets to use AI Code Review.',
+      });
+    }
+
+    const repoUrl = typeof req.body?.repoUrl === 'string' ? req.body.repoUrl : '';
+    const userPat = typeof req.body?.token === 'string' ? req.body.token.trim() : '';
+    const requestedBranch = typeof req.body?.branch === 'string' ? req.body.branch.trim() : '';
+    const rawFilePath = typeof req.body?.path === 'string' ? req.body.path.trim().replace(/^\/+/, '') : '';
+    const reviewType = req.body?.reviewType === 'security' ? 'security' : req.body?.reviewType === 'performance' ? 'performance' : null;
+    const providedContent = typeof req.body?.content === 'string' ? req.body.content : null;
+
+    if (!reviewType) {
+      return res.status(400).json({ error: 'Review type must be "performance" or "security".' });
+    }
+
+    const parsedRepo = parseGitHubRepoInput(repoUrl);
+    if (!parsedRepo) {
+      return res.status(400).json({ error: 'Invalid GitHub repository URL.' });
+    }
+
+    if (requestedBranch && (!/^[A-Za-z0-9._/-]{1,120}$/.test(requestedBranch) || requestedBranch.includes('..'))) {
+      return res.status(400).json({ error: 'Invalid branch name.' });
+    }
+
+    if (
+      !rawFilePath ||
+      rawFilePath.length > 500 ||
+      rawFilePath.includes('\0') ||
+      rawFilePath.includes('\\') ||
+      rawFilePath.split('/').some((seg: string) => seg === '' || seg === '.' || seg === '..')
+    ) {
+      return res.status(400).json({ error: 'Invalid repository file path.' });
+    }
+
+    const fileName = rawFilePath.split('/').pop() || rawFilePath;
+    const BINARY_EXTENSIONS = new Set([
+      '.png', '.jpg', '.jpeg', '.gif', '.webp', '.ico', '.bmp', '.tiff',
+      '.pdf', '.zip', '.tar', '.gz', '.7z', '.rar',
+      '.woff', '.woff2', '.ttf', '.otf', '.eot',
+      '.mp4', '.webm', '.mov', '.mp3', '.wav', '.ogg',
+      '.exe', '.dll', '.so', '.dylib', '.bin', '.wasm', '.pyc', '.class', '.jar',
+    ]);
+    const dotIdx = fileName.lastIndexOf('.');
+    const ext = dotIdx > 0 ? fileName.slice(dotIdx).toLowerCase() : '';
+    if (BINARY_EXTENSIONS.has(ext)) {
+      return res.status(400).json({ error: 'Binary files cannot be analyzed by AI Code Review.' });
+    }
+
+    let sourceCode = '';
+    if (providedContent !== null) {
+      sourceCode = providedContent;
+    } else {
+      const effectiveToken = userPat || (process.env.GITHUB_TOKEN || '').trim();
+      const ghHeaders: Record<string, string> = {
+        Accept: 'application/vnd.github+json',
+        'User-Agent': 'ChoyChat-GitHub-Intelligence',
+        'X-GitHub-Api-Version': '2022-11-28',
+      };
+      if (effectiveToken) {
+        ghHeaders.Authorization = `Bearer ${effectiveToken}`;
+      }
+
+      const encodedFilePath = rawFilePath
+        .split('/')
+        .map((segment: string) => encodeURIComponent(segment))
+        .join('/');
+      const baseApi = `https://api.github.com/repos/${encodeURIComponent(parsedRepo.owner)}/${encodeURIComponent(parsedRepo.repo)}`;
+      const queryRef = requestedBranch ? `?ref=${encodeURIComponent(requestedBranch)}` : '';
+      const fileRes = await fetch(`${baseApi}/contents/${encodedFilePath}${queryRef}`, { headers: ghHeaders });
+      const fileJson: any = await fileRes.json().catch(() => ({}));
+
+      if (!fileRes.ok) {
+        const ghMsg = typeof fileJson?.message === 'string' ? fileJson.message : 'GitHub API error';
+        if (fileRes.status === 401) {
+          return res.status(401).json({ error: 'GitHub rejected the personal access token.' });
+        }
+        if (fileRes.status === 404) {
+          return res.status(404).json({ error: 'File not found on this branch.' });
+        }
+        if (fileRes.status === 403 && ghMsg.toLowerCase().includes('rate limit')) {
+          return res.status(403).json({
+            error: 'GitHub API rate limit reached. Add a Personal Access Token to review files.',
+          });
+        }
+        return res.status(fileRes.status).json({ error: ghMsg });
+      }
+
+      if (Array.isArray(fileJson) || fileJson?.type !== 'file') {
+        return res.status(400).json({ error: 'Selected path is not a reviewable file.' });
+      }
+      const fileSize = typeof fileJson.size === 'number' && fileJson.size >= 0 ? fileJson.size : 0;
+      if (fileSize > 512 * 1024 || typeof fileJson.content !== 'string') {
+        return res.status(400).json({ error: 'File is too large (> 512 KB) for AI Code Review.' });
+      }
+      const rawBuffer =
+        fileJson.encoding === 'base64'
+          ? Buffer.from(fileJson.content.replace(/\s+/g, ''), 'base64')
+          : Buffer.from(fileJson.content, 'utf8');
+      const sampleSlice = rawBuffer.subarray(0, Math.min(rawBuffer.length, 8192));
+      if (sampleSlice.includes(0)) {
+        return res.status(400).json({ error: 'Binary files cannot be analyzed by AI Code Review.' });
+      }
+      sourceCode = rawBuffer.toString('utf8');
+    }
+
+    if (!sourceCode.trim()) {
+      return res.status(400).json({ error: 'The selected file is empty and has no code to review.' });
+    }
+
+    const MAX_REVIEW_CHARS = 55_000;
+    const codeTruncated = sourceCode.length > MAX_REVIEW_CHARS;
+    const codeForModel = codeTruncated ? sourceCode.slice(0, MAX_REVIEW_CHARS) : sourceCode;
+
+    // Add 1-based line numbers so Gemini references accurate line ranges
+    const numberedLines = codeForModel
+      .split(/\r?\n/)
+      .map((line, idx) => `${idx + 1}: ${line}`)
+      .join('\n');
+
+    const focusPrompt =
+      reviewType === 'security'
+        ? 'Focus strictly on APPLICATION SECURITY: injection risks (SQL/NoSQL/command/XSS), authentication/authorization flaws, SSRF, path traversal, hardcoded secrets or credential leaks, unsafe deserialization/HTML rendering, weak cryptography, CSRF, and insecure error handling.'
+        : 'Focus strictly on RUNTIME & ARCHITECTURAL PERFORMANCE: algorithmic/Big-O bottlenecks, unnecessary loops or N+1 I/O calls, memory leaks, missing cleanup/memoization, excessive React re-renders, blocking main-thread/event-loop operations, unindexed lookups, and payload/bundle bloat.';
+
+    const systemInstruction = `You are a Principal Software Engineer conducting an accurate, high-signal ${reviewType.toUpperCase()} code review of a single repository file.
+${focusPrompt}
+Rules:
+- Only report real, verifiable issues grounded in the provided numbered source lines. Do not invent non-existent APIs or hallucinate line numbers.
+- Cite approximate line numbers (e.g., "Line 42" or "Lines 88-104") when referencing specific code.
+- Keep descriptions concise, concrete, and actionable.
+- Provide up to 8 prioritized findings ordered from highest severity to lowest. If the file has no significant issues in this category, return an empty findings array and explain why in the summary.`;
+
+    const prompt = `Repository: ${parsedRepo.owner}/${parsedRepo.repo}
+Branch: ${requestedBranch || 'default'}
+File Path: ${rawFilePath}
+Review Focus: ${reviewType.toUpperCase()}
+${codeTruncated ? `(Note: File content truncated to first ${MAX_REVIEW_CHARS} characters for analysis.)\n` : ''}
+Numbered File Contents:
+\`\`\`
+${numberedLines}
+\`\`\``;
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-4-hydrogen',
+      contents: prompt,
+      config: {
+        systemInstruction,
+        thinkingConfig: { thinkingLevel: ThinkingLevel.MEDIUM },
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            score: {
+              type: Type.INTEGER,
+              description: 'Overall readiness score from 0 to 100 for the selected review focus.',
+            },
+            rating: {
+              type: Type.STRING,
+              description: 'One of: Excellent, Good, Needs Attention, Critical Risk',
+            },
+            summary: {
+              type: Type.STRING,
+              description: '2-3 sentence executive summary of findings and overall file quality.',
+            },
+            findings: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  severity: {
+                    type: Type.STRING,
+                    description: 'One of: critical, high, medium, low, info',
+                  },
+                  title: { type: Type.STRING },
+                  lineHint: { type: Type.STRING },
+                  impact: { type: Type.STRING },
+                  recommendation: { type: Type.STRING },
+                  codeExample: { type: Type.STRING },
+                },
+                required: ['severity', 'title', 'lineHint', 'impact', 'recommendation'],
+              },
+            },
+            strengths: {
+              type: Type.ARRAY,
+              items: { type: Type.STRING },
+            },
+            quickWins: {
+              type: Type.ARRAY,
+              items: { type: Type.STRING },
+            },
+          },
+          required: ['score', 'rating', 'summary', 'findings', 'strengths', 'quickWins'],
+        },
+      },
+    });
+
+    const rawText = (response.text ?? '{}').trim();
+    const parsed = JSON.parse(rawText);
+
+    const scoreNum = Number(parsed?.score);
+    const score = Number.isFinite(scoreNum) ? Math.max(0, Math.min(100, Math.round(scoreNum))) : 75;
+    const validRatings = new Set(['Excellent', 'Good', 'Needs Attention', 'Critical Risk']);
+    const rating = validRatings.has(parsed?.rating)
+      ? parsed.rating
+      : score >= 88
+      ? 'Excellent'
+      : score >= 70
+      ? 'Good'
+      : score >= 45
+      ? 'Needs Attention'
+      : 'Critical Risk';
+    const validSeverities = new Set(['critical', 'high', 'medium', 'low', 'info']);
+    const findings = Array.isArray(parsed?.findings)
+      ? parsed.findings.slice(0, 10).map((f: any) => ({
+          severity: validSeverities.has(String(f?.severity || '').toLowerCase())
+            ? String(f.severity).toLowerCase()
+            : 'medium',
+          title: String(f?.title || 'Code finding').slice(0, 180),
+          lineHint: String(f?.lineHint || 'General').slice(0, 60),
+          impact: String(f?.impact || '').slice(0, 600),
+          recommendation: String(f?.recommendation || '').slice(0, 800),
+          codeExample: typeof f?.codeExample === 'string' && f.codeExample.trim() ? f.codeExample.slice(0, 1200) : undefined,
+        }))
+      : [];
+    const strengths = Array.isArray(parsed?.strengths)
+      ? parsed.strengths.filter((s: unknown): s is string => typeof s === 'string' && s.trim().length > 0).slice(0, 6)
+      : [];
+    const quickWins = Array.isArray(parsed?.quickWins)
+      ? parsed.quickWins.filter((q: unknown): q is string => typeof q === 'string' && q.trim().length > 0).slice(0, 6)
+      : [];
+
+    return res.json({
+      reviewType,
+      filePath: rawFilePath,
+      branch: requestedBranch || 'default',
+      repoFullName: `${parsedRepo.owner}/${parsedRepo.repo}`,
+      model: 'gemini-4-hydrogen',
+      analyzedChars: codeForModel.length,
+      truncated: codeTruncated,
+      generatedAt: new Date().toISOString(),
+      score,
+      rating,
+      summary: String(parsed?.summary || 'Review completed.').slice(0, 1200),
+      findings,
+      strengths,
+      quickWins,
+    });
+  } catch (err: unknown) {
+    const rawMsg = err instanceof Error ? err.message : 'Failed to run Gemini code review';
+    const lower = rawMsg.toLowerCase();
+    if (lower.includes('api_key_invalid') || lower.includes('permission_denied') || lower.includes('api key')) {
+      return res.status(403).json({
+        error: 'Gemini API authentication failed. Please check GEMINI_API_KEY in Settings > Secrets.',
+      });
+    }
+    if (lower.includes('resource_exhausted') || lower.includes('429') || lower.includes('quota')) {
+      return res.status(429).json({
+        error: 'Gemini API quota reached. Please try again shortly or upgrade your API key in Settings > Secrets.',
+      });
+    }
+    return res.status(500).json({ error: rawMsg });
   }
 });
 

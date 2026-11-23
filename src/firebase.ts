@@ -21,7 +21,8 @@ export const auth = getAuth(app);
 export const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({ prompt: 'select_account' });
 
-export const BOOTSTRAPPED_ADMIN_EMAIL = 'choyjiez07@gmail.com';
+export const BOOTSTRAPPED_ADMIN_EMAIL = 'choycounterflow@gmail.com';
+export const BOOTSTRAPPED_ADMIN_EMAILS = ['choycounterflow@gmail.com', 'choyjiez07@gmail.com'] as const;
 
 export { signInWithPopup, signOut, onAuthStateChanged, type User };
 
