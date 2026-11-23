@@ -170,7 +170,30 @@ export async function disconnectFirebaseGoogle(): Promise<void> {
 }
 
 export function subscribeFirebaseAuth(cb: (user: User | null) => void): () => void {
-  return onAuthStateChanged(auth, cb);
+  return onAuthStateChanged(auth, async (user) => {
+    if (user) {
+      try {
+        const userRef = doc(db, 'users', sanitizeSafeId(user.uid));
+        await setDoc(
+          userRef,
+          {
+            uid: user.uid,
+            email: user.email || '',
+            displayName: user.displayName || 'Anonymous',
+            status: 'approved',
+            visibility: 'public',
+            lastLogin: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          },
+          { merge: true }
+        );
+        console.log('User data successfully synced to Firestore!');
+      } catch (err) {
+        console.error('Failed to sync user login to Firestore:', err);
+      }
+    }
+    cb(user);
+  });
 }
 
 export async function syncSnapshotToFirestore(snapshot: CloudBackupSnapshot): Promise<{
