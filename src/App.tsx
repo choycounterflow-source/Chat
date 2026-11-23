@@ -620,6 +620,155 @@ export default function App() {
     return () => window.removeEventListener('resize', clampToViewport);
   }, [activeChatHeadMessage?.id]);
 
+  const [isHeadBubblePipOpen, setIsHeadBubblePipOpen] = useState(false);
+  const headBubblePipWinRef = useRef<Window | null>(null);
+  const isDocPipSupported =
+    typeof window !== 'undefined' && 'documentPictureInPicture' in window;
+
+  const renderHeadBubbleIntoPip = useCallback(
+    (pipWin: Window, msg: Message | null) => {
+      try {
+        const doc = pipWin.document;
+        doc.title = 'Choy Chat · Headbubble';
+        if (!doc.head.querySelector('#choy-pip-style')) {
+          const style = doc.createElement('style');
+          style.id = 'choy-pip-style';
+          style.textContent = `
+            * { box-sizing: border-box; font-family: system-ui, -apple-system, sans-serif; }
+            body {
+              margin: 0; padding: 10px;
+              background: linear-gradient(135deg, #022c22 0%, #064e3b 60%, #0f172a 100%);
+              color: #ffffff;
+              display: flex; align-items: center; justify-content: center;
+              min-height: 100vh;
+            }
+            .card {
+              width: 100%; display: flex; align-items: center; gap: 10px;
+              background: rgba(6, 78, 59, 0.9);
+              border: 2px solid #fbbf24; border-radius: 16px; padding: 10px 12px;
+              box-shadow: 0 10px 25px rgba(0,0,0,0.45);
+              cursor: pointer;
+            }
+            .avatar {
+              width: 44px; height: 44px; border-radius: 9999px;
+              object-fit: cover; border: 2px solid #fbbf24; flex-shrink: 0;
+              background: #022c22;
+            }
+            .meta { flex: 1; min-width: 0; }
+            .sender { font-size: 12px; font-weight: 800; color: #fcd34d; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+            .text { font-size: 11px; color: #ecfdf5; margin-top: 2px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+            .btn {
+              background: #34d399; color: #020617; border: 0; border-radius: 10px;
+              padding: 7px 10px; font-size: 11px; font-weight: 800; cursor: pointer; flex-shrink: 0;
+            }
+            .btn:hover { background: #6ee7b7; }
+          `;
+          doc.head.appendChild(style);
+        }
+
+        doc.body.innerHTML = '';
+        const card = doc.createElement('div');
+        card.className = 'card';
+
+        const img = doc.createElement('img');
+        img.className = 'avatar';
+        img.src = msg ? getUserAvatar({ name: msg.sender }) : DEFAULT_AVATAR;
+        img.alt = '';
+
+        const meta = doc.createElement('div');
+        meta.className = 'meta';
+
+        const senderEl = doc.createElement('div');
+        senderEl.className = 'sender';
+        senderEl.textContent = msg ? msg.sender : 'Choy Chat Headbubble';
+
+        const textEl = doc.createElement('div');
+        textEl.className = 'text';
+        textEl.textContent = msg
+          ? msg.text || 'Sent an attachment'
+          : 'Always-on-top active. New messages pop up here.';
+
+        meta.appendChild(senderEl);
+        meta.appendChild(textEl);
+
+        const openBtn = doc.createElement('button');
+        openBtn.type = 'button';
+        openBtn.className = 'btn';
+        openBtn.textContent = msg ? 'Reply' : 'Open';
+        openBtn.onclick = () => {
+          try {
+            window.focus();
+          } catch {
+            // ignore focus restrictions
+          }
+          if (msg && currentUser) {
+            const room =
+              msg.receiver.trim().toLowerCase() === 'vip group'
+                ? 'VIP Group'
+                : msg.sender === currentUser.name
+                ? msg.receiver
+                : msg.sender;
+            setActiveChat(room);
+          }
+          setActiveTab('messages');
+          setActiveChatHeadMessage(null);
+        };
+
+        card.onclick = () => openBtn.click();
+        card.appendChild(img);
+        card.appendChild(meta);
+        card.appendChild(openBtn);
+        doc.body.appendChild(card);
+      } catch {
+        // ignore if PiP window was closed
+      }
+    },
+    [currentUser]
+  );
+
+  const openFloatingHeadBubbleWindow = useCallback(
+    async (initialMsg?: Message | null) => {
+      if (headBubblePipWinRef.current && !headBubblePipWinRef.current.closed) {
+        renderHeadBubbleIntoPip(headBubblePipWinRef.current, initialMsg ?? activeChatHeadMessage);
+        headBubblePipWinRef.current.focus();
+        return;
+      }
+      const pipApi = (
+        window as unknown as {
+          documentPictureInPicture?: {
+            requestWindow: (opts?: { width?: number; height?: number }) => Promise<Window>;
+          };
+        }
+      ).documentPictureInPicture;
+
+      if (!pipApi) {
+        showNotice('Floating mini-window is only supported in Chrome/Edge Desktop. Use Enable Home-Screen Alerts for outside-the-app mobile popups.');
+        return;
+      }
+      try {
+        const pipWin = await pipApi.requestWindow({ width: 340, height: 120 });
+        headBubblePipWinRef.current = pipWin;
+        setIsHeadBubblePipOpen(true);
+        renderHeadBubbleIntoPip(pipWin, initialMsg ?? activeChatHeadMessage);
+        pipWin.addEventListener('pagehide', () => {
+          if (headBubblePipWinRef.current === pipWin) {
+            headBubblePipWinRef.current = null;
+          }
+          setIsHeadBubblePipOpen(false);
+        });
+      } catch {
+        showNotice('Could not open floating outside-app window.');
+      }
+    },
+    [activeChatHeadMessage, renderHeadBubbleIntoPip]
+  );
+
+  useEffect(() => {
+    if (headBubblePipWinRef.current && !headBubblePipWinRef.current.closed) {
+      renderHeadBubbleIntoPip(headBubblePipWinRef.current, activeChatHeadMessage);
+    }
+  }, [activeChatHeadMessage, renderHeadBubbleIntoPip]);
+
   useEffect(() => {
     if (!chatHeadBubbleEnabled || !currentUser) return;
     const allMsgs = [...cloudMessages, ...localMessages];
@@ -628,21 +777,77 @@ export default function App() {
     if (!latest) return;
 
     const room = latest.receiver.trim().toLowerCase() === 'vip group' ? 'VIP Group' : (latest.sender === currentUser.name ? latest.receiver : latest.sender);
+    const isViewingSameRoom =
+      !document.hidden &&
+      document.hasFocus() &&
+      activeTab === 'messages' &&
+      activeChat.trim().toLowerCase() === room.trim().toLowerCase();
+
     if (
       lastSeenMsgIdRef.current &&
       lastSeenMsgIdRef.current !== latest.id &&
       latest.sender !== currentUser.name &&
-      !(activeTab === 'messages' && activeChat.trim().toLowerCase() === room.trim().toLowerCase())
+      !isViewingSameRoom
     ) {
       setActiveChatHeadMessage(latest);
       playMessageNotificationTune();
+
+      if (headBubblePipWinRef.current && !headBubblePipWinRef.current.closed) {
+        renderHeadBubbleIntoPip(headBubblePipWinRef.current, latest);
+      }
+
+      // Trigger an OS heads-up popup notification when the user is outside the app or tab
+      if (
+        (document.hidden || !document.hasFocus()) &&
+        typeof window !== 'undefined' &&
+        'Notification' in window &&
+        Notification.permission === 'granted'
+      ) {
+        const previewBody = latest.text?.trim() || 'Sent an attachment';
+        const senderAvatar = getUserAvatar({ name: latest.sender });
+        const notifTitle = room === 'VIP Group' ? `${latest.sender} · VIP Group` : latest.sender;
+        const notifTag = `choy-msg-${room}`;
+        const openUrl = `/?openChat=${encodeURIComponent(room)}`;
+
+        if ('serviceWorker' in navigator) {
+          navigator.serviceWorker.ready
+            .then((reg) =>
+              reg.showNotification(notifTitle, {
+                body: previewBody,
+                icon: senderAvatar,
+                badge: '/pwa-192x192.png',
+                tag: notifTag,
+                renotify: true,
+                vibrate: [180, 100, 180],
+                data: { kind: 'message', roomId: room, url: openUrl },
+              } as NotificationOptions)
+            )
+            .catch(() => {});
+        } else {
+          try {
+            const n = new Notification(notifTitle, {
+              body: previewBody,
+              icon: senderAvatar,
+              tag: notifTag,
+            });
+            n.onclick = () => {
+              window.focus();
+              setActiveChat(room);
+              setActiveTab('messages');
+              n.close();
+            };
+          } catch {
+            // ignore notification fallback errors
+          }
+        }
+      }
     }
     if (!lastSeenMsgIdRef.current) {
       lastSeenMsgIdRef.current = latest.id;
     } else if (latest.id !== lastSeenMsgIdRef.current) {
       lastSeenMsgIdRef.current = latest.id;
     }
-  }, [cloudMessages, localMessages, chatHeadBubbleEnabled, currentUser, activeTab, activeChat]);
+  }, [cloudMessages, localMessages, chatHeadBubbleEnabled, currentUser, activeTab, activeChat, renderHeadBubbleIntoPip]);
   const [msgInput, setMsgInput] = useState('');
   const [openReactionPickerMsgId, setOpenReactionPickerMsgId] = useState<string | null>(null);
   const [showMsgEmojiPicker, setShowMsgEmojiPicker] = useState(false);
@@ -4909,26 +5114,47 @@ export default function App() {
               <div className="text-[9px] text-emerald-700 dark:text-emerald-300 truncate">{isAdmin ? 'Admin • Synced' : 'Member • Synced'}</div>
             </div>
           </button>
-          <div className="flex items-center justify-between px-2.5 py-2 rounded-xl bg-emerald-50 dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-800 text-xs">
-            <span className="font-bold text-emerald-950 dark:text-white flex items-center gap-1.5">
-              <MessageSquare className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" /> Headbubble
+          <div className="flex items-center justify-between gap-1.5 px-2.5 py-2 rounded-xl bg-emerald-50 dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-800 text-xs">
+            <span className="font-bold text-emerald-950 dark:text-white flex items-center gap-1.5 truncate">
+              <MessageSquare className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" /> Headbubble
             </span>
-            <button
-              type="button"
-              onClick={() => {
-                const next = !chatHeadBubbleEnabled;
-                setChatHeadBubbleEnabled(next);
-                localStorage.setItem('choychat_chat_head_bubble_v1', String(next));
-                showNotice(next ? 'Chat Head Bubbles Enabled' : 'Chat Head Bubbles Disabled');
-              }}
-              className={`px-2 py-1 rounded-lg text-[10px] font-bold transition ${
-                chatHeadBubbleEnabled
-                  ? 'bg-emerald-400 text-slate-950 shadow'
-                  : 'bg-emerald-200 dark:bg-emerald-900 text-emerald-700 dark:text-emerald-300'
-              }`}
-            >
-              {chatHeadBubbleEnabled ? 'ON' : 'OFF'}
-            </button>
+            <div className="flex items-center gap-1 shrink-0">
+              {isDocPipSupported && (
+                <button
+                  type="button"
+                  onClick={() => openFloatingHeadBubbleWindow()}
+                  title="Pop out floating window outside browser"
+                  className={`px-2 py-1 rounded-lg text-[10px] font-bold transition ${
+                    isHeadBubblePipOpen
+                      ? 'bg-amber-400 text-slate-950 shadow'
+                      : 'bg-white dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 text-emerald-800 dark:text-emerald-200 hover:bg-emerald-100'
+                  }`}
+                >
+                  {isHeadBubblePipOpen ? 'Popped' : 'Pop Out'}
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => {
+                  const next = !chatHeadBubbleEnabled;
+                  setChatHeadBubbleEnabled(next);
+                  localStorage.setItem('choychat_chat_head_bubble_v1', String(next));
+                  if (!next) {
+                    setActiveChatHeadMessage(null);
+                  } else if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'default') {
+                    void subscribeToBackgroundPush(false);
+                  }
+                  showNotice(next ? 'Chat Head Bubbles Enabled' : 'Chat Head Bubbles Disabled');
+                }}
+                className={`px-2 py-1 rounded-lg text-[10px] font-bold transition ${
+                  chatHeadBubbleEnabled
+                    ? 'bg-emerald-400 text-slate-950 shadow'
+                    : 'bg-emerald-200 dark:bg-emerald-900 text-emerald-700 dark:text-emerald-300'
+                }`}
+              >
+                {chatHeadBubbleEnabled ? 'ON' : 'OFF'}
+              </button>
+            </div>
           </div>
           <button
             type="button"
@@ -6723,82 +6949,86 @@ export default function App() {
                           </button>
                         </div>
                       )}
-                      <form onSubmit={handleSendMessage} className="flex items-center gap-1.5 sm:gap-2">
-                        <button
-                          type="button"
-                          disabled={isUploadingMsgMedia || isSendingMsg}
-                          onClick={() => msgImageInputRef.current?.click()}
-                          className="p-2.5 rounded-xl bg-emerald-100/80 dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 text-emerald-700 dark:text-emerald-300 hover:text-emerald-950 dark:hover:text-white hover:bg-emerald-100 dark:hover:bg-emerald-800 transition shrink-0 disabled:opacity-50"
-                          title="Send Photo / Image"
-                        >
-                          {isUploadingMsgMedia ? <Loader2 className="w-4 h-4 animate-spin" /> : <ImageIcon className="w-4 h-4" />}
-                        </button>
-                        <button
-                          type="button"
-                          disabled={isUploadingMsgMedia || isSendingMsg}
-                          onClick={() => msgFileInputRef.current?.click()}
-                          className="p-2.5 rounded-xl bg-emerald-100/80 dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 text-emerald-700 dark:text-emerald-300 hover:text-emerald-950 dark:hover:text-white hover:bg-emerald-100 dark:hover:bg-emerald-800 transition shrink-0 disabled:opacity-50"
-                          title="Attach Video, Audio, or File"
-                        >
-                          <Plus className="w-4 h-4" />
-                        </button>
-                        <button
-                          type="button"
-                          disabled={isProcessingAudio || isUploadingMsgMedia || isSendingMsg}
-                          onClick={startAudioRecording}
-                          className="p-2.5 rounded-xl bg-emerald-100/80 dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 text-emerald-700 dark:text-emerald-300 hover:text-emerald-950 dark:hover:text-white hover:bg-emerald-100 dark:hover:bg-emerald-800 transition shrink-0 disabled:opacity-50"
-                          title="Record voice message"
-                        >
-                          <Mic className="w-4 h-4" />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setShowMsgLinkInput(!showMsgLinkInput)}
-                          className={`p-2.5 rounded-xl border transition shrink-0 ${
-                            showMsgLinkInput
-                              ? 'bg-cyan-400 text-slate-950 border-cyan-300'
-                              : 'bg-emerald-100/80 dark:bg-emerald-900 border-emerald-300 dark:border-emerald-700 text-cyan-700 dark:text-cyan-300 hover:text-emerald-950 dark:hover:text-white hover:bg-emerald-100 dark:hover:bg-emerald-800'
-                          }`}
-                          title="Attach synced Video/Image URL"
-                        >
-                          <Link2 className="w-4 h-4" />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setShowMsgEmojiPicker((prev) => !prev)}
-                          className={`p-2.5 rounded-xl border transition shrink-0 ${
-                            showMsgEmojiPicker
-                              ? 'bg-emerald-400 text-slate-950 border-emerald-300'
-                              : 'bg-emerald-100/80 dark:bg-emerald-900 border-emerald-300 dark:border-emerald-700 text-emerald-700 dark:text-emerald-300 hover:text-emerald-950 dark:hover:text-white hover:bg-emerald-100 dark:hover:bg-emerald-800'
-                          }`}
-                          title={showMsgEmojiPicker ? 'Hide emojis' : 'Open emojis'}
-                          aria-label={showMsgEmojiPicker ? 'Hide emojis' : 'Open emojis'}
-                          aria-expanded={showMsgEmojiPicker}
-                        >
-                          <Smile className="w-4 h-4" />
-                        </button>
-                        <input
-                          type="text"
-                          placeholder={
-                            isUploadingMsgMedia
-                              ? 'Preparing photo/media...'
-                              : isSendingMsg
-                              ? 'Sending...'
-                              : isProcessingAudio
-                              ? 'Uploading voice clip...'
-                              : `Message ${activeChat}...`
-                          }
-                          value={msgInput}
-                          onChange={(e) => setMsgInput(e.target.value)}
-                          className="flex-1 min-w-0 p-2.5 bg-emerald-100/80 dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 rounded-xl text-xs text-emerald-950 dark:text-white placeholder-emerald-600/60 dark:placeholder-emerald-400 focus:outline-none"
-                        />
-                        <button
-                          type="submit"
-                          disabled={isProcessingAudio || isUploadingMsgMedia || isSendingMsg || (!msgInput.trim() && !msgMediaUrl)}
-                          className="px-3.5 sm:px-4 py-2.5 bg-emerald-400 text-slate-950 font-bold text-xs rounded-xl shadow hover:bg-emerald-300 transition shrink-0 disabled:opacity-50"
-                        >
-                          {isSendingMsg ? 'Sending...' : 'Send'}
-                        </button>
+                      <form onSubmit={handleSendMessage} className="flex flex-wrap sm:flex-nowrap items-center gap-2">
+                        <div className="order-2 sm:order-1 flex items-center gap-1.5 shrink-0">
+                          <button
+                            type="button"
+                            disabled={isUploadingMsgMedia || isSendingMsg}
+                            onClick={() => msgImageInputRef.current?.click()}
+                            className="p-2 sm:p-2.5 rounded-xl bg-emerald-100/80 dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 text-emerald-700 dark:text-emerald-300 hover:text-emerald-950 dark:hover:text-white hover:bg-emerald-100 dark:hover:bg-emerald-800 transition shrink-0 disabled:opacity-50"
+                            title="Send Photo / Image"
+                          >
+                            {isUploadingMsgMedia ? <Loader2 className="w-4 h-4 animate-spin" /> : <ImageIcon className="w-4 h-4" />}
+                          </button>
+                          <button
+                            type="button"
+                            disabled={isUploadingMsgMedia || isSendingMsg}
+                            onClick={() => msgFileInputRef.current?.click()}
+                            className="p-2 sm:p-2.5 rounded-xl bg-emerald-100/80 dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 text-emerald-700 dark:text-emerald-300 hover:text-emerald-950 dark:hover:text-white hover:bg-emerald-100 dark:hover:bg-emerald-800 transition shrink-0 disabled:opacity-50"
+                            title="Attach Video, Audio, or File"
+                          >
+                            <Plus className="w-4 h-4" />
+                          </button>
+                          <button
+                            type="button"
+                            disabled={isProcessingAudio || isUploadingMsgMedia || isSendingMsg}
+                            onClick={startAudioRecording}
+                            className="p-2 sm:p-2.5 rounded-xl bg-emerald-100/80 dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 text-emerald-700 dark:text-emerald-300 hover:text-emerald-950 dark:hover:text-white hover:bg-emerald-100 dark:hover:bg-emerald-800 transition shrink-0 disabled:opacity-50"
+                            title="Record voice message"
+                          >
+                            <Mic className="w-4 h-4" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setShowMsgLinkInput(!showMsgLinkInput)}
+                            className={`p-2 sm:p-2.5 rounded-xl border transition shrink-0 ${
+                              showMsgLinkInput
+                                ? 'bg-cyan-400 text-slate-950 border-cyan-300'
+                                : 'bg-emerald-100/80 dark:bg-emerald-900 border-emerald-300 dark:border-emerald-700 text-cyan-700 dark:text-cyan-300 hover:text-emerald-950 dark:hover:text-white hover:bg-emerald-100 dark:hover:bg-emerald-800'
+                            }`}
+                            title="Attach synced Video/Image URL"
+                          >
+                            <Link2 className="w-4 h-4" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setShowMsgEmojiPicker((prev) => !prev)}
+                            className={`p-2 sm:p-2.5 rounded-xl border transition shrink-0 ${
+                              showMsgEmojiPicker
+                                ? 'bg-emerald-400 text-slate-950 border-emerald-300'
+                                : 'bg-emerald-100/80 dark:bg-emerald-900 border-emerald-300 dark:border-emerald-700 text-emerald-700 dark:text-emerald-300 hover:text-emerald-950 dark:hover:text-white hover:bg-emerald-100 dark:hover:bg-emerald-800'
+                            }`}
+                            title={showMsgEmojiPicker ? 'Hide emojis' : 'Open emojis'}
+                            aria-label={showMsgEmojiPicker ? 'Hide emojis' : 'Open emojis'}
+                            aria-expanded={showMsgEmojiPicker}
+                          >
+                            <Smile className="w-4 h-4" />
+                          </button>
+                        </div>
+                        <div className="order-1 sm:order-2 flex items-center gap-2 w-full sm:w-auto sm:flex-1 min-w-0">
+                          <input
+                            type="text"
+                            placeholder={
+                              isUploadingMsgMedia
+                                ? 'Preparing photo/media...'
+                                : isSendingMsg
+                                ? 'Sending...'
+                                : isProcessingAudio
+                                ? 'Uploading voice clip...'
+                                : `Message ${activeChat}...`
+                            }
+                            value={msgInput}
+                            onChange={(e) => setMsgInput(e.target.value)}
+                            className="flex-1 min-w-0 px-3 py-2.5 bg-emerald-100/80 dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 rounded-xl text-sm sm:text-xs text-emerald-950 dark:text-white placeholder-emerald-600/60 dark:placeholder-emerald-400 focus:outline-none focus:border-amber-500 dark:focus:border-amber-300/80"
+                          />
+                          <button
+                            type="submit"
+                            disabled={isProcessingAudio || isUploadingMsgMedia || isSendingMsg || (!msgInput.trim() && !msgMediaUrl)}
+                            className="px-4 py-2.5 bg-emerald-400 text-slate-950 font-bold text-xs rounded-xl shadow hover:bg-emerald-300 transition shrink-0 disabled:opacity-50"
+                          >
+                            {isSendingMsg ? 'Sending...' : 'Send'}
+                          </button>
+                        </div>
                       </form>
                     </div>
                   )}
@@ -8306,6 +8536,56 @@ export default function App() {
                   )}
                 </div>
 
+                {/* Chat Headbubble Popup Toggle (Accessible on Mobile & Desktop) */}
+                <div className="p-3 rounded-xl bg-emerald-50/80 dark:bg-emerald-900/50 border border-emerald-200 dark:border-emerald-700 space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <MessageSquare className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                      <div className="min-w-0">
+                        <div className="text-xs font-bold text-emerald-950 dark:text-white truncate">
+                          Headbubble Popup
+                        </div>
+                        <div className="text-[10px] text-emerald-700 dark:text-emerald-300">
+                          In-app bubble + OS heads-up popup when minimized
+                        </div>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const next = !chatHeadBubbleEnabled;
+                        setChatHeadBubbleEnabled(next);
+                        localStorage.setItem('choychat_chat_head_bubble_v1', String(next));
+                        if (!next) {
+                          setActiveChatHeadMessage(null);
+                        } else if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'default') {
+                          void subscribeToBackgroundPush(false);
+                        }
+                        showNotice(next ? 'Chat Head Bubbles Enabled' : 'Chat Head Bubbles Disabled');
+                      }}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-bold shrink-0 transition ${
+                        chatHeadBubbleEnabled
+                          ? 'bg-emerald-400 text-slate-950 shadow-xs'
+                          : 'bg-emerald-200 dark:bg-emerald-900 text-emerald-800 dark:text-emerald-200'
+                      }`}
+                    >
+                      {chatHeadBubbleEnabled ? 'ON' : 'OFF'}
+                    </button>
+                  </div>
+                  {isDocPipSupported && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsMenuDrawerOpen(false);
+                        void openFloatingHeadBubbleWindow();
+                      }}
+                      className="w-full py-2 rounded-lg text-xs font-bold bg-amber-400 hover:bg-amber-300 text-slate-950 transition shadow-xs"
+                    >
+                      {isHeadBubblePipOpen ? 'Focus Floating Mini-Window' : 'Pop Out Floating Mini-Window (Outside Browser)'}
+                    </button>
+                  )}
+                </div>
+
                 {isAdmin && (
                   <button
                     type="button"
@@ -8888,17 +9168,32 @@ export default function App() {
               <div className="text-xs font-black text-amber-300 truncate">{activeChatHeadMessage.sender}</div>
               <div className="text-[11px] text-white truncate">{activeChatHeadMessage.text || 'Sent an attachment'}</div>
             </div>
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                setActiveChatHeadMessage(null);
-              }}
-              className="p-1 rounded-full bg-white/20 hover:bg-white/40 text-white shrink-0 text-xs font-bold"
-              title="Close bubble"
-            >
-              <X className="w-3.5 h-3.5" />
-            </button>
+            <div className="flex items-center gap-1 shrink-0">
+              {isDocPipSupported && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    void openFloatingHeadBubbleWindow(activeChatHeadMessage);
+                  }}
+                  className="px-2 py-1 rounded-lg bg-amber-400 hover:bg-amber-300 text-slate-950 text-[10px] font-bold shrink-0"
+                  title="Pop out outside app"
+                >
+                  Pop Out
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setActiveChatHeadMessage(null);
+                }}
+                className="p-1 rounded-full bg-white/20 hover:bg-white/40 text-white shrink-0 text-xs font-bold"
+                title="Close bubble"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
           </div>
         </div>
       )}
