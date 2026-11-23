@@ -22,6 +22,41 @@ export function normalizePostNewsfeed(raw: unknown): NewsfeedChannel {
   return 'feed_a';
 }
 
+export type AnnouncementTarget = 'all' | 'feed_a' | 'feed_b' | 'feed_c' | 'feed_bc';
+export type AnnouncementBadge = 'announcement' | 'reminder' | 'urgent';
+export type AnnouncementTone = 'emerald' | 'amber' | 'sky' | 'rose';
+
+export interface StoredAnnouncement {
+  id: string;
+  title: string;
+  message: string;
+  badge: AnnouncementBadge;
+  tone: AnnouncementTone;
+  target: AnnouncementTarget;
+  active: boolean;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export function normalizeAnnouncementTarget(raw: unknown): AnnouncementTarget {
+  const val = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
+  if (val === 'feed_a' || val === 'feed_b' || val === 'feed_c' || val === 'feed_bc') return val;
+  return 'all';
+}
+
+export function normalizeAnnouncementBadge(raw: unknown): AnnouncementBadge {
+  const val = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
+  if (val === 'reminder' || val === 'urgent') return val;
+  return 'announcement';
+}
+
+export function normalizeAnnouncementTone(raw: unknown): AnnouncementTone {
+  const val = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
+  if (val === 'amber' || val === 'sky' || val === 'rose') return val;
+  return 'emerald';
+}
+
 export interface StoredUser {
   id: string;
   name: string;
@@ -369,6 +404,7 @@ export class ChoyStore {
   ];
   private memStudioNotes: StoredStudioNoteFile[] = [];
   private memEnvVault: StoredEnvVaultEntry[] = [];
+  private memAnnouncements: StoredAnnouncement[] = [];
   private memSeeded = false;
 
   constructor() {
@@ -538,6 +574,18 @@ export class ChoyStore {
         value TEXT NOT NULL DEFAULT '',
         secret BOOLEAN NOT NULL DEFAULT false,
         notes TEXT NOT NULL DEFAULT '',
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE TABLE IF NOT EXISTS app_announcements (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        message TEXT NOT NULL,
+        badge TEXT NOT NULL DEFAULT 'announcement',
+        tone TEXT NOT NULL DEFAULT 'emerald',
+        target TEXT NOT NULL DEFAULT 'all',
+        active BOOLEAN NOT NULL DEFAULT true,
+        created_by TEXT NOT NULL DEFAULT 'Admin',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
     `);
@@ -1993,6 +2041,147 @@ export class ChoyStore {
     const before = this.memEnvVault.length;
     this.memEnvVault = this.memEnvVault.filter((e) => e.id !== id);
     return this.memEnvVault.length < before;
+  }
+
+  // ---- NEWSFEED ANNOUNCEMENT SLIDE BANNERS ----
+  public async listAnnouncements(): Promise<StoredAnnouncement[]> {
+    await this.ready();
+    if (this.usePostgres && this.pool) {
+      const res = await this.pool.query(
+        `SELECT id, title, message, badge, tone, target, active, created_by, created_at, updated_at
+         FROM app_announcements
+         ORDER BY updated_at DESC, created_at DESC`
+      );
+      return res.rows.map((r) => ({
+        id: String(r.id),
+        title: String(r.title || ''),
+        message: String(r.message || ''),
+        badge: normalizeAnnouncementBadge(r.badge),
+        tone: normalizeAnnouncementTone(r.tone),
+        target: normalizeAnnouncementTarget(r.target),
+        active: Boolean(r.active),
+        createdBy: String(r.created_by || 'Admin'),
+        createdAt: new Date(String(r.created_at)).toISOString(),
+        updatedAt: new Date(String(r.updated_at)).toISOString(),
+      }));
+    }
+    return [...this.memAnnouncements].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  }
+
+  public async createAnnouncement(input: {
+    title: string;
+    message: string;
+    badge?: AnnouncementBadge;
+    tone?: AnnouncementTone;
+    target?: AnnouncementTarget;
+    active?: boolean;
+    createdBy?: string;
+  }): Promise<StoredAnnouncement> {
+    await this.ready();
+    const id = 'ann_' + crypto.randomUUID().slice(0, 12);
+    const now = new Date().toISOString();
+    const record: StoredAnnouncement = {
+      id,
+      title: input.title.trim().slice(0, 120),
+      message: input.message.trim().slice(0, 500),
+      badge: normalizeAnnouncementBadge(input.badge),
+      tone: normalizeAnnouncementTone(input.tone),
+      target: normalizeAnnouncementTarget(input.target),
+      active: input.active !== false,
+      createdBy: (input.createdBy || 'Admin').trim().slice(0, 80) || 'Admin',
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    if (this.usePostgres && this.pool) {
+      await this.pool.query(
+        `INSERT INTO app_announcements (id, title, message, badge, tone, target, active, created_by, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW())`,
+        [record.id, record.title, record.message, record.badge, record.tone, record.target, record.active, record.createdBy]
+      );
+      return record;
+    }
+
+    this.memAnnouncements.unshift(record);
+    return record;
+  }
+
+  public async updateAnnouncement(
+    id: string,
+    patch: Partial<{
+      title: string;
+      message: string;
+      badge: AnnouncementBadge;
+      tone: AnnouncementTone;
+      target: AnnouncementTarget;
+      active: boolean;
+    }>
+  ): Promise<StoredAnnouncement | null> {
+    await this.ready();
+    const cleanId = id.trim();
+    if (!cleanId) return null;
+
+    if (this.usePostgres && this.pool) {
+      const existingRes = await this.pool.query(
+        `SELECT id, title, message, badge, tone, target, active, created_by, created_at, updated_at
+         FROM app_announcements WHERE id = $1 LIMIT 1`,
+        [cleanId]
+      );
+      if (!existingRes.rowCount || !existingRes.rows[0]) return null;
+      const cur = existingRes.rows[0];
+      const next: StoredAnnouncement = {
+        id: String(cur.id),
+        title: typeof patch.title === 'string' && patch.title.trim() ? patch.title.trim().slice(0, 120) : String(cur.title),
+        message:
+          typeof patch.message === 'string' && patch.message.trim()
+            ? patch.message.trim().slice(0, 500)
+            : String(cur.message),
+        badge: patch.badge !== undefined ? normalizeAnnouncementBadge(patch.badge) : normalizeAnnouncementBadge(cur.badge),
+        tone: patch.tone !== undefined ? normalizeAnnouncementTone(patch.tone) : normalizeAnnouncementTone(cur.tone),
+        target:
+          patch.target !== undefined ? normalizeAnnouncementTarget(patch.target) : normalizeAnnouncementTarget(cur.target),
+        active: typeof patch.active === 'boolean' ? patch.active : Boolean(cur.active),
+        createdBy: String(cur.created_by || 'Admin'),
+        createdAt: new Date(String(cur.created_at)).toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      await this.pool.query(
+        `UPDATE app_announcements
+         SET title = $1, message = $2, badge = $3, tone = $4, target = $5, active = $6, updated_at = NOW()
+         WHERE id = $7`,
+        [next.title, next.message, next.badge, next.tone, next.target, next.active, cleanId]
+      );
+      return next;
+    }
+
+    const idx = this.memAnnouncements.findIndex((a) => a.id === cleanId);
+    if (idx < 0) return null;
+    const cur = this.memAnnouncements[idx];
+    const next: StoredAnnouncement = {
+      ...cur,
+      title: typeof patch.title === 'string' && patch.title.trim() ? patch.title.trim().slice(0, 120) : cur.title,
+      message: typeof patch.message === 'string' && patch.message.trim() ? patch.message.trim().slice(0, 500) : cur.message,
+      badge: patch.badge !== undefined ? normalizeAnnouncementBadge(patch.badge) : cur.badge,
+      tone: patch.tone !== undefined ? normalizeAnnouncementTone(patch.tone) : cur.tone,
+      target: patch.target !== undefined ? normalizeAnnouncementTarget(patch.target) : cur.target,
+      active: typeof patch.active === 'boolean' ? patch.active : cur.active,
+      updatedAt: new Date().toISOString(),
+    };
+    this.memAnnouncements[idx] = next;
+    return next;
+  }
+
+  public async deleteAnnouncement(id: string): Promise<boolean> {
+    await this.ready();
+    const cleanId = id.trim();
+    if (!cleanId) return false;
+    if (this.usePostgres && this.pool) {
+      const res = await this.pool.query('DELETE FROM app_announcements WHERE id = $1', [cleanId]);
+      return Boolean(res.rowCount && res.rowCount > 0);
+    }
+    const before = this.memAnnouncements.length;
+    this.memAnnouncements = this.memAnnouncements.filter((a) => a.id !== cleanId);
+    return this.memAnnouncements.length < before;
   }
 
   private mapUserRow(r: Record<string, unknown>): StoredUser {

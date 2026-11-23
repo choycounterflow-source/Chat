@@ -36,7 +36,13 @@ import {
   Folder,
   Code2,
   ArrowLeft,
-  LayoutGrid
+  LayoutGrid,
+  Megaphone,
+  Pause,
+  Play,
+  ChevronLeft,
+  ChevronRight,
+  Pencil
 } from 'lucide-react';
 import {
   type EmojiLinkItem,
@@ -48,6 +54,22 @@ import {
 } from '../utils/emojiLinkShare';
 
 export type StudioNewsfeedChannel = 'feed_a' | 'feed_b' | 'feed_c' | 'feed_bc';
+export type StudioAnnouncementTarget = 'all' | 'feed_a' | 'feed_b' | 'feed_c' | 'feed_bc';
+export type StudioAnnouncementBadge = 'announcement' | 'reminder' | 'urgent';
+export type StudioAnnouncementTone = 'emerald' | 'amber' | 'sky' | 'rose';
+
+export interface StudioAnnouncementItem {
+  id: string;
+  title: string;
+  message: string;
+  badge: StudioAnnouncementBadge;
+  tone: StudioAnnouncementTone;
+  target: StudioAnnouncementTarget;
+  active: boolean;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+}
 
 export interface SecurityUserAccount {
   id: string;
@@ -90,6 +112,10 @@ interface SecurityStudioProps {
   syncTick?: number;
   newsfeedConfig?: { feedATitle: string; feedBTitle: string; feedCTitle: string };
   onNewsfeedConfigChanged?: (cfg: { feedATitle: string; feedBTitle: string; feedCTitle: string }) => void;
+  announcements?: StudioAnnouncementItem[];
+  onAnnouncementsChanged?: (items: StudioAnnouncementItem[]) => void;
+  initialModule?: 'home' | 'announcements' | 'newsfeeds' | 'user_pins';
+  onConsumeInitialModule?: () => void;
 }
 
 interface StudioNoteEntry {
@@ -212,6 +238,10 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
   syncTick = 0,
   newsfeedConfig,
   onNewsfeedConfigChanged,
+  announcements: propAnnouncements,
+  onAnnouncementsChanged,
+  initialModule,
+  onConsumeInitialModule,
 }) => {
   // 1. Direct Admin Links
   const [adminLinks, setAdminLinks] = useState(() => {
@@ -366,11 +396,44 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
     | 'analytics'
     | 'storage'
     | 'newsfeeds'
+    | 'announcements'
     | 'gps_tracker'
     | 'user_pins'
     | 'users'
     | 'tools_guide'
-  >('home');
+  >(initialModule || 'home');
+
+  useEffect(() => {
+    if (initialModule && initialModule !== 'home') {
+      setActiveStudioModule(initialModule);
+      onConsumeInitialModule?.();
+    }
+  }, [initialModule, onConsumeInitialModule]);
+
+  // 9b. Moving Announcement Slide Banners state
+  const [announcementsList, setAnnouncementsList] = useState<StudioAnnouncementItem[]>(
+    () => propAnnouncements || []
+  );
+  const [annEditingId, setAnnEditingId] = useState<string | null>(null);
+  const [annTitle, setAnnTitle] = useState('');
+  const [annMessage, setAnnMessage] = useState('');
+  const [annTarget, setAnnTarget] = useState<StudioAnnouncementTarget>('all');
+  const [annBadge, setAnnBadge] = useState<StudioAnnouncementBadge>('announcement');
+  const [annTone, setAnnTone] = useState<StudioAnnouncementTone>('emerald');
+  const [annActive, setAnnActive] = useState(true);
+  const [annFilterTarget, setAnnFilterTarget] = useState<'all_list' | StudioAnnouncementTarget>('all_list');
+  const [savingAnn, setSavingAnn] = useState(false);
+  const [annStatusMsg, setAnnStatusMsg] = useState('');
+  const [annErrMsg, setAnnErrMsg] = useState('');
+  const [previewSlideIdx, setPreviewSlideIdx] = useState(0);
+  const [previewPaused, setPreviewPaused] = useState(false);
+
+  useEffect(() => {
+    if (Array.isArray(propAnnouncements)) {
+      setAnnouncementsList(propAnnouncements);
+    }
+  }, [propAnnouncements]);
+
   const [studioNotes, setStudioNotes] = useState<StudioNoteFile[]>([]);
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
   const [showNewNoteFileForm, setShowNewNoteFileForm] = useState(false);
@@ -425,10 +488,156 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
       })
       .catch(() => {});
 
+    fetch('/api/admin/announcements', {
+      headers: { Authorization: `Bearer ${authToken}` },
+      cache: 'no-store',
+    })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (cancelled || !data || !Array.isArray(data.announcements)) return;
+        setAnnouncementsList(data.announcements);
+        onAnnouncementsChanged?.(data.announcements);
+      })
+      .catch(() => {});
+
     return () => {
       cancelled = true;
     };
   }, [authToken, syncTick]);
+
+  const activeStudioSlides = announcementsList.filter((a) => a.active);
+  useEffect(() => {
+    if (activeStudioModule !== 'announcements' || previewPaused || activeStudioSlides.length <= 1) return;
+    const timer = window.setInterval(() => {
+      setPreviewSlideIdx((prev) => (prev + 1) % activeStudioSlides.length);
+    }, 4500);
+    return () => window.clearInterval(timer);
+  }, [activeStudioModule, previewPaused, activeStudioSlides.length]);
+
+  const getAnnTargetLabel = (t: StudioAnnouncementTarget) => {
+    if (t === 'feed_a') return newsfeedATitle || 'Newsfeed A';
+    if (t === 'feed_b') return newsfeedBTitle || 'Newsfeed B';
+    if (t === 'feed_c') return newsfeedCTitle || 'Newsfeed C';
+    if (t === 'feed_bc') return `B & C (${newsfeedBTitle || 'Newsfeed B'} & ${newsfeedCTitle || 'Newsfeed C'})`;
+    return 'All Newsfeeds (A, B & C)';
+  };
+
+  const resetAnnForm = () => {
+    setAnnEditingId(null);
+    setAnnTitle('');
+    setAnnMessage('');
+    setAnnTarget('all');
+    setAnnBadge('announcement');
+    setAnnTone('emerald');
+    setAnnActive(true);
+  };
+
+  const handleSaveAnnouncement = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!annTitle.trim() || !annMessage.trim()) {
+      setAnnErrMsg('Isulod ang Title ug Announcement Message.');
+      return;
+    }
+    if (!authToken) {
+      setAnnErrMsg('Admin sign-in session required.');
+      return;
+    }
+    setSavingAnn(true);
+    setAnnErrMsg('');
+    setAnnStatusMsg('');
+    try {
+      const endpoint = annEditingId ? `/api/admin/announcements/${annEditingId}` : '/api/admin/announcements';
+      const method = annEditingId ? 'PATCH' : 'POST';
+      const res = await fetch(endpoint, {
+        method,
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`,
+        },
+        body: JSON.stringify({
+          title: annTitle.trim(),
+          message: annMessage.trim(),
+          target: annTarget,
+          badge: annBadge,
+          tone: annTone,
+          active: annActive,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setAnnErrMsg(data.error || 'Failed to save announcement slide.');
+        return;
+      }
+      if (Array.isArray(data.announcements)) {
+        setAnnouncementsList(data.announcements);
+        onAnnouncementsChanged?.(data.announcements);
+      }
+      setAnnStatusMsg(
+        annEditingId
+          ? `Slide updated & synced for ${getAnnTargetLabel(annTarget)}!`
+          : `New Moving Slide added & synced for ${getAnnTargetLabel(annTarget)}!`
+      );
+      resetAnnForm();
+    } catch {
+      setAnnErrMsg('Network error saving announcement slide.');
+    } finally {
+      setSavingAnn(false);
+    }
+  };
+
+  const handleQuickUpdateAnnouncement = async (
+    id: string,
+    patch: Partial<{ active: boolean; target: StudioAnnouncementTarget }>
+  ) => {
+    if (!authToken) return;
+    setAnnErrMsg('');
+    try {
+      const res = await fetch(`/api/admin/announcements/${id}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`,
+        },
+        body: JSON.stringify(patch),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setAnnErrMsg(data.error || 'Failed to update slide.');
+        return;
+      }
+      if (Array.isArray(data.announcements)) {
+        setAnnouncementsList(data.announcements);
+        onAnnouncementsChanged?.(data.announcements);
+      }
+      setAnnStatusMsg('Announcement slide updated & synced!');
+    } catch {
+      setAnnErrMsg('Network error updating slide.');
+    }
+  };
+
+  const handleDeleteAnnouncement = async (id: string) => {
+    if (!authToken) return;
+    setAnnErrMsg('');
+    try {
+      const res = await fetch(`/api/admin/announcements/${id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setAnnErrMsg(data.error || 'Failed to delete slide.');
+        return;
+      }
+      if (Array.isArray(data.announcements)) {
+        setAnnouncementsList(data.announcements);
+        onAnnouncementsChanged?.(data.announcements);
+      }
+      if (annEditingId === id) resetAnnForm();
+      setAnnStatusMsg('Announcement slide deleted.');
+    } catch {
+      setAnnErrMsg('Network error deleting slide.');
+    }
+  };
 
   const selectedNoteFile = studioNotes.find((n) => n.id === selectedNoteId) || null;
 
@@ -1562,6 +1771,14 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
             badge: 'Admin Only',
             icon: <KeyRound className="w-5 h-5 text-rose-600 dark:text-rose-300" />,
             accent: 'border-rose-300 dark:border-rose-500/60 hover:border-rose-400',
+          },
+          {
+            id: 'announcements' as const,
+            title: 'Announcement Slide Banner Setup',
+            subtitle: 'Moving Newsfeed announcement & reminder slides for A, B, C, B+C, or All',
+            badge: `${activeStudioSlides.length} active`,
+            icon: <Megaphone className="w-5 h-5 text-amber-500 dark:text-amber-300" />,
+            accent: 'border-amber-300 dark:border-amber-500/60 hover:border-amber-400',
           },
           {
             id: 'newsfeeds' as const,
@@ -3154,6 +3371,392 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
               })}
             </tbody>
           </table>
+        </div>
+      </div>
+      )}
+
+      {/* MOVING ANNOUNCEMENT & REMINDER SLIDE BANNER SETUP */}
+      {activeStudioModule === 'announcements' && (
+      <div className="bg-white dark:bg-emerald-900/60 border border-amber-300 dark:border-amber-500/40 rounded-2xl p-5 space-y-5 shadow">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <Megaphone className="w-4 h-4 text-amber-500 dark:text-amber-300" />
+            <h3 className="text-sm font-bold text-emerald-950 dark:text-white">
+              Moving Slide Banner Setup — Announcements &amp; Reminders
+            </h3>
+          </div>
+          <span className="px-2.5 py-1 rounded-lg bg-amber-100 dark:bg-amber-500/20 border border-amber-300 dark:border-amber-500/40 text-amber-800 dark:text-amber-200 font-bold text-[10px] uppercase">
+            Auto-Sliding + Moving Ticker · Synced
+          </span>
+        </div>
+
+        <p className="text-xs text-emerald-800 dark:text-emerald-200 leading-relaxed">
+          Paghimo ug mga <span className="font-bold">Moving Slide Banners</span> para sa Announcements ug Reminders sa Newsfeed. Pilia kon para asa ni nga Newsfeed (<span className="font-bold">All, {newsfeedATitle}, {newsfeedBTitle}, {newsfeedCTitle}, o B &amp; C</span>) para ang assigned users ra ang makakita.
+        </p>
+
+        {annStatusMsg && (
+          <div className="p-3 rounded-xl bg-emerald-100 dark:bg-emerald-500/20 border border-emerald-400/60 text-emerald-900 dark:text-emerald-200 font-bold text-xs flex items-center justify-between gap-2">
+            <span>{annStatusMsg}</span>
+            <button type="button" onClick={() => setAnnStatusMsg('')} className="font-bold px-1">✕</button>
+          </div>
+        )}
+        {annErrMsg && (
+          <div className="p-3 rounded-xl bg-rose-100 dark:bg-rose-500/20 border border-rose-400/60 text-rose-900 dark:text-rose-200 font-bold text-xs flex items-center justify-between gap-2">
+            <span>{annErrMsg}</span>
+            <button type="button" onClick={() => setAnnErrMsg('')} className="font-bold px-1">✕</button>
+          </div>
+        )}
+
+        {/* LIVE MOVING SLIDE BANNER PREVIEW */}
+        <div className="rounded-2xl border border-emerald-300 dark:border-emerald-700 bg-emerald-50/80 dark:bg-emerald-950/70 p-3.5 space-y-2.5">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="text-[11px] font-bold uppercase tracking-wider text-emerald-800 dark:text-emerald-300 flex items-center gap-1.5">
+              <Sparkles className="w-3.5 h-3.5 text-amber-500" />
+              Live Moving Slide Banner Preview ({activeStudioSlides.length} active)
+            </span>
+            <div className="flex items-center gap-1.5">
+              {activeStudioSlides.length > 1 && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setPreviewSlideIdx(
+                        (prev) => (prev - 1 + activeStudioSlides.length) % activeStudioSlides.length
+                      )
+                    }
+                    className="p-1 rounded-lg bg-white dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 text-emerald-800 dark:text-emerald-200 hover:bg-emerald-100"
+                    title="Previous slide"
+                  >
+                    <ChevronLeft className="w-3.5 h-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPreviewSlideIdx((prev) => (prev + 1) % activeStudioSlides.length)}
+                    className="p-1 rounded-lg bg-white dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 text-emerald-800 dark:text-emerald-200 hover:bg-emerald-100"
+                    title="Next slide"
+                  >
+                    <ChevronRight className="w-3.5 h-3.5" />
+                  </button>
+                </>
+              )}
+              <button
+                type="button"
+                onClick={() => setPreviewPaused((p) => !p)}
+                className="px-2 py-1 rounded-lg bg-white dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 text-emerald-800 dark:text-emerald-200 font-bold text-[10px] inline-flex items-center gap-1"
+              >
+                {previewPaused ? <Play className="w-3 h-3" /> : <Pause className="w-3 h-3" />}
+                {previewPaused ? 'Play' : 'Pause'}
+              </button>
+            </div>
+          </div>
+
+          {activeStudioSlides.length === 0 ? (
+            <div className="rounded-xl border border-dashed border-emerald-300 dark:border-emerald-700 p-4 text-center text-xs text-emerald-700 dark:text-emerald-300">
+              Wala pay active announcement slide. Paghimo sa ubos para makita ang moving slide banner diri ug sa Newsfeed.
+            </div>
+          ) : (
+            <div className="rounded-xl overflow-hidden border border-amber-300 dark:border-amber-500/40 bg-white dark:bg-slate-950 shadow-sm">
+              <div className="overflow-hidden">
+                <div
+                  className="flex transition-transform duration-500 ease-out"
+                  style={{
+                    transform: `translateX(-${(previewSlideIdx % activeStudioSlides.length) * 100}%)`,
+                  }}
+                >
+                  {activeStudioSlides.map((slide) => (
+                    <div key={slide.id} className="w-full shrink-0 p-3.5 space-y-1.5">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex items-center gap-1.5">
+                          <span
+                            className={`px-2 py-0.5 rounded-full text-[10px] font-extrabold uppercase ${
+                              slide.badge === 'urgent'
+                                ? 'bg-rose-100 dark:bg-rose-500/20 text-rose-800 dark:text-rose-200'
+                                : slide.badge === 'reminder'
+                                ? 'bg-sky-100 dark:bg-sky-500/20 text-sky-800 dark:text-sky-200'
+                                : 'bg-amber-100 dark:bg-amber-500/20 text-amber-800 dark:text-amber-200'
+                            }`}
+                          >
+                            {slide.badge}
+                          </span>
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 dark:bg-emerald-900 text-emerald-800 dark:text-emerald-200">
+                            Para sa: {getAnnTargetLabel(slide.target)}
+                          </span>
+                        </div>
+                        <span className="text-[10px] font-mono text-emerald-600 dark:text-emerald-400">
+                          {slide.tone.toUpperCase()}
+                        </span>
+                      </div>
+                      <div className="text-xs font-extrabold text-emerald-950 dark:text-white">
+                        {slide.title}
+                      </div>
+                      <p className="text-xs text-emerald-800 dark:text-emerald-200 leading-snug">
+                        {slide.message}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              <div className="choy-ticker-wrapper overflow-hidden border-t border-amber-200 dark:border-amber-500/30 bg-amber-50 dark:bg-amber-950/40 py-1.5">
+                <div
+                  className="choy-ticker-track text-[11px] font-bold text-amber-900 dark:text-amber-200 whitespace-nowrap"
+                  style={{ animationPlayState: previewPaused ? 'paused' : 'running' }}
+                >
+                  {[...activeStudioSlides, ...activeStudioSlides].map((s, idx) => (
+                    <span key={`${s.id}_${idx}`} className="inline-flex items-center gap-2 px-4">
+                      <Megaphone className="w-3 h-3 text-amber-500 shrink-0" />
+                      <span className="uppercase text-[10px] opacity-80">[{s.badge}]</span>
+                      <span>{s.title}:</span>
+                      <span className="font-normal">{s.message}</span>
+                      <span className="opacity-50">•</span>
+                    </span>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* CREATE / EDIT SLIDE FORM */}
+        <form
+          onSubmit={handleSaveAnnouncement}
+          className="p-4 rounded-xl bg-emerald-50/80 dark:bg-emerald-950/60 border border-emerald-200 dark:border-emerald-800 space-y-3"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="text-xs font-extrabold text-emerald-950 dark:text-white">
+              {annEditingId ? 'Edit Announcement Slide' : 'Create New Moving Announcement / Reminder Slide'}
+            </span>
+            {annEditingId && (
+              <button
+                type="button"
+                onClick={resetAnnForm}
+                className="px-2.5 py-1 rounded-lg bg-slate-200 dark:bg-slate-800 text-slate-900 dark:text-slate-100 text-[11px] font-bold"
+              >
+                Cancel Edit
+              </button>
+            )}
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div className="space-y-1">
+              <label className="text-[11px] font-bold text-emerald-900 dark:text-emerald-200">
+                Para asa na Announcement (Newsfeed Target)
+              </label>
+              <select
+                value={annTarget}
+                onChange={(e) => setAnnTarget(e.target.value as StudioAnnouncementTarget)}
+                className="w-full p-2 bg-white dark:bg-slate-950 border border-emerald-300 dark:border-emerald-700 rounded-xl text-xs font-bold text-emerald-950 dark:text-white"
+              >
+                <option value="all">All Newsfeeds (A, B &amp; C)</option>
+                <option value="feed_a">{newsfeedATitle || 'Newsfeed A'}</option>
+                <option value="feed_b">{newsfeedBTitle || 'Newsfeed B'}</option>
+                <option value="feed_c">{newsfeedCTitle || 'Newsfeed C'}</option>
+                <option value="feed_bc">B &amp; C ({newsfeedBTitle || 'Newsfeed B'} &amp; {newsfeedCTitle || 'Newsfeed C'})</option>
+              </select>
+            </div>
+            <div className="space-y-1">
+              <label className="text-[11px] font-bold text-emerald-900 dark:text-emerald-200">
+                Type / Badge
+              </label>
+              <select
+                value={annBadge}
+                onChange={(e) => setAnnBadge(e.target.value as StudioAnnouncementBadge)}
+                className="w-full p-2 bg-white dark:bg-slate-950 border border-emerald-300 dark:border-emerald-700 rounded-xl text-xs font-bold text-emerald-950 dark:text-white"
+              >
+                <option value="announcement">Announcement</option>
+                <option value="reminder">Reminder</option>
+                <option value="urgent">Urgent Notice</option>
+              </select>
+            </div>
+            <div className="space-y-1">
+              <label className="text-[11px] font-bold text-emerald-900 dark:text-emerald-200">
+                Slide Color Theme
+              </label>
+              <select
+                value={annTone}
+                onChange={(e) => setAnnTone(e.target.value as StudioAnnouncementTone)}
+                className="w-full p-2 bg-white dark:bg-slate-950 border border-emerald-300 dark:border-emerald-700 rounded-xl text-xs font-bold text-emerald-950 dark:text-white"
+              >
+                <option value="emerald">Emerald Green</option>
+                <option value="amber">Amber Gold</option>
+                <option value="sky">Sky Blue</option>
+                <option value="rose">Rose Urgent</option>
+              </select>
+            </div>
+          </div>
+
+          <div className="space-y-1">
+            <label className="text-[11px] font-bold text-emerald-900 dark:text-emerald-200">
+              Headline / Title
+            </label>
+            <input
+              type="text"
+              maxLength={120}
+              required
+              placeholder="e.g. Importante nga Pahibalo / Daily Schedule Reminder"
+              value={annTitle}
+              onChange={(e) => setAnnTitle(e.target.value)}
+              className="w-full p-2.5 bg-white dark:bg-slate-950 border border-emerald-300 dark:border-emerald-700 rounded-xl text-xs text-emerald-950 dark:text-white"
+            />
+          </div>
+
+          <div className="space-y-1">
+            <label className="text-[11px] font-bold text-emerald-900 dark:text-emerald-200">
+              Announcement / Reminder Message (Moving Banner Text)
+            </label>
+            <textarea
+              rows={2}
+              maxLength={500}
+              required
+              placeholder="Isulat ang announcement o reminder nga mo-slide ug mo-dagan sa Newsfeed..."
+              value={annMessage}
+              onChange={(e) => setAnnMessage(e.target.value)}
+              className="w-full p-2.5 bg-white dark:bg-slate-950 border border-emerald-300 dark:border-emerald-700 rounded-xl text-xs text-emerald-950 dark:text-white resize-none"
+            />
+          </div>
+
+          <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
+            <label className="inline-flex items-center gap-2 text-xs font-bold text-emerald-900 dark:text-emerald-200 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={annActive}
+                onChange={(e) => setAnnActive(e.target.checked)}
+                className="w-4 h-4 accent-emerald-500 rounded"
+              />
+              <span>Active (Ipakita dayon sa Newsfeed)</span>
+            </label>
+            <button
+              type="submit"
+              disabled={savingAnn}
+              className="px-4 py-2 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 font-extrabold text-xs inline-flex items-center gap-1.5 shadow disabled:opacity-50"
+            >
+              <Save className="w-3.5 h-3.5" />
+              {savingAnn ? 'Saving...' : annEditingId ? 'Save Changes' : 'Add Moving Slide'}
+            </button>
+          </div>
+        </form>
+
+        {/* FILTER & LIST OF SAVED SLIDES */}
+        <div className="space-y-2.5">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="text-xs font-bold text-emerald-950 dark:text-white">
+              Saved Announcement Slides ({announcementsList.length})
+            </span>
+            <select
+              value={annFilterTarget}
+              onChange={(e) => setAnnFilterTarget(e.target.value as 'all_list' | StudioAnnouncementTarget)}
+              className="p-1.5 bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 rounded-xl text-[11px] font-bold text-emerald-950 dark:text-white"
+            >
+              <option value="all_list">Filter: All Slides</option>
+              <option value="all">Target: All Newsfeeds</option>
+              <option value="feed_a">Target: {newsfeedATitle || 'Newsfeed A'}</option>
+              <option value="feed_b">Target: {newsfeedBTitle || 'Newsfeed B'}</option>
+              <option value="feed_c">Target: {newsfeedCTitle || 'Newsfeed C'}</option>
+              <option value="feed_bc">Target: B &amp; C</option>
+            </select>
+          </div>
+
+          {announcementsList.filter((a) => annFilterTarget === 'all_list' || a.target === annFilterTarget).length === 0 ? (
+            <div className="p-4 rounded-xl border border-emerald-200 dark:border-emerald-800 text-center text-xs text-emerald-700 dark:text-emerald-300">
+              No announcement slides match this filter yet.
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {announcementsList
+                .filter((a) => annFilterTarget === 'all_list' || a.target === annFilterTarget)
+                .map((item) => (
+                  <div
+                    key={item.id}
+                    className={`p-3.5 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${
+                      item.active
+                        ? 'bg-white dark:bg-emerald-950/70 border-emerald-300 dark:border-emerald-700'
+                        : 'bg-slate-100/80 dark:bg-slate-900/60 border-slate-300 dark:border-slate-700 opacity-75'
+                    }`}
+                  >
+                    <div className="space-y-1 min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-extrabold uppercase bg-amber-100 dark:bg-amber-500/20 text-amber-800 dark:text-amber-200">
+                          {item.badge}
+                        </span>
+                        <span
+                          className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                            item.active
+                              ? 'bg-emerald-100 dark:bg-emerald-500/20 text-emerald-800 dark:text-emerald-200'
+                              : 'bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300'
+                          }`}
+                        >
+                          {item.active ? 'ACTIVE' : 'PAUSED'}
+                        </span>
+                        <span className="text-[10px] font-bold text-emerald-700 dark:text-emerald-300">
+                          Para sa: {getAnnTargetLabel(item.target)}
+                        </span>
+                      </div>
+                      <div className="text-xs font-extrabold text-emerald-950 dark:text-white truncate">
+                        {item.title}
+                      </div>
+                      <div className="text-xs text-emerald-800 dark:text-emerald-200 break-words">
+                        {item.message}
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-1.5 shrink-0">
+                      <select
+                        value={item.target}
+                        onChange={(e) =>
+                          handleQuickUpdateAnnouncement(item.id, {
+                            target: e.target.value as StudioAnnouncementTarget,
+                          })
+                        }
+                        title="Assign target newsfeed"
+                        className="p-1.5 rounded-lg bg-emerald-50 dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 text-[11px] font-bold text-emerald-950 dark:text-white"
+                      >
+                        <option value="all">All Newsfeeds</option>
+                        <option value="feed_a">{newsfeedATitle || 'Newsfeed A'}</option>
+                        <option value="feed_b">{newsfeedBTitle || 'Newsfeed B'}</option>
+                        <option value="feed_c">{newsfeedCTitle || 'Newsfeed C'}</option>
+                        <option value="feed_bc">B &amp; C</option>
+                      </select>
+                      <button
+                        type="button"
+                        onClick={() => handleQuickUpdateAnnouncement(item.id, { active: !item.active })}
+                        className={`px-2.5 py-1.5 rounded-lg text-[11px] font-bold ${
+                          item.active
+                            ? 'bg-slate-200 dark:bg-slate-800 text-slate-900 dark:text-slate-100 hover:bg-slate-300'
+                            : 'bg-emerald-500 text-slate-950 hover:bg-emerald-400'
+                        }`}
+                      >
+                        {item.active ? 'Pause' : 'Activate'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAnnEditingId(item.id);
+                          setAnnTitle(item.title);
+                          setAnnMessage(item.message);
+                          setAnnTarget(item.target);
+                          setAnnBadge(item.badge);
+                          setAnnTone(item.tone);
+                          setAnnActive(item.active);
+                          setAnnStatusMsg('');
+                          setAnnErrMsg('');
+                        }}
+                        className="p-1.5 rounded-lg bg-indigo-100 dark:bg-indigo-500/20 text-indigo-800 dark:text-indigo-200 hover:bg-indigo-200"
+                        title="Edit slide"
+                      >
+                        <Pencil className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteAnnouncement(item.id)}
+                        className="p-1.5 rounded-lg bg-rose-100 dark:bg-rose-500/20 text-rose-700 dark:text-rose-200 hover:bg-rose-200"
+                        title="Delete slide"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+            </div>
+          )}
         </div>
       </div>
       )}

@@ -64,11 +64,20 @@ import {
   Copy,
   ExternalLink,
   Globe,
-  Smile
+  Smile,
+  Megaphone,
+  Pause,
+  Play,
+  ChevronLeft,
+  ChevronRight
 } from 'lucide-react';
 import { PWAInstallButton } from './components/PWAInstallButton';
 import { OfflineIndicator } from './components/OfflineIndicator';
-import { SecurityStudio } from './components/SecurityStudio';
+import {
+  SecurityStudio,
+  type StudioAnnouncementItem,
+  type StudioAnnouncementTarget,
+} from './components/SecurityStudio';
 import { GitHubIntelligence } from './components/GitHubIntelligence';
 import { ChatVideoPlayer } from './components/ChatVideoPlayer';
 import { ImageZoomModal } from './components/ImageZoomModal';
@@ -538,6 +547,10 @@ export default function App() {
   const [adminNfSaved, setAdminNfSaved] = useState(false);
   const [adminNfUserSearch, setAdminNfUserSearch] = useState('');
   const [isProcessingPostMedia, setIsProcessingPostMedia] = useState(false);
+  const [announcements, setAnnouncements] = useState<StudioAnnouncementItem[]>([]);
+  const [bannerSlideIndex, setBannerSlideIndex] = useState(0);
+  const [bannerPaused, setBannerPaused] = useState(false);
+  const [securityInitialModule, setSecurityInitialModule] = useState<'home' | 'announcements'>('home');
 
   useEffect(() => {
     setAdminNfTitleA(newsfeedConfig.feedATitle);
@@ -986,6 +999,11 @@ export default function App() {
   const profileAvatarInputRef = useRef<HTMLInputElement | null>(null);
   const soundCtxRef = useRef<AudioContext | null>(null);
   const syncSeqRef = useRef(0);
+  const syncInFlightRef = useRef(false);
+  const syncPendingRef = useRef(false);
+  const sseConnectedRef = useRef(false);
+  const syncFailureCountRef = useRef(0);
+  const syncBackoffUntilRef = useRef(0);
 
   const [callRingtoneBlocked, setCallRingtoneBlocked] = useState(false);
 
@@ -1264,7 +1282,7 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [selectedProfileUser]);
 
-  // Authenticated fetch helper using in-memory Bearer token
+  // Authenticated fetch helper using in-memory Bearer token with timeout protection
   const apiFetch = useCallback(
     async (url: string, options: RequestInit = {}) => {
       const headers: Record<string, string> = {
@@ -1276,23 +1294,68 @@ export default function App() {
       if (options.body && !headers['Content-Type']) {
         headers['Content-Type'] = 'application/json';
       }
-      const res = await fetch(url, {
-        ...options,
-        headers,
-        credentials: 'same-origin',
-        cache: 'no-store'
-      });
-      const data = await res.json().catch(() => ({}));
-      if (res.status === 401 && authToken) {
-        setAuthToken(null);
-        setCurrentUser(null);
-        setLoginError('Session expired. Please sign in again.');
+      const controller = options.signal ? null : new AbortController();
+      const timeoutId = controller ? window.setTimeout(() => controller.abort(), 15000) : null;
+      try {
+        const res = await fetch(url, {
+          ...options,
+          headers,
+          credentials: 'same-origin',
+          cache: 'no-store',
+          signal: options.signal ?? controller?.signal,
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.status === 401 && authToken) {
+          setAuthToken(null);
+          setCurrentUser(null);
+          setLoginError('Session expired. Please sign in again.');
+        }
+        if (!res.ok) {
+          throw new Error(data.error || `Request failed (${res.status})`);
+        }
+        return data;
+      } finally {
+        if (timeoutId !== null) window.clearTimeout(timeoutId);
       }
-      if (!res.ok) {
-        throw new Error(data.error || `Request failed (${res.status})`);
-      }
-      return data;
     },
+    [authToken]
+  );
+
+  // Native XHR GET fallback for /api/choy/state if window.fetch wrapper rejects transiently
+  const xhrGetJson = useCallback(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (url: string): Promise<any> =>
+      new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open('GET', url, true);
+        xhr.withCredentials = true;
+        xhr.timeout = 15000;
+        if (authToken) {
+          xhr.setRequestHeader('Authorization', `Bearer ${authToken}`);
+        }
+        xhr.setRequestHeader('Accept', 'application/json');
+        xhr.onload = () => {
+          let parsed: Record<string, unknown> = {};
+          try {
+            parsed = xhr.responseText ? (JSON.parse(xhr.responseText) as Record<string, unknown>) : {};
+          } catch {
+            parsed = {};
+          }
+          if (xhr.status === 401 && authToken) {
+            setAuthToken(null);
+            setCurrentUser(null);
+            setLoginError('Session expired. Please sign in again.');
+          }
+          if (xhr.status >= 200 && xhr.status < 300) {
+            resolve(parsed);
+          } else {
+            reject(new Error(typeof parsed.error === 'string' ? parsed.error : `Request failed (${xhr.status})`));
+          }
+        };
+        xhr.onerror = () => reject(new Error('Network transport unavailable'));
+        xhr.ontimeout = () => reject(new Error('Request timed out'));
+        xhr.send();
+      }),
     [authToken]
   );
 
@@ -1326,12 +1389,32 @@ export default function App() {
     checkAuthStatus();
   }, [checkAuthStatus]);
 
-  // 2. Sync full state from backend database (cache-busted for mobile/PWA reliability)
-  const fetchSyncedState = useCallback(async () => {
+  // 2. Sync full state from backend database (SSE-first + XHR fallback + backoff)
+  const fetchSyncedState = useCallback(async (force = false) => {
     if (!authToken) return;
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
+    if (!force && Date.now() < syncBackoffUntilRef.current) return;
+    if (syncInFlightRef.current) {
+      syncPendingRef.current = true;
+      return;
+    }
+    syncInFlightRef.current = true;
     const seq = ++syncSeqRef.current;
     try {
-      const data = await apiFetch(`/api/choy/state?_t=${Date.now()}`);
+      const stateUrl = `/api/choy/state?_t=${Date.now()}`;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      let data: any;
+      try {
+        data = await apiFetch(stateUrl);
+      } catch (primaryErr) {
+        const isFetchTransportErr =
+          primaryErr instanceof TypeError ||
+          (primaryErr instanceof Error && /failed to fetch|network|load failed/i.test(primaryErr.message));
+        if (!isFetchTransportErr) throw primaryErr;
+        data = await xhrGetJson(stateUrl);
+      }
+      syncFailureCountRef.current = 0;
+      syncBackoffUntilRef.current = 0;
       // Ignore stale responses if a newer sync or mutation already started
       if (seq !== syncSeqRef.current) return;
       if (data.storageMode) setStorageMode(data.storageMode);
@@ -1447,6 +1530,9 @@ export default function App() {
         localStorage.setItem('choychat_nf_b_title', nextCfg.feedBTitle);
         localStorage.setItem('choychat_nf_c_title', nextCfg.feedCTitle);
       }
+      if (Array.isArray(data.announcements)) {
+        setAnnouncements(data.announcements);
+      }
       if (Array.isArray(data.ledger)) {
         setLedgerRows(data.ledger);
       }
@@ -1467,24 +1553,54 @@ export default function App() {
         });
       }
     } catch (err) {
-      console.error('Sync refresh error:', err);
+      syncFailureCountRef.current = Math.min(syncFailureCountRef.current + 1, 5);
+      const backoffMs = Math.min(30000, 3000 * Math.pow(2, syncFailureCountRef.current - 1));
+      syncBackoffUntilRef.current = Date.now() + backoffMs;
+      const msg = err instanceof Error ? err.message : String(err || '');
+      const isTransientNetwork =
+        err instanceof TypeError ||
+        (err instanceof Error && err.name === 'AbortError') ||
+        /failed to fetch|network|load failed|aborted|timed out/i.test(msg);
+      if (!isTransientNetwork) {
+        console.warn('Sync refresh notice:', msg);
+      }
+    } finally {
+      syncInFlightRef.current = false;
+      if (syncPendingRef.current) {
+        syncPendingRef.current = false;
+        window.setTimeout(() => {
+          if (typeof navigator === 'undefined' || navigator.onLine !== false) {
+            void fetchSyncedState(true);
+          }
+        }, 250);
+      }
     }
-  }, [authToken, apiFetch, playMessageNotificationTune]);
+  }, [authToken, apiFetch, xhrGetJson, playMessageNotificationTune]);
 
-  // 3. Initial sync + Real-Time SSE stream + Fast Guaranteed Polling Fallback (Messages + Calls)
+  // 3. Initial sync + Real-Time SSE stream + Adaptive Polling Fallback (Messages + Calls)
   useEffect(() => {
     if (!authToken) {
       initialMsgSyncDoneRef.current = false;
       seenMessageIdsRef.current.clear();
       lastRtcSeqRef.current = 0;
+      sseConnectedRef.current = false;
+      syncFailureCountRef.current = 0;
+      syncBackoffUntilRef.current = 0;
       return;
     }
-    fetchSyncedState();
+    fetchSyncedState(true);
 
     const abortController = new AbortController();
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let lastFallbackPollMs = Date.now();
 
     const connectSSE = async () => {
+      if (abortController.signal.aborted) return;
+      if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+        sseConnectedRef.current = false;
+        reconnectTimer = setTimeout(connectSSE, 3000);
+        return;
+      }
       try {
         const res = await fetch('/api/choy/stream', {
           headers: { Authorization: `Bearer ${authToken}` },
@@ -1492,7 +1608,11 @@ export default function App() {
           cache: 'no-store',
           signal: abortController.signal
         });
-        if (!res.ok || !res.body) return;
+        if (!res.ok || !res.body) {
+          sseConnectedRef.current = false;
+          return;
+        }
+        sseConnectedRef.current = true;
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
         let buffer = '';
@@ -1514,7 +1634,7 @@ export default function App() {
               }
             }
             if (eventName === 'sync') {
-              fetchSyncedState();
+              fetchSyncedState(true);
               setSecuritySyncTick((prev) => prev + 1);
             } else if (eventName === 'rtc' && dataLines.length > 0) {
               try {
@@ -1528,25 +1648,32 @@ export default function App() {
         }
       } catch {
         // Ignore abort / reconnect cleanly
+      } finally {
+        sseConnectedRef.current = false;
       }
       if (!abortController.signal.aborted) {
-        reconnectTimer = setTimeout(connectSSE, 2000);
+        reconnectTimer = setTimeout(connectSSE, 3000);
       }
     };
 
     connectSSE();
 
-    // Guaranteed real-time message & state sync (2.5s) even if proxy buffers SSE
+    // Adaptive fallback polling: 15s safety check when SSE is live, 4s when SSE is disconnected
     const statePollInterval = window.setInterval(() => {
-      if (document.visibilityState === 'visible') {
-        fetchSyncedState();
+      if (document.visibilityState !== 'visible') return;
+      const now = Date.now();
+      const targetGapMs = sseConnectedRef.current ? 15000 : 4000;
+      if (now - lastFallbackPollMs >= targetGapMs) {
+        lastFallbackPollMs = now;
+        void fetchSyncedState();
       }
-    }, 2500);
+    }, 2000);
 
     // Immediate sync when returning to the tab / unlocking phone
     const handleVisibilityOrFocus = () => {
       if (document.visibilityState === 'visible') {
-        fetchSyncedState();
+        lastFallbackPollMs = Date.now();
+        void fetchSyncedState(true);
       }
     };
     window.addEventListener('focus', handleVisibilityOrFocus);
@@ -1569,6 +1696,7 @@ export default function App() {
 
     const pollRtc = async () => {
       if (cancelled || inFlight) return;
+      if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
       inFlight = true;
       try {
         const data = await apiFetch(`/api/choy/rtc/poll?since=${lastRtcSeqRef.current}&_t=${Date.now()}`);
@@ -4301,6 +4429,46 @@ export default function App() {
     return newsfeedConfig.feedATitle;
   };
 
+  const getAnnouncementTargetLabel = (target: StudioAnnouncementTarget) => {
+    if (target === 'feed_a') return newsfeedConfig.feedATitle;
+    if (target === 'feed_b') return newsfeedConfig.feedBTitle;
+    if (target === 'feed_c') return newsfeedConfig.feedCTitle;
+    if (target === 'feed_bc') return `B & C (${newsfeedConfig.feedBTitle} & ${newsfeedConfig.feedCTitle})`;
+    return 'All Newsfeeds';
+  };
+
+  const doesChannelMatchTarget = (viewerChannel: SelectableNewsfeed, target: StudioAnnouncementTarget) => {
+    if (target === 'all') return true;
+    const toSet = (val: string) => {
+      if (val === 'feed_b') return ['b'];
+      if (val === 'feed_c') return ['c'];
+      if (val === 'feed_bc') return ['b', 'c'];
+      return ['a'];
+    };
+    const vSet = toSet(viewerChannel);
+    const tSet = toSet(target);
+    return vSet.some((c) => tSet.includes(c));
+  };
+
+  const visibleAnnouncements = announcements
+    .filter((a) => a.active)
+    .filter((a) => {
+      if (isAdmin) {
+        if (adminNewsfeedFilter === 'all') return true;
+        return doesChannelMatchTarget(adminNewsfeedFilter, a.target);
+      }
+      const myNf: SelectableNewsfeed = currentUser?.newsfeed || 'feed_a';
+      return doesChannelMatchTarget(myNf, a.target);
+    });
+
+  useEffect(() => {
+    if (bannerPaused || visibleAnnouncements.length <= 1) return;
+    const timer = window.setInterval(() => {
+      setBannerSlideIndex((prev) => (prev + 1) % visibleAnnouncements.length);
+    }, 4500);
+    return () => window.clearInterval(timer);
+  }, [bannerPaused, visibleAnnouncements.length]);
+
   const filteredPosts = posts
     .filter((p) => !blockedUsers.includes(p.author.name))
     .filter((p) => {
@@ -5613,6 +5781,180 @@ export default function App() {
                   </div>
                 </div>
               )}
+
+              {/* MOVING ANNOUNCEMENT & REMINDER SLIDE BANNER */}
+              {visibleAnnouncements.length > 0 ? (() => {
+                const safeIdx = bannerSlideIndex % visibleAnnouncements.length;
+                const activeSlide = visibleAnnouncements[safeIdx];
+                const toneClasses =
+                  activeSlide.tone === 'rose'
+                    ? 'border-rose-300 dark:border-rose-500/50 bg-gradient-to-br from-rose-50 via-white to-amber-50/70 dark:from-rose-950/70 dark:via-emerald-950/90 dark:to-slate-950'
+                    : activeSlide.tone === 'sky'
+                    ? 'border-sky-300 dark:border-sky-500/50 bg-gradient-to-br from-sky-50 via-white to-emerald-50/70 dark:from-sky-950/70 dark:via-emerald-950/90 dark:to-slate-950'
+                    : activeSlide.tone === 'amber'
+                    ? 'border-amber-300 dark:border-amber-500/50 bg-gradient-to-br from-amber-50 via-white to-emerald-50/70 dark:from-amber-950/60 dark:via-emerald-950/90 dark:to-slate-950'
+                    : 'border-emerald-300 dark:border-emerald-500/50 bg-gradient-to-br from-emerald-50 via-white to-teal-50/70 dark:from-emerald-900/70 dark:via-emerald-950/95 dark:to-slate-950';
+
+                return (
+                  <div className={`rounded-2xl border shadow-sm overflow-hidden transition-colors ${toneClasses}`}>
+                    {/* Header controls */}
+                    <div className="px-3.5 py-2 border-b border-emerald-200/70 dark:border-emerald-800/70 flex flex-wrap items-center justify-between gap-2 bg-white/60 dark:bg-slate-950/40">
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <Megaphone className="w-3.5 h-3.5 text-amber-500 dark:text-amber-300 shrink-0" />
+                        <span
+                          className={`px-2 py-0.5 rounded-full text-[10px] font-extrabold uppercase tracking-wide ${
+                            activeSlide.badge === 'urgent'
+                              ? 'bg-rose-100 dark:bg-rose-500/20 text-rose-800 dark:text-rose-200'
+                              : activeSlide.badge === 'reminder'
+                              ? 'bg-sky-100 dark:bg-sky-500/20 text-sky-800 dark:text-sky-200'
+                              : 'bg-amber-100 dark:bg-amber-500/20 text-amber-800 dark:text-amber-200'
+                          }`}
+                        >
+                          {activeSlide.badge}
+                        </span>
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 dark:bg-emerald-900 text-emerald-800 dark:text-emerald-200">
+                          {getAnnouncementTargetLabel(activeSlide.target)}
+                        </span>
+                        {visibleAnnouncements.length > 1 && (
+                          <span className="text-[10px] font-mono font-bold text-emerald-700 dark:text-emerald-300">
+                            {safeIdx + 1}/{visibleAnnouncements.length}
+                          </span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-1">
+                        {visibleAnnouncements.length > 1 && (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setBannerSlideIndex(
+                                  (prev) => (prev - 1 + visibleAnnouncements.length) % visibleAnnouncements.length
+                                )
+                              }
+                              className="p-1 rounded-lg bg-white/90 dark:bg-emerald-900/80 border border-emerald-200 dark:border-emerald-700 text-emerald-900 dark:text-emerald-100 hover:bg-emerald-100"
+                              title="Previous slide"
+                            >
+                              <ChevronLeft className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setBannerSlideIndex((prev) => (prev + 1) % visibleAnnouncements.length)
+                              }
+                              className="p-1 rounded-lg bg-white/90 dark:bg-emerald-900/80 border border-emerald-200 dark:border-emerald-700 text-emerald-900 dark:text-emerald-100 hover:bg-emerald-100"
+                              title="Next slide"
+                            >
+                              <ChevronRight className="w-3.5 h-3.5" />
+                            </button>
+                          </>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => setBannerPaused((p) => !p)}
+                          className="px-2 py-1 rounded-lg bg-white/90 dark:bg-emerald-900/80 border border-emerald-200 dark:border-emerald-700 text-emerald-900 dark:text-emerald-100 font-bold text-[10px] inline-flex items-center gap-1 hover:bg-emerald-100"
+                          title={bannerPaused ? 'Play moving slide banner' : 'Pause moving slide banner'}
+                        >
+                          {bannerPaused ? <Play className="w-3 h-3" /> : <Pause className="w-3 h-3" />}
+                          <span>{bannerPaused ? 'Play' : 'Pause'}</span>
+                        </button>
+                        {isAdmin && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSecurityInitialModule('announcements');
+                              setActiveTab('admin_security');
+                            }}
+                            className="px-2.5 py-1 rounded-lg bg-amber-400 hover:bg-amber-300 text-slate-950 font-extrabold text-[10px] inline-flex items-center gap-1 shadow-sm"
+                          >
+                            Setup Banner
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Sliding Carousel Viewport */}
+                    <div
+                      className="overflow-hidden"
+                      onMouseEnter={() => setBannerPaused(true)}
+                      onMouseLeave={() => setBannerPaused(false)}
+                    >
+                      <div
+                        className="flex transition-transform duration-500 ease-out"
+                        style={{ transform: `translateX(-${safeIdx * 100}%)` }}
+                      >
+                        {visibleAnnouncements.map((slide) => (
+                          <div key={slide.id} className="w-full shrink-0 px-4 py-3 space-y-1">
+                            <h3 className="text-sm font-extrabold text-emerald-950 dark:text-white leading-tight">
+                              {slide.title}
+                            </h3>
+                            <p className="text-xs text-emerald-800 dark:text-emerald-100 leading-relaxed whitespace-pre-wrap">
+                              {slide.message}
+                            </p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Slide Dots */}
+                    {visibleAnnouncements.length > 1 && (
+                      <div className="flex items-center justify-center gap-1.5 pb-2">
+                        {visibleAnnouncements.map((s, idx) => (
+                          <button
+                            key={s.id}
+                            type="button"
+                            onClick={() => setBannerSlideIndex(idx)}
+                            aria-label={`Show slide ${idx + 1}`}
+                            className={`h-1.5 rounded-full transition-all ${
+                              idx === safeIdx
+                                ? 'w-5 bg-amber-500 dark:bg-amber-400'
+                                : 'w-1.5 bg-emerald-300 dark:bg-emerald-700 hover:bg-emerald-400'
+                            }`}
+                          />
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Continuous Moving Marquee Ticker Strip */}
+                    <div className="choy-ticker-wrapper overflow-hidden border-t border-emerald-200/80 dark:border-emerald-800/80 bg-amber-50/90 dark:bg-slate-950/60 py-1.5">
+                      <div
+                        className="choy-ticker-track text-[11px] font-bold text-amber-950 dark:text-amber-200 whitespace-nowrap"
+                        style={{ animationPlayState: bannerPaused ? 'paused' : 'running' }}
+                      >
+                        {[...visibleAnnouncements, ...visibleAnnouncements].map((s, idx) => (
+                          <span key={`${s.id}_tick_${idx}`} className="inline-flex items-center gap-2 px-4">
+                            <Megaphone className="w-3 h-3 text-amber-500 shrink-0" />
+                            <span className="uppercase text-[10px] px-1.5 py-0.5 rounded bg-amber-200/80 dark:bg-amber-500/20 text-amber-900 dark:text-amber-200">
+                              {s.badge}
+                            </span>
+                            <span>{s.title} —</span>
+                            <span className="font-normal opacity-95">{s.message}</span>
+                            <span className="opacity-40">•</span>
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })() : isAdmin ? (
+                <div className="bg-white dark:bg-emerald-900/50 border border-dashed border-amber-300 dark:border-amber-500/50 rounded-2xl p-3 flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 text-xs text-emerald-900 dark:text-emerald-100">
+                    <Megaphone className="w-4 h-4 text-amber-500 shrink-0" />
+                    <span className="font-semibold">
+                      Walay active Moving Announcement / Reminder Slide Banner karon.
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSecurityInitialModule('announcements');
+                      setActiveTab('admin_security');
+                    }}
+                    className="px-3 py-1.5 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 font-extrabold text-[11px] shadow-sm"
+                  >
+                    Setup Announcement Banner
+                  </button>
+                </div>
+              ) : null}
 
               <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-4 shadow space-y-3">
                 <div className="flex flex-wrap items-center gap-2 border-b border-emerald-200 dark:border-emerald-800 pb-2 text-xs font-bold">
@@ -8149,6 +8491,10 @@ export default function App() {
                 localStorage.setItem('choychat_nf_b_title', cfg.feedBTitle);
                 localStorage.setItem('choychat_nf_c_title', cfg.feedCTitle);
               }}
+              announcements={announcements}
+              onAnnouncementsChanged={setAnnouncements}
+              initialModule={securityInitialModule}
+              onConsumeInitialModule={() => setSecurityInitialModule('home')}
             />
           )}
 

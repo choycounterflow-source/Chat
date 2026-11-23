@@ -48,3 +48,28 @@ html[data-reduced-motion="true"] *::after {
   transition-duration: 0.01ms;
   scroll-behavior: auto;
 }
+
+@keyframes choyTickerScroll {
+  0% {
+    transform: translateX(0%);
+  }
+  100% {
+    transform: translateX(-50%);
+  }
+}
+
+.choy-ticker-track {
+  display: flex;
+  width: max-content;
+  animation: choyTickerScroll 24s linear infinite;
+}
+
+.choy-ticker-wrapper:hover .choy-ticker-track,
+.choy-ticker-wrapper:focus-within .choy-ticker-track {
+  animation-play-state: paused;
+}
+
+html[data-reduced-motion="true"] .choy-ticker-track {
+  animation: none !important;
+}
+

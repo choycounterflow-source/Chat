@@ -15,6 +15,9 @@ import {
   ALLOWED_CHAT_ROOMS,
   normalizeUserNewsfeed,
   normalizePostNewsfeed,
+  normalizeAnnouncementTarget,
+  normalizeAnnouncementBadge,
+  normalizeAnnouncementTone,
   signSessionToken,
   verifySessionToken,
   verifyPin,
@@ -25,6 +28,7 @@ import {
   clampNum,
   type StoredUser,
   type NewsfeedChannel,
+  type StoredAnnouncement,
 } from './src/server/choyStore.ts';
 import {
   getSupabaseStorageStatus,
@@ -101,6 +105,33 @@ function canViewerSeePost(
   if (post.authorId === viewer.id) return true;
   if ((post.newsfeed || '').trim().toLowerCase() === 'both') return true;
   return hasNewsfeedOverlap(normalizeUserNewsfeed(viewer.newsfeed), normalizePostNewsfeed(post.newsfeed));
+}
+
+function canViewerSeeAnnouncement(
+  viewer: { role: 'admin' | 'member'; newsfeed?: string },
+  ann: StoredAnnouncement
+): boolean {
+  if (viewer.role === 'admin') return true;
+  if (!ann.active) return false;
+  if (ann.target === 'all') return true;
+  return hasNewsfeedOverlap(normalizeUserNewsfeed(viewer.newsfeed), normalizeAnnouncementTarget(ann.target));
+}
+
+function verifyCookieCsrf(req: AuthedRequest): boolean {
+  const hasBearer = Boolean(req.headers.authorization?.startsWith('Bearer '));
+  if (hasBearer) return true;
+  const origin = req.headers.origin;
+  const expectedHost = (req.headers['x-forwarded-host'] || req.headers.host || '').toString().split(',')[0].trim();
+  const hasRequestedWith = req.headers['x-requested-with'] === 'XMLHttpRequest';
+  let originMatches = false;
+  if (typeof origin === 'string' && expectedHost) {
+    try {
+      originMatches = new URL(origin).host === expectedHost;
+    } catch {
+      originMatches = false;
+    }
+  }
+  return originMatches || hasRequestedWith;
 }
 
 let vapidReadyPromise: Promise<string> | null = null;
@@ -1247,7 +1278,7 @@ app.get('/api/choy/state', requireAuth, async (req: AuthedRequest, res: Response
     const user = req.choyUser!;
     touchUserPresence(user.name);
     const isAdmin = user.role === 'admin';
-    const [posts, allMessages, allUsers, knowledge, leaderboard, emojiLinks, newsfeedConfig] = await Promise.all([
+    const [posts, allMessages, allUsers, knowledge, leaderboard, emojiLinks, newsfeedConfig, allAnnouncements] = await Promise.all([
       store.listPosts(),
       store.listMessages(),
       store.listUsers(isAdmin),
@@ -1255,6 +1286,7 @@ app.get('/api/choy/state', requireAuth, async (req: AuthedRequest, res: Response
       store.getPublicLeaderboard(),
       store.listEmojiLinks(),
       store.getNewsfeedConfig(),
+      store.listAnnouncements(),
     ]);
     const activeEmojiLink = emojiLinks.find((l) => l.pinnedToAppIcon) || emojiLinks[0] || null;
 
@@ -1291,6 +1323,10 @@ app.get('/api/choy/state', requireAuth, async (req: AuthedRequest, res: Response
       ? posts
       : posts.filter((p) => canViewerSeePost(user, p));
 
+    const visibleAnnouncements = isAdmin
+      ? allAnnouncements
+      : allAnnouncements.filter((a) => canViewerSeeAnnouncement(user, a));
+
     let ledger = undefined;
     let settings = undefined;
     if (isAdmin) {
@@ -1317,6 +1353,7 @@ app.get('/api/choy/state', requireAuth, async (req: AuthedRequest, res: Response
       emojiLinks,
       activeEmojiLink,
       newsfeedConfig,
+      announcements: visibleAnnouncements,
       onlineUsers: getOnlineUserNames(),
       ...(isAdmin ? { ledger, settings } : {}),
     });
@@ -2243,6 +2280,118 @@ app.delete('/api/admin/env-vault/:id', requireAuth, requireAdmin, async (req: Au
   }
 });
 
+// Newsfeed Moving Slide Banner Announcements (Admin Setup Routes)
+app.get('/api/admin/announcements', requireAuth, requireAdmin, async (_req: AuthedRequest, res: Response) => {
+  try {
+    const announcements = await store.listAnnouncements();
+    return res.json({ announcements });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to load announcements' });
+  }
+});
+
+app.post('/api/admin/announcements', requireAuth, requireAdmin, async (req: AuthedRequest, res: Response) => {
+  try {
+    if (!verifyCookieCsrf(req)) {
+      return res.status(403).json({ error: 'Cross-origin request blocked' });
+    }
+    const title = typeof req.body?.title === 'string' ? req.body.title.trim().slice(0, 120) : '';
+    const message = typeof req.body?.message === 'string' ? req.body.message.trim().slice(0, 500) : '';
+    if (!title || !message) {
+      return res.status(400).json({ error: 'Title and announcement message are required' });
+    }
+    const target = normalizeAnnouncementTarget(req.body?.target);
+    const badge = normalizeAnnouncementBadge(req.body?.badge);
+    const tone = normalizeAnnouncementTone(req.body?.tone);
+    const active = req.body?.active !== false;
+
+    const created = await store.createAnnouncement({
+      title,
+      message,
+      badge,
+      tone,
+      target,
+      active,
+      createdBy: req.choyUser?.name || 'Admin',
+    });
+    const announcements = await store.listAnnouncements();
+    broadcastSync('announcements');
+    return res.status(201).json({ announcement: created, announcements });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to create announcement slide' });
+  }
+});
+
+app.patch('/api/admin/announcements/:id', requireAuth, requireAdmin, async (req: AuthedRequest, res: Response) => {
+  try {
+    if (!verifyCookieCsrf(req)) {
+      return res.status(403).json({ error: 'Cross-origin request blocked' });
+    }
+    const id = String(req.params.id || '').trim();
+    if (!id) {
+      return res.status(400).json({ error: 'Announcement ID is required' });
+    }
+    const patch: {
+      title?: string;
+      message?: string;
+      badge?: 'announcement' | 'reminder' | 'urgent';
+      tone?: 'emerald' | 'amber' | 'sky' | 'rose';
+      target?: 'all' | 'feed_a' | 'feed_b' | 'feed_c' | 'feed_bc';
+      active?: boolean;
+    } = {};
+
+    if (req.body?.title !== undefined) {
+      const t = typeof req.body.title === 'string' ? req.body.title.trim().slice(0, 120) : '';
+      if (!t) return res.status(400).json({ error: 'Title cannot be empty' });
+      patch.title = t;
+    }
+    if (req.body?.message !== undefined) {
+      const m = typeof req.body.message === 'string' ? req.body.message.trim().slice(0, 500) : '';
+      if (!m) return res.status(400).json({ error: 'Message cannot be empty' });
+      patch.message = m;
+    }
+    if (req.body?.badge !== undefined) {
+      patch.badge = normalizeAnnouncementBadge(req.body.badge);
+    }
+    if (req.body?.tone !== undefined) {
+      patch.tone = normalizeAnnouncementTone(req.body.tone);
+    }
+    if (req.body?.target !== undefined) {
+      patch.target = normalizeAnnouncementTarget(req.body.target);
+    }
+    if (typeof req.body?.active === 'boolean') {
+      patch.active = req.body.active;
+    }
+
+    const updated = await store.updateAnnouncement(id, patch);
+    if (!updated) {
+      return res.status(404).json({ error: 'Announcement slide not found' });
+    }
+    const announcements = await store.listAnnouncements();
+    broadcastSync('announcements');
+    return res.json({ announcement: updated, announcements });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to update announcement slide' });
+  }
+});
+
+app.delete('/api/admin/announcements/:id', requireAuth, requireAdmin, async (req: AuthedRequest, res: Response) => {
+  try {
+    if (!verifyCookieCsrf(req)) {
+      return res.status(403).json({ error: 'Cross-origin request blocked' });
+    }
+    const ok = await store.deleteAnnouncement(req.params.id);
+    if (!ok) {
+      return res.status(404).json({ error: 'Announcement slide not found' });
+    }
+    const announcements = await store.listAnnouncements();
+    broadcastSync('announcements');
+    return res.json({ deleted: true, announcements });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to delete announcement slide' });
+  }
+});
+
 // Helper for GitHub headers
 function getGitHubHeaders(token: string) {
   return {
@@ -3123,9 +3272,12 @@ async function startServer() {
   }
 
   const PORT = Number(process.env.PORT || 3000);
-  app.listen(PORT, '0.0.0.0', () => {
+  const server = app.listen(PORT, '0.0.0.0', () => {
     console.log(`Server running on http://localhost:${PORT}`);
   });
+  // Prevent Cloud Run / reverse-proxy 5s keep-alive race causing ERR_CONNECTION_RESET / Failed to fetch
+  server.keepAliveTimeout = 65000;
+  server.headersTimeout = 66000;
 }
 
 startServer();
