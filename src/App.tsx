@@ -479,6 +479,7 @@ export default function App() {
   const activeCallIdRef = useRef<string | null>(null);
   const callTargetNameRef = useRef<string>('');
   const callRoomIdRef = useRef<string>('VIP Group');
+  const incomingCallRef = useRef<IncomingCallPayload | null>(null);
   const handleRtcSignalRef = useRef<(payload: RtcSignalPayload) => void>(() => {});
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const seenMessageIdsRef = useRef<Set<string>>(new Set());
@@ -964,9 +965,11 @@ export default function App() {
   const [zoomedImage, setZoomedImage] = useState<{ src: string; caption?: string } | null>(null);
   const [blockedUsers, setBlockedUsers] = useState<string[]>([]);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [isDrawing, setIsDrawing] = useState(false);
-  const [drawColor] = useState('#10b981');
-  const [drawWidth] = useState(4);
+  const isDrawingRef = useRef(false);
+  const lastDrawPointRef = useRef<{ x: number; y: number } | null>(null);
+  const [drawColor, setDrawColor] = useState('#10b981');
+  const [drawWidth, setDrawWidth] = useState(5);
+  const [editorUndoStack, setEditorUndoStack] = useState<string[]>([]);
 
   const [ledgerRows, setLedgerRows] = useState<LedgerRow[]>([]);
   const [leaderboard, setLeaderboard] = useState<LeaderboardItem[]>([]);
@@ -1717,13 +1720,27 @@ export default function App() {
     };
 
     void pollRtc();
-    const intervalMs = isInVideoCall || Boolean(incomingCall) ? 500 : 1200;
+    const intervalMs =
+      isInVideoCall && callStatus === 'connected'
+        ? 1400
+        : isInVideoCall || Boolean(incomingCall)
+        ? 280
+        : 650;
     const rtcPollTimer = window.setInterval(pollRtc, intervalMs);
+    const handleRtcWake = () => {
+      if (document.visibilityState === 'visible') {
+        void pollRtc();
+      }
+    };
+    window.addEventListener('focus', handleRtcWake);
+    document.addEventListener('visibilitychange', handleRtcWake);
     return () => {
       cancelled = true;
       window.clearInterval(rtcPollTimer);
+      window.removeEventListener('focus', handleRtcWake);
+      document.removeEventListener('visibilitychange', handleRtcWake);
     };
-  }, [authToken, apiFetch, isInVideoCall, incomingCall]);
+  }, [authToken, apiFetch, isInVideoCall, incomingCall, callStatus]);
 
   // ---- BACKGROUND WEB PUSH NOTIFICATIONS (HOME SCREEN MESSAGES & CALL ALERTS) ----
   const subscribeToBackgroundPush = useCallback(
@@ -2228,7 +2245,7 @@ export default function App() {
     }
     try {
       return await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: { ideal: facing }, width: { ideal: 1280 }, height: { ideal: 720 } },
+        video: { facingMode: { ideal: facing }, width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 24 } },
         audio: { echoCancellation: true, noiseSuppression: true }
       });
     } catch (firstErr) {
@@ -2242,6 +2259,19 @@ export default function App() {
         showNotice('Camera not detected — connected with microphone audio only.');
         return audioOnly;
       }
+    }
+  }, []);
+
+  const flushPendingIceCandidates = useCallback(async (pc: RTCPeerConnection, callId: string) => {
+    while (true) {
+      const idx = pendingIceCandidatesRef.current.findIndex((item) => item.callId === callId);
+      if (idx < 0) break;
+      const [item] = pendingIceCandidatesRef.current.splice(idx, 1);
+      if (!pc.remoteDescription) {
+        pendingIceCandidatesRef.current.unshift(item);
+        break;
+      }
+      await pc.addIceCandidate(new RTCIceCandidate(item.candidate)).catch(() => {});
     }
   }, []);
 
@@ -2291,6 +2321,12 @@ export default function App() {
         if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
           setCallStatus('connected');
           setCallPeerOfflineHint(false);
+        } else if (pc.iceConnectionState === 'disconnected') {
+          try {
+            pc.restartIce?.();
+          } catch {
+            // ignore
+          }
         } else if (pc.iceConnectionState === 'failed') {
           setCallError('Connection lost. Tap Retry Call to reconnect.');
           setCallStatus('error');
@@ -2355,12 +2391,17 @@ export default function App() {
   );
 
   const acceptIncomingCall = useCallback(async () => {
-    if (!incomingCall) return;
+    const callData = incomingCallRef.current || incomingCall;
+    if (!callData) return;
     getUnlockedAudioContext();
-    const callData = incomingCall;
+    incomingCallRef.current = null;
     setIncomingCall(null);
     // Preserve queued ICE candidates received while ringing!
     cleanupVideoCallResources(true);
+    // Bind active call refs immediately so hangup/ICE arriving during camera init are not dropped
+    activeCallIdRef.current = callData.callId;
+    callTargetNameRef.current = callData.fromUserName;
+    callRoomIdRef.current = callData.roomId;
     setIsInVideoCall(true);
     setCallPartnerName(callData.fromUserName);
     setCallStatus('ringing');
@@ -2368,7 +2409,16 @@ export default function App() {
     setCameraFacing('user');
 
     try {
+      const pc = createPeerConnection(callData.callId, callData.fromUserName, callData.roomId);
+      await pc.setRemoteDescription(new RTCSessionDescription(callData.sdp));
+      await flushPendingIceCandidates(pc, callData.callId);
+
       const stream = await acquireCallMedia('user');
+      // If caller hung up while camera was initializing, clean up and exit
+      if (activeCallIdRef.current !== callData.callId) {
+        stream.getTracks().forEach((t) => t.stop());
+        return;
+      }
       localStreamRef.current = stream;
       if (localVideoRef.current) {
         localVideoRef.current.srcObject = stream;
@@ -2377,21 +2427,7 @@ export default function App() {
       const hasVideoTrack = stream.getVideoTracks().length > 0;
       setIsVideoMuted(!hasVideoTrack);
 
-      activeCallIdRef.current = callData.callId;
-      callTargetNameRef.current = callData.fromUserName;
-      callRoomIdRef.current = callData.roomId;
-
-      const pc = createPeerConnection(callData.callId, callData.fromUserName, callData.roomId);
       stream.getTracks().forEach((track) => pc.addTrack(track, stream));
-
-      await pc.setRemoteDescription(new RTCSessionDescription(callData.sdp));
-      const matchingIce = pendingIceCandidatesRef.current.filter((item) => item.callId === callData.callId);
-      pendingIceCandidatesRef.current = pendingIceCandidatesRef.current.filter(
-        (item) => item.callId !== callData.callId
-      );
-      for (const item of matchingIce) {
-        await pc.addIceCandidate(new RTCIceCandidate(item.candidate)).catch(() => {});
-      }
 
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
@@ -2403,11 +2439,12 @@ export default function App() {
         targetName: callData.fromUserName,
         sdp: answer
       });
+      await flushPendingIceCandidates(pc, callData.callId);
     } catch (err) {
       setCallStatus('error');
       setCallError(err instanceof Error ? err.message : 'Failed to accept video call.');
     }
-  }, [incomingCall, acquireCallMedia, cleanupVideoCallResources, createPeerConnection, sendRtcSignalToServer]);
+  }, [incomingCall, acquireCallMedia, cleanupVideoCallResources, createPeerConnection, flushPendingIceCandidates, getUnlockedAudioContext, sendRtcSignalToServer]);
 
   const declineIncomingCall = useCallback(() => {
     if (!incomingCall) return;
@@ -2481,6 +2518,10 @@ export default function App() {
     }
   }, [cameraFacing, isVideoMuted]);
 
+  useEffect(() => {
+    incomingCallRef.current = incomingCall;
+  }, [incomingCall]);
+
   // Keep SSE + Poll RTC signal handler always up-to-date & deduplicated
   useEffect(() => {
     handleRtcSignalRef.current = async (payload: RtcSignalPayload) => {
@@ -2508,31 +2549,29 @@ export default function App() {
           });
           return;
         }
-        setIncomingCall({
+        if (incomingCallRef.current?.callId === payload.callId) return;
+        const nextIncoming: IncomingCallPayload = {
           callId: payload.callId,
           roomId: payload.roomId || 'VIP Group',
           fromUserId: payload.fromUserId || '',
           fromUserName: payload.fromUserName || 'Member',
           sdp: payload.sdp
-        });
+        };
+        incomingCallRef.current = nextIncoming;
+        setIncomingCall(nextIncoming);
         return;
       }
 
       if (payload.type === 'answer' && payload.sdp) {
-        if (activeCallIdRef.current !== payload.callId || !peerConnectionRef.current) return;
+        const pc = peerConnectionRef.current;
+        if (activeCallIdRef.current !== payload.callId || !pc) return;
         try {
           if (payload.fromUserName) {
             callTargetNameRef.current = payload.fromUserName;
             setCallPartnerName(payload.fromUserName);
           }
-          await peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(payload.sdp));
-          const matchingIce = pendingIceCandidatesRef.current.filter((item) => item.callId === payload.callId);
-          pendingIceCandidatesRef.current = pendingIceCandidatesRef.current.filter(
-            (item) => item.callId !== payload.callId
-          );
-          for (const item of matchingIce) {
-            await peerConnectionRef.current.addIceCandidate(new RTCIceCandidate(item.candidate)).catch(() => {});
-          }
+          await pc.setRemoteDescription(new RTCSessionDescription(payload.sdp));
+          await flushPendingIceCandidates(pc, payload.callId);
           setCallPeerOfflineHint(false);
           setCallStatus('connected');
         } catch {
@@ -2569,7 +2608,8 @@ export default function App() {
         pendingIceCandidatesRef.current = pendingIceCandidatesRef.current.filter(
           (item) => item.callId !== payload.callId
         );
-        if (incomingCall?.callId === payload.callId) {
+        if (incomingCallRef.current?.callId === payload.callId) {
+          incomingCallRef.current = null;
           setIncomingCall(null);
         }
         if (activeCallIdRef.current === payload.callId) {
@@ -2578,7 +2618,7 @@ export default function App() {
         }
       }
     };
-  }, [endVideoCall, incomingCall, sendRtcSignalToServer]);
+  }, [endVideoCall, flushPendingIceCandidates, sendRtcSignalToServer]);
 
   // Auto-answer incoming call if user tapped "Answer Call" directly from the home-screen push notification
   useEffect(() => {
@@ -2763,7 +2803,7 @@ export default function App() {
     };
   }, [cleanupVideoCallResources]);
 
-  // Photo Editor Canvas Loader
+  // Photo Editor Canvas Loader (preserves aspect ratio & accurate pixel coordinates)
   useEffect(() => {
     if (isPhotoEditorOpen && msgMediaUrl && canvasRef.current) {
       const canvas = canvasRef.current;
@@ -2771,9 +2811,12 @@ export default function App() {
       const img = new Image();
       img.crossOrigin = 'anonymous';
       img.onload = () => {
-        canvas.width = img.width > 600 ? 600 : img.width;
-        canvas.height = img.height > 600 ? 600 : img.height;
+        const maxDim = 900;
+        const scale = Math.min(1, maxDim / Math.max(img.width || 1, img.height || 1));
+        canvas.width = Math.max(1, Math.round(img.width * scale));
+        canvas.height = Math.max(1, Math.round(img.height * scale));
         ctx?.drawImage(img, 0, 0, canvas.width, canvas.height);
+        setEditorUndoStack([]);
       };
       img.src = msgMediaUrl;
     }
@@ -4273,41 +4316,110 @@ export default function App() {
     }
   };
 
-  const startDrawing = (e: React.MouseEvent<HTMLCanvasElement> | React.TouchEvent<HTMLCanvasElement>) => {
-    setIsDrawing(true);
-    draw(e);
-  };
-
-  const stopDrawing = () => {
-    setIsDrawing(false);
+  const pushEditorUndoSnapshot = () => {
     const canvas = canvasRef.current;
-    if (canvas) {
-      const ctx = canvas.getContext('2d');
-      ctx?.beginPath();
+    if (!canvas) return;
+    try {
+      const snap = canvas.toDataURL('image/png');
+      setEditorUndoStack((prev) => [...prev.slice(-12), snap]);
+    } catch {
+      // Ignore snapshot error
     }
   };
 
-  const draw = (e: React.MouseEvent<HTMLCanvasElement> | React.TouchEvent<HTMLCanvasElement>) => {
-    if (!isDrawing) return;
+  const getCanvasPoint = (clientX: number, clientY: number) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return null;
+    const rect = canvas.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return null;
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    return {
+      x: (clientX - rect.left) * scaleX,
+      y: (clientY - rect.top) * scaleY,
+      strokeScale: Math.max(scaleX, scaleY),
+    };
+  };
+
+  const startDrawing = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    e.preventDefault();
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
-    if (!ctx) return;
+    const pt = getCanvasPoint(e.clientX, e.clientY);
+    if (!ctx || !pt) return;
 
-    const rect = canvas.getBoundingClientRect();
-    const clientX = 'touches' in e ? e.touches[0].clientX : (e as React.MouseEvent).clientX;
-    const clientY = 'touches' in e ? e.touches[0].clientY : (e as React.MouseEvent).clientY;
-    const x = clientX - rect.left;
-    const y = clientY - rect.top;
+    pushEditorUndoSnapshot();
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {
+      // Ignore if synthetic/unsupported
+    }
+    isDrawingRef.current = true;
+    lastDrawPointRef.current = { x: pt.x, y: pt.y };
 
-    ctx.lineWidth = drawWidth;
+    const effectiveWidth = Math.max(2, drawWidth * pt.strokeScale);
+    ctx.beginPath();
+    ctx.fillStyle = drawColor;
+    ctx.arc(pt.x, pt.y, effectiveWidth / 2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(pt.x, pt.y);
+  };
+
+  const stopDrawing = (e?: React.PointerEvent<HTMLCanvasElement>) => {
+    if (!isDrawingRef.current) return;
+    isDrawingRef.current = false;
+    lastDrawPointRef.current = null;
+    if (e) {
+      try {
+        if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+          e.currentTarget.releasePointerCapture(e.pointerId);
+        }
+      } catch {
+        // ignore
+      }
+    }
+    const canvas = canvasRef.current;
+    const ctx = canvas?.getContext('2d');
+    ctx?.beginPath();
+  };
+
+  const draw = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (!isDrawingRef.current) return;
+    e.preventDefault();
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    const pt = getCanvasPoint(e.clientX, e.clientY);
+    if (!ctx || !pt) return;
+
+    const from = lastDrawPointRef.current || { x: pt.x, y: pt.y };
+    const effectiveWidth = Math.max(2, drawWidth * pt.strokeScale);
+    ctx.lineWidth = effectiveWidth;
     ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
     ctx.strokeStyle = drawColor;
 
-    ctx.lineTo(x, y);
-    ctx.stroke();
     ctx.beginPath();
-    ctx.moveTo(x, y);
+    ctx.moveTo(from.x, from.y);
+    ctx.lineTo(pt.x, pt.y);
+    ctx.stroke();
+    lastDrawPointRef.current = { x: pt.x, y: pt.y };
+  };
+
+  const handleUndoEditor = () => {
+    const canvas = canvasRef.current;
+    if (!canvas || editorUndoStack.length === 0) return;
+    const lastSnap = editorUndoStack[editorUndoStack.length - 1];
+    setEditorUndoStack((prev) => prev.slice(0, -1));
+    const img = new Image();
+    img.onload = () => {
+      canvas.width = img.width;
+      canvas.height = img.height;
+      canvas.getContext('2d')?.drawImage(img, 0, 0);
+    };
+    img.src = lastSnap;
   };
 
   const handleCropSquare = () => {
@@ -4315,6 +4427,7 @@ export default function App() {
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
+    pushEditorUndoSnapshot();
     const size = Math.min(canvas.width, canvas.height);
     const imgData = ctx.getImageData((canvas.width - size) / 2, (canvas.height - size) / 2, size, size);
     canvas.width = size;
@@ -4327,6 +4440,7 @@ export default function App() {
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
+    pushEditorUndoSnapshot();
     const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
     const d = imgData.data;
     for (let i = 0; i < d.length; i += 4) {
@@ -5013,21 +5127,63 @@ export default function App() {
               </button>
             </div>
 
-            <div className="flex justify-center bg-white dark:bg-slate-900 p-2 rounded-2xl border border-emerald-200 dark:border-emerald-800 overflow-auto max-h-[50vh]">
+            <div className="flex items-center justify-center bg-white dark:bg-slate-900 p-2 rounded-2xl border border-emerald-200 dark:border-emerald-800 overflow-hidden">
               <canvas
                 ref={canvasRef}
-                onMouseDown={startDrawing}
-                onMouseUp={stopDrawing}
-                onMouseMove={draw}
-                onTouchStart={startDrawing}
-                onTouchEnd={stopDrawing}
-                onTouchMove={draw}
-                className="cursor-crosshair max-w-full rounded"
+                onPointerDown={startDrawing}
+                onPointerMove={draw}
+                onPointerUp={stopDrawing}
+                onPointerCancel={stopDrawing}
+                onPointerLeave={stopDrawing}
+                className="block max-w-full max-h-[48vh] w-auto h-auto rounded touch-none select-none cursor-crosshair"
               />
             </div>
 
+            {/* Brush Color & Thickness Bar */}
+            <div className="flex flex-wrap items-center justify-between gap-2 text-xs px-1">
+              <div className="flex items-center gap-1.5">
+                <span className="text-[11px] font-bold text-emerald-900 dark:text-emerald-200 mr-1">Pen:</span>
+                {['#10b981', '#ef4444', '#facc15', '#38bdf8', '#ffffff', '#0f172a'].map((c) => (
+                  <button
+                    key={c}
+                    type="button"
+                    onClick={() => setDrawColor(c)}
+                    aria-label={`Select color ${c}`}
+                    className={`w-6 h-6 rounded-full border-2 transition ${
+                      drawColor === c ? 'border-emerald-400 scale-110 shadow' : 'border-slate-300 dark:border-slate-700'
+                    }`}
+                    style={{ backgroundColor: c }}
+                  />
+                ))}
+              </div>
+              <div className="flex items-center gap-1.5">
+                {[3, 6, 11].map((w) => (
+                  <button
+                    key={w}
+                    type="button"
+                    onClick={() => setDrawWidth(w)}
+                    className={`px-2 py-1 rounded-lg text-[10px] font-bold border ${
+                      drawWidth === w
+                        ? 'bg-emerald-500 text-slate-950 border-emerald-400'
+                        : 'bg-emerald-100/80 dark:bg-emerald-900 text-emerald-900 dark:text-emerald-200 border-emerald-300 dark:border-emerald-700'
+                    }`}
+                  >
+                    {w === 3 ? 'Thin' : w === 6 ? 'Med' : 'Bold'}
+                  </button>
+                ))}
+              </div>
+            </div>
+
             <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={handleUndoEditor}
+                  disabled={editorUndoStack.length === 0}
+                  className="px-3 py-1.5 bg-amber-100 dark:bg-amber-900/40 border border-amber-300 dark:border-amber-600/50 rounded-xl text-amber-900 dark:text-amber-200 hover:bg-amber-200 font-semibold disabled:opacity-40"
+                >
+                  Undo
+                </button>
                 <button
                   type="button"
                   onClick={handleCropSquare}

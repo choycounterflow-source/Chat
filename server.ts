@@ -1210,7 +1210,7 @@ app.post('/api/choy/rtc/signal', requireAuth, async (req: AuthedRequest, res: Re
       return res.status(400).json({ error: 'callId is required' });
     }
 
-    if (user.role !== 'admin') {
+    if (type === 'offer' && user.role !== 'admin') {
       const targetLower = targetName.toLowerCase();
       if (targetLower !== 'vip group' && targetLower !== 'choy admin') {
         const allUsers = await store.listUsers(false);
