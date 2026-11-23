@@ -1802,7 +1802,7 @@ export default function App() {
       setFirebaseUser(user);
       if (!isVerifiedAdminFirebaseUser(user)) {
         setFirebaseSyncState('error');
-        const msg = `Connected ${user.email || 'account'}, but Admin email (choycounterflow@gmail.com or choyjiez07@gmail.com) is required for Firebase Cloud Sync.`;
+        const msg = `Connected ${user.email || 'account'}, but Admin email (choycounterflow@gmail.com) is required for Firebase Cloud Sync.`;
         setFirebaseSyncError(msg);
         showNotice(msg);
         return;
