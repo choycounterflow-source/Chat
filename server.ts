@@ -3226,7 +3226,11 @@ async function startServer() {
           if (filePath.endsWith('.webmanifest')) {
             res.setHeader('Content-Type', 'application/manifest+json');
             res.setHeader('Cache-Control', 'no-cache');
-          } else if (filePath.endsWith('sw.js') || filePath.endsWith('registerSW.js')) {
+          } else if (
+            filePath.endsWith('sw.js') ||
+            filePath.endsWith('registerSW.js') ||
+            filePath.endsWith('index.html')
+          ) {
             res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
           }
         },
@@ -3237,6 +3241,7 @@ async function startServer() {
       if (req.path.startsWith('/api/')) {
         return next();
       }
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
       res.sendFile(path.join(distPath, 'index.html'));
     });
   } else {
