@@ -22,3 +22,5 @@
 10. **ID Poisoning:** Creating a document at `/posts/$$$bad..id###` or with an ID > 128 chars.
 11. **Client Timestamp Forgery:** Creating a post with a forged `createdAt` timestamp != `request.time`.
 12. **Unauthorized Ledger Write:** Non-admin user attempting to create or list `/ledger/{rowId}`.
+13. **Cloud Account Vault Access (Non-Admin):** Non-admin authenticated user attempting to `get`, `list`, `create`, `update`, or `delete` `/cloud_accounts/{accountId}` (contains `phone` and `pinHash`).
+14. **Cloud Config / Announcement Forgery:** Non-admin user writing `/cloud_newsfeed_config/{docId}` or `/cloud_announcements/{annId}`, or admin writing oversized `avatar` (> 200,000 chars) or extra shadow fields.

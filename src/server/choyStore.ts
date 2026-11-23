@@ -1,4 +1,6 @@
 import crypto from 'crypto';
+import fs from 'fs';
+import path from 'path';
 import { Pool } from 'pg';
 
 export type NewsfeedChannel = 'feed_a' | 'feed_b' | 'feed_c' | 'feed_bc' | 'both';
@@ -228,10 +230,26 @@ const DEFAULT_SETTINGS: StoredPricesSettings = {
 
 export const ALLOWED_CHAT_ROOMS = ['VIP Group', 'Choy Admin'] as const;
 
-const SESSION_SIGNING_KEY =
-  process.env.SESSION_SECRET && process.env.SESSION_SECRET.length >= 16
-    ? process.env.SESSION_SECRET
-    : crypto.randomBytes(32).toString('hex');
+const LOCAL_DATA_FILE = path.join(process.cwd(), '.choychat-data.json');
+
+function initSessionSigningKey(): string {
+  const envSecret = (process.env.SESSION_SECRET || '').trim();
+  if (envSecret.length >= 16) return envSecret;
+  try {
+    if (fs.existsSync(LOCAL_DATA_FILE)) {
+      const raw = fs.readFileSync(LOCAL_DATA_FILE, 'utf8');
+      const parsed = JSON.parse(raw) as { sessionKey?: unknown };
+      if (typeof parsed.sessionKey === 'string' && parsed.sessionKey.length >= 32) {
+        return parsed.sessionKey;
+      }
+    }
+  } catch {
+    // ignore read error on initial startup
+  }
+  return crypto.randomBytes(32).toString('hex');
+}
+
+const SESSION_SIGNING_KEY = initSessionSigningKey();
 
 export function hashPin(pin: string): string {
   const salt = crypto.randomBytes(16).toString('hex');
@@ -416,6 +434,8 @@ export class ChoyStore {
   private memEnvVault: StoredEnvVaultEntry[] = [];
   private memAnnouncements: StoredAnnouncement[] = [];
   private memSeeded = false;
+  private persistInFlight: Promise<void> | null = null;
+  private persistQueued = false;
 
   constructor() {
     this.readyPromise = this.init();
@@ -431,6 +451,108 @@ export class ChoyStore {
 
   public async ready(): Promise<void> {
     await this.readyPromise;
+  }
+
+  private loadMemoryFromDisk(): boolean {
+    try {
+      if (!fs.existsSync(LOCAL_DATA_FILE)) return false;
+      const raw = fs.readFileSync(LOCAL_DATA_FILE, 'utf8');
+      if (!raw.trim()) return false;
+      const data = JSON.parse(raw) as Record<string, unknown>;
+      if (Array.isArray(data.users)) this.memUsers = data.users as StoredUser[];
+      if (Array.isArray(data.posts)) this.memPosts = data.posts as StoredPost[];
+      if (Array.isArray(data.messages)) this.memMessages = data.messages as StoredMessage[];
+      if (Array.isArray(data.ledger)) this.memLedger = data.ledger as StoredLedgerRow[];
+      if (Array.isArray(data.knowledge)) this.memKnowledge = data.knowledge as StoredKnowledgeQA[];
+      if (data.settings && typeof data.settings === 'object') {
+        this.memSettings = { ...DEFAULT_SETTINGS, ...(data.settings as Partial<StoredPricesSettings>) };
+      }
+      if (data.newsfeedConfig && typeof data.newsfeedConfig === 'object') {
+        this.memNewsfeedConfig = {
+          ...DEFAULT_NEWSFEED_CONFIG,
+          ...(data.newsfeedConfig as Partial<StoredNewsfeedConfig>),
+        };
+      }
+      if (Array.isArray(data.pushSubs)) this.memPushSubs = data.pushSubs as StoredPushSubscription[];
+      if (data.vapidKeys && typeof data.vapidKeys === 'object') {
+        this.memVapidKeys = data.vapidKeys as VapidKeyPair;
+      }
+      if (Array.isArray(data.locations)) {
+        this.memLocations = data.locations as typeof this.memLocations;
+      }
+      if (data.locationTrails && typeof data.locationTrails === 'object') {
+        this.locationTrails = new Map(
+          Object.entries(data.locationTrails as Record<string, Array<{ lat: number; lng: number; ts: string }>>)
+        );
+      }
+      if (Array.isArray(data.emojiLinks) && data.emojiLinks.length > 0) {
+        this.memEmojiLinks = data.emojiLinks as StoredEmojiLink[];
+      }
+      if (Array.isArray(data.studioNotes)) this.memStudioNotes = data.studioNotes as StoredStudioNoteFile[];
+      if (Array.isArray(data.envVault)) this.memEnvVault = data.envVault as StoredEnvVaultEntry[];
+      if (Array.isArray(data.announcements)) this.memAnnouncements = data.announcements as StoredAnnouncement[];
+      this.memSeeded = true;
+      console.log(
+        `[ChoyStore] Loaded persistent local store (${this.memUsers.length} users, ${this.memPosts.length} posts, ${this.memMessages.length} messages).`
+      );
+      return true;
+    } catch (err) {
+      console.error('[ChoyStore] Failed to load local JSON store:', err instanceof Error ? err.message : err);
+      return false;
+    }
+  }
+
+  private async persistMemory(): Promise<void> {
+    if (this.usePostgres) return;
+    if (this.persistInFlight) {
+      this.persistQueued = true;
+      await this.persistInFlight;
+      if (this.persistQueued) {
+        this.persistQueued = false;
+        return this.persistMemory();
+      }
+      return;
+    }
+    const run = async () => {
+      try {
+        const trailsObj: Record<string, Array<{ lat: number; lng: number; ts: string }>> = {};
+        for (const [uid, pts] of this.locationTrails.entries()) {
+          trailsObj[uid] = pts;
+        }
+        const payload = {
+          version: 1,
+          sessionKey: SESSION_SIGNING_KEY,
+          users: this.memUsers,
+          posts: this.memPosts,
+          messages: this.memMessages,
+          ledger: this.memLedger,
+          knowledge: this.memKnowledge,
+          settings: this.memSettings,
+          newsfeedConfig: this.memNewsfeedConfig,
+          pushSubs: this.memPushSubs,
+          vapidKeys: this.memVapidKeys,
+          locations: this.memLocations,
+          locationTrails: trailsObj,
+          emojiLinks: this.memEmojiLinks,
+          studioNotes: this.memStudioNotes,
+          envVault: this.memEnvVault,
+          announcements: this.memAnnouncements,
+        };
+        const tmpPath = `${LOCAL_DATA_FILE}.tmp.${process.pid}`;
+        await fs.promises.writeFile(tmpPath, JSON.stringify(payload, null, 2), 'utf8');
+        await fs.promises.rename(tmpPath, LOCAL_DATA_FILE);
+      } catch (err) {
+        console.error('[ChoyStore] Failed to persist local JSON store:', err instanceof Error ? err.message : err);
+      }
+    };
+    this.persistInFlight = run().finally(() => {
+      this.persistInFlight = null;
+    });
+    await this.persistInFlight;
+    if (this.persistQueued) {
+      this.persistQueued = false;
+      await this.persistMemory();
+    }
   }
 
   private async init(): Promise<void> {
@@ -462,15 +584,19 @@ export class ChoyStore {
           msg.includes('password') || msg.includes('authentication') || msg.includes('28p01')
             ? 'auth_failed'
             : 'connection_failed';
-        console.error('[ChoyStore] PostgreSQL connection failed, falling back to in-memory store:', err instanceof Error ? err.message : err);
+        console.error('[ChoyStore] PostgreSQL connection failed, falling back to local disk store:', err instanceof Error ? err.message : err);
         this.pool = null;
         this.usePostgres = false;
       }
     } else {
       this._storageStatus = 'no_database_url';
     }
-    this.seedMemory();
-    console.log('[ChoyStore] Running in server memory mode (set DATABASE_URL in Render for permanent PostgreSQL sync).');
+    const loaded = this.loadMemoryFromDisk();
+    if (!loaded) {
+      this.seedMemory();
+      await this.persistMemory();
+    }
+    console.log('[ChoyStore] Running with persistent local disk fallback (.choychat-data.json).');
   }
 
   private async createTables(): Promise<void> {
@@ -805,6 +931,7 @@ export class ChoyStore {
           existing.role = 'admin';
           existing.status = 'approved';
           existing.updatedAt = new Date().toISOString();
+          await this.persistMemory();
         }
       }
       return (await this.getUserById(existing.id))!;
@@ -831,6 +958,7 @@ export class ChoyStore {
       );
     } else {
       this.memUsers.push(user);
+      await this.persistMemory();
     }
     return user;
   }
@@ -867,6 +995,7 @@ export class ChoyStore {
       );
     } else {
       this.memUsers.push(user);
+      await this.persistMemory();
     }
     return user;
   }
@@ -886,6 +1015,7 @@ export class ChoyStore {
     if (!found) return null;
     found.newsfeed = clean;
     found.updatedAt = new Date().toISOString();
+    await this.persistMemory();
     return found;
   }
 
@@ -904,6 +1034,7 @@ export class ChoyStore {
     if (!found) return null;
     found.pinHash = nextHash;
     found.updatedAt = new Date().toISOString();
+    await this.persistMemory();
     return found;
   }
 
@@ -952,6 +1083,7 @@ export class ChoyStore {
         p.authorAvatar = postAvatar;
       }
     }
+    await this.persistMemory();
     return found;
   }
 
@@ -1045,6 +1177,7 @@ export class ChoyStore {
         s.updatedAt = found.updatedAt;
       }
     }
+    await this.persistMemory();
     return { ok: true, user: found, previousName };
   }
 
@@ -1069,6 +1202,7 @@ export class ChoyStore {
     if (status === 'pending' && found.role === 'admin') return false;
     found.status = status;
     found.updatedAt = new Date().toISOString();
+    await this.persistMemory();
     return true;
   }
 
@@ -1089,6 +1223,7 @@ export class ChoyStore {
         count += 1;
       }
     }
+    if (count > 0) await this.persistMemory();
     return count;
   }
 
@@ -1100,7 +1235,9 @@ export class ChoyStore {
     }
     const before = this.memUsers.length;
     this.memUsers = this.memUsers.filter((u) => !(u.id === userId && u.role !== 'admin'));
-    return this.memUsers.length < before;
+    const deleted = this.memUsers.length < before;
+    if (deleted) await this.persistMemory();
+    return deleted;
   }
 
   public async updateBlockedUsers(userId: string, blockedUsers: string[]): Promise<string[]> {
@@ -1119,6 +1256,7 @@ export class ChoyStore {
       if (found) {
         found.blockedUsers = clean;
         found.updatedAt = new Date().toISOString();
+        await this.persistMemory();
       }
     }
     return clean;
@@ -1179,6 +1317,7 @@ export class ChoyStore {
       );
     } else {
       this.memPosts.unshift(item);
+      await this.persistMemory();
     }
     return item;
   }
@@ -1194,6 +1333,7 @@ export class ChoyStore {
     const idx = this.memPosts.findIndex((p) => p.id === postId && (isAdmin || p.authorId === requesterId));
     if (idx === -1) return false;
     this.memPosts.splice(idx, 1);
+    await this.persistMemory();
     return true;
   }
 
@@ -1244,6 +1384,7 @@ export class ChoyStore {
       );
     } else {
       this.memMessages.push(item);
+      await this.persistMemory();
     }
     return item;
   }
@@ -1277,6 +1418,7 @@ export class ChoyStore {
     const found = this.memMessages.find((m) => m.id === messageId);
     if (!found || found.reactions.length >= 20) return null;
     found.reactions = [...found.reactions, cleanEmoji];
+    await this.persistMemory();
     return found;
   }
 
@@ -1331,6 +1473,7 @@ export class ChoyStore {
       );
     } else {
       this.memLedger.push(row);
+      await this.persistMemory();
     }
     return row;
   }
@@ -1372,6 +1515,7 @@ export class ChoyStore {
       );
     } else {
       this.memLedger = this.memLedger.map((r) => (r.id === id ? updated : r));
+      await this.persistMemory();
     }
     return updated;
   }
@@ -1401,6 +1545,7 @@ export class ChoyStore {
         oneSack: defs.defOneSack,
         updatedAt: now,
       }));
+      await this.persistMemory();
     }
   }
 
@@ -1412,7 +1557,9 @@ export class ChoyStore {
     }
     const before = this.memLedger.length;
     this.memLedger = this.memLedger.filter((r) => r.id !== id);
-    return this.memLedger.length < before;
+    const deleted = this.memLedger.length < before;
+    if (deleted) await this.persistMemory();
+    return deleted;
   }
 
   // ---- KNOWLEDGE ----
@@ -1446,6 +1593,7 @@ export class ChoyStore {
       ]);
     } else {
       this.memKnowledge.unshift(item);
+      await this.persistMemory();
     }
     return item;
   }
@@ -1458,7 +1606,9 @@ export class ChoyStore {
     }
     const before = this.memKnowledge.length;
     this.memKnowledge = this.memKnowledge.filter((k) => k.id !== id);
-    return this.memKnowledge.length < before;
+    const deleted = this.memKnowledge.length < before;
+    if (deleted) await this.persistMemory();
+    return deleted;
   }
 
   // ---- SETTINGS ----
@@ -1497,6 +1647,7 @@ export class ChoyStore {
       );
     } else {
       this.memSettings = clean;
+      await this.persistMemory();
     }
     return clean;
   }
@@ -1552,6 +1703,7 @@ export class ChoyStore {
       );
     } else {
       this.memNewsfeedConfig = clean;
+      await this.persistMemory();
     }
     return clean;
   }
@@ -1592,6 +1744,7 @@ export class ChoyStore {
 
     if (!this.memVapidKeys) {
       this.memVapidKeys = generator();
+      await this.persistMemory();
     }
     return this.memVapidKeys;
   }
@@ -1632,6 +1785,7 @@ export class ChoyStore {
 
     this.memPushSubs = this.memPushSubs.filter((s) => s.endpoint !== clean.endpoint);
     this.memPushSubs.push(clean);
+    await this.persistMemory();
     return clean;
   }
 
@@ -1644,6 +1798,7 @@ export class ChoyStore {
       return;
     }
     this.memPushSubs = this.memPushSubs.filter((s) => s.endpoint !== cleanEndpoint);
+    await this.persistMemory();
   }
 
   public async listPushSubscriptionsForTarget(
@@ -1731,6 +1886,7 @@ export class ChoyStore {
     }
     this.memLocations = this.memLocations.filter((l) => l.userId !== userId);
     this.memLocations.push({ userId, userName, lat, lng, accuracy, speed, heading, updatedAt: now });
+    await this.persistMemory();
   }
 
   public async getAllLocations(): Promise<
@@ -1858,6 +2014,7 @@ export class ChoyStore {
       createdAt,
     };
     this.memEmojiLinks.unshift(record);
+    await this.persistMemory();
     return record;
   }
 
@@ -1892,6 +2049,7 @@ export class ChoyStore {
       ...item,
       pinnedToAppIcon: item.id === id,
     }));
+    await this.persistMemory();
     return this.memEmojiLinks.find((item) => item.id === id) || null;
   }
 
@@ -1903,7 +2061,9 @@ export class ChoyStore {
     }
     const before = this.memEmojiLinks.length;
     this.memEmojiLinks = this.memEmojiLinks.filter((item) => item.id !== id);
-    return this.memEmojiLinks.length < before;
+    const deleted = this.memEmojiLinks.length < before;
+    if (deleted) await this.persistMemory();
+    return deleted;
   }
 
   public async resolveEmojiLink(emojiCode?: string): Promise<StoredEmojiLink | null> {
@@ -1977,6 +2137,7 @@ export class ChoyStore {
       updatedAt: now,
     };
     this.memStudioNotes.unshift(created);
+    await this.persistMemory();
     return created;
   }
 
@@ -2011,6 +2172,7 @@ export class ChoyStore {
       return updated;
     }
     this.memStudioNotes = this.memStudioNotes.map((n) => (n.id === id ? updated : n));
+    await this.persistMemory();
     return updated;
   }
 
@@ -2022,7 +2184,9 @@ export class ChoyStore {
     }
     const before = this.memStudioNotes.length;
     this.memStudioNotes = this.memStudioNotes.filter((n) => n.id !== id);
-    return this.memStudioNotes.length < before;
+    const deleted = this.memStudioNotes.length < before;
+    if (deleted) await this.persistMemory();
+    return deleted;
   }
 
   public async listEnvVault(): Promise<StoredEnvVaultEntry[]> {
@@ -2091,6 +2255,7 @@ export class ChoyStore {
     } else {
       this.memEnvVault.push(record);
     }
+    await this.persistMemory();
     return record;
   }
 
@@ -2102,7 +2267,9 @@ export class ChoyStore {
     }
     const before = this.memEnvVault.length;
     this.memEnvVault = this.memEnvVault.filter((e) => e.id !== id);
-    return this.memEnvVault.length < before;
+    const deleted = this.memEnvVault.length < before;
+    if (deleted) await this.persistMemory();
+    return deleted;
   }
 
   // ---- NEWSFEED ANNOUNCEMENT SLIDE BANNERS ----
@@ -2165,6 +2332,7 @@ export class ChoyStore {
     }
 
     this.memAnnouncements.unshift(record);
+    await this.persistMemory();
     return record;
   }
 
@@ -2230,6 +2398,7 @@ export class ChoyStore {
       updatedAt: new Date().toISOString(),
     };
     this.memAnnouncements[idx] = next;
+    await this.persistMemory();
     return next;
   }
 
@@ -2243,7 +2412,317 @@ export class ChoyStore {
     }
     const before = this.memAnnouncements.length;
     this.memAnnouncements = this.memAnnouncements.filter((a) => a.id !== cleanId);
-    return this.memAnnouncements.length < before;
+    const deleted = this.memAnnouncements.length < before;
+    if (deleted) await this.persistMemory();
+    return deleted;
+  }
+
+  public async exportCloudBackup(): Promise<{
+    exportedAt: string;
+    users: StoredUser[];
+    settings: StoredPricesSettings;
+    newsfeedConfig: StoredNewsfeedConfig;
+    ledger: StoredLedgerRow[];
+    knowledge: StoredKnowledgeQA[];
+    announcements: StoredAnnouncement[];
+  }> {
+    await this.ready();
+    let users: StoredUser[];
+    if (this.usePostgres && this.pool) {
+      const res = await this.pool.query('SELECT * FROM app_users ORDER BY created_at ASC');
+      users = res.rows.map((r) => this.mapUserRow(r));
+    } else {
+      users = this.memUsers.map((u) => ({
+        ...u,
+        blockedUsers: [...(u.blockedUsers || [])],
+        newsfeed: normalizeUserNewsfeed(u.newsfeed),
+      }));
+    }
+
+    const [settings, newsfeedConfig, ledger, knowledge, announcements] = await Promise.all([
+      this.getSettings(),
+      this.getNewsfeedConfig(),
+      this.listLedger(),
+      this.listKnowledge(),
+      this.listAnnouncements(),
+    ]);
+
+    return {
+      exportedAt: new Date().toISOString(),
+      users,
+      settings,
+      newsfeedConfig,
+      ledger,
+      knowledge,
+      announcements,
+    };
+  }
+
+  public async restoreCloudBackup(input: {
+    users?: Array<Partial<StoredUser>>;
+    settings?: Partial<StoredPricesSettings>;
+    newsfeedConfig?: Partial<StoredNewsfeedConfig>;
+    ledger?: Array<Partial<StoredLedgerRow>>;
+    knowledge?: Array<Partial<StoredKnowledgeQA>>;
+    announcements?: Array<Partial<StoredAnnouncement>>;
+  }): Promise<{
+    restoredUsersCount: number;
+    totalUsersCount: number;
+    restoredLedgerCount: number;
+    restoredKnowledgeCount: number;
+    restoredAnnouncementsCount: number;
+  }> {
+    await this.ready();
+    let restoredUsersCount = 0;
+    let restoredLedgerCount = 0;
+    let restoredKnowledgeCount = 0;
+    let restoredAnnouncementsCount = 0;
+
+    const incomingUsers = Array.isArray(input.users) ? input.users : [];
+    for (const raw of incomingUsers) {
+      if (!raw || typeof raw !== 'object') continue;
+      const id = typeof raw.id === 'string' ? raw.id.trim().slice(0, 128) : '';
+      const name = typeof raw.name === 'string' ? raw.name.trim().slice(0, 100) : '';
+      const phone = typeof raw.phone === 'string' ? normalizePhone(raw.phone).slice(0, 64) : '';
+      const pinHash = typeof raw.pinHash === 'string' ? raw.pinHash.trim().slice(0, 256) : '';
+      if (!id || !name || !phone || pinHash.length < 10 || !pinHash.includes(':')) continue;
+
+      const role: 'admin' | 'member' = raw.role === 'admin' ? 'admin' : 'member';
+      const status: 'pending' | 'approved' = raw.status === 'pending' ? 'pending' : 'approved';
+      const blockedUsers = Array.isArray(raw.blockedUsers)
+        ? raw.blockedUsers
+            .filter((b): b is string => typeof b === 'string' && b.trim().length > 0)
+            .slice(0, 100)
+            .map((b) => b.trim().slice(0, 80))
+        : [];
+      const avatar = sanitizeMediaUrl(raw.avatar);
+      const newsfeed = normalizeUserNewsfeed(raw.newsfeed);
+      const createdAt =
+        typeof raw.createdAt === 'string' && !Number.isNaN(Date.parse(raw.createdAt))
+          ? new Date(raw.createdAt).toISOString()
+          : new Date().toISOString();
+      const updatedAt =
+        typeof raw.updatedAt === 'string' && !Number.isNaN(Date.parse(raw.updatedAt))
+          ? new Date(raw.updatedAt).toISOString()
+          : createdAt;
+
+      if (this.usePostgres && this.pool) {
+        const existingRes = await this.pool.query(
+          'SELECT id FROM app_users WHERE id = $1 OR phone = $2 LIMIT 1',
+          [id, phone]
+        );
+        if (!existingRes.rowCount) {
+          await this.pool.query(
+            `INSERT INTO app_users (id, name, phone, pin_hash, role, status, blocked_users, avatar_url, newsfeed, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10::timestamptz, $11::timestamptz)`,
+            [
+              id,
+              name,
+              phone,
+              pinHash,
+              role,
+              status,
+              JSON.stringify(blockedUsers),
+              avatar ?? null,
+              newsfeed,
+              createdAt,
+              updatedAt,
+            ]
+          );
+          restoredUsersCount += 1;
+        }
+      } else {
+        const exists = this.memUsers.some(
+          (u) => u.id === id || normalizePhone(u.phone) === phone
+        );
+        if (!exists) {
+          this.memUsers.push({
+            id,
+            name,
+            phone,
+            pinHash,
+            role,
+            status,
+            blockedUsers,
+            avatar,
+            newsfeed,
+            createdAt,
+            updatedAt,
+          });
+          restoredUsersCount += 1;
+        }
+      }
+    }
+
+    if (input.newsfeedConfig && typeof input.newsfeedConfig === 'object') {
+      const currentNf = await this.getNewsfeedConfig();
+      const isDefaultNf =
+        currentNf.feedATitle === DEFAULT_NEWSFEED_CONFIG.feedATitle &&
+        currentNf.feedBTitle === DEFAULT_NEWSFEED_CONFIG.feedBTitle &&
+        currentNf.feedCTitle === DEFAULT_NEWSFEED_CONFIG.feedCTitle;
+      if (isDefaultNf) {
+        await this.saveNewsfeedConfig(input.newsfeedConfig);
+      }
+    }
+
+    if (input.settings && typeof input.settings === 'object') {
+      const currentSettings = await this.getSettings();
+      const isDefaultSettings =
+        currentSettings.fiveH === DEFAULT_SETTINGS.fiveH &&
+        currentSettings.bulig === DEFAULT_SETTINGS.bulig &&
+        currentSettings.point5 === DEFAULT_SETTINGS.point5 &&
+        currentSettings.halfSack === DEFAULT_SETTINGS.halfSack &&
+        currentSettings.oneSack === DEFAULT_SETTINGS.oneSack;
+      if (isDefaultSettings) {
+        await this.saveSettings({
+          fiveH: clampNum(input.settings.fiveH ?? currentSettings.fiveH, 0, 1000000),
+          bulig: clampNum(input.settings.bulig ?? currentSettings.bulig, 0, 1000000),
+          point5: clampNum(input.settings.point5 ?? currentSettings.point5, 0, 1000000),
+          halfSack: clampNum(input.settings.halfSack ?? currentSettings.halfSack, 0, 1000000),
+          oneSack: clampNum(input.settings.oneSack ?? currentSettings.oneSack, 0, 1000000),
+          defFiveH: clampNum(input.settings.defFiveH ?? currentSettings.defFiveH, 0, 1000000),
+          defBulig: clampNum(input.settings.defBulig ?? currentSettings.defBulig, 0, 1000000),
+          defPoint5: clampNum(input.settings.defPoint5 ?? currentSettings.defPoint5, 0, 1000000),
+          defHalfSack: clampNum(input.settings.defHalfSack ?? currentSettings.defHalfSack, 0, 1000000),
+          defOneSack: clampNum(input.settings.defOneSack ?? currentSettings.defOneSack, 0, 1000000),
+        });
+      }
+    }
+
+    const incomingLedger = Array.isArray(input.ledger) ? input.ledger : [];
+    for (const rawRow of incomingLedger) {
+      if (!rawRow || typeof rawRow !== 'object') continue;
+      const id = typeof rawRow.id === 'string' ? rawRow.id.trim().slice(0, 128) : '';
+      const name = typeof rawRow.name === 'string' ? rawRow.name.trim().slice(0, 100) : '';
+      if (!id || !name) continue;
+      if (this.usePostgres && this.pool) {
+        const existsRes = await this.pool.query('SELECT id FROM app_ledger WHERE id = $1 LIMIT 1', [id]);
+        if (!existsRes.rowCount) {
+          await this.pool.query(
+            `INSERT INTO app_ledger (id, name, five_h, five_h_type, bulig, point5, half_sack, one_sack, bal)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+            [
+              id,
+              name,
+              clampNum(rawRow.fiveH, -1000000, 1000000),
+              rawRow.fiveHType === 'red' ? 'red' : 'blue',
+              clampNum(rawRow.bulig, -1000000, 1000000),
+              clampNum(rawRow.point5, -1000000, 1000000),
+              clampNum(rawRow.halfSack, -1000000, 1000000),
+              clampNum(rawRow.oneSack, -1000000, 1000000),
+              clampNum(rawRow.bal, -100000000, 100000000),
+            ]
+          );
+          restoredLedgerCount += 1;
+        }
+      } else if (!this.memLedger.some((r) => r.id === id)) {
+        this.memLedger.push({
+          id,
+          name,
+          fiveH: clampNum(rawRow.fiveH, -1000000, 1000000),
+          fiveHType: rawRow.fiveHType === 'red' ? 'red' : 'blue',
+          bulig: clampNum(rawRow.bulig, -1000000, 1000000),
+          point5: clampNum(rawRow.point5, -1000000, 1000000),
+          halfSack: clampNum(rawRow.halfSack, -1000000, 1000000),
+          oneSack: clampNum(rawRow.oneSack, -1000000, 1000000),
+          bal: clampNum(rawRow.bal, -100000000, 100000000),
+          updatedAt:
+            typeof rawRow.updatedAt === 'string' ? rawRow.updatedAt : new Date().toISOString(),
+        });
+        restoredLedgerCount += 1;
+      }
+    }
+
+    const incomingKnowledge = Array.isArray(input.knowledge) ? input.knowledge : [];
+    for (const rawQa of incomingKnowledge) {
+      if (!rawQa || typeof rawQa !== 'object') continue;
+      const id = typeof rawQa.id === 'string' ? rawQa.id.trim().slice(0, 128) : '';
+      const question = typeof rawQa.question === 'string' ? rawQa.question.trim().slice(0, 300) : '';
+      const answer = typeof rawQa.answer === 'string' ? rawQa.answer.trim().slice(0, 2000) : '';
+      if (!id || !question || !answer) continue;
+      if (this.usePostgres && this.pool) {
+        const existsRes = await this.pool.query('SELECT id FROM app_knowledge WHERE id = $1 LIMIT 1', [id]);
+        if (!existsRes.rowCount) {
+          await this.pool.query('INSERT INTO app_knowledge (id, question, answer) VALUES ($1, $2, $3)', [
+            id,
+            question,
+            answer,
+          ]);
+          restoredKnowledgeCount += 1;
+        }
+      } else if (!this.memKnowledge.some((k) => k.id === id)) {
+        this.memKnowledge.push({
+          id,
+          question,
+          answer,
+          createdAt: typeof rawQa.createdAt === 'string' ? rawQa.createdAt : new Date().toISOString(),
+        });
+        restoredKnowledgeCount += 1;
+      }
+    }
+
+    const incomingAnnouncements = Array.isArray(input.announcements) ? input.announcements : [];
+    for (const rawAnn of incomingAnnouncements) {
+      if (!rawAnn || typeof rawAnn !== 'object') continue;
+      const id = typeof rawAnn.id === 'string' ? rawAnn.id.trim().slice(0, 128) : '';
+      const title = typeof rawAnn.title === 'string' ? rawAnn.title.trim().slice(0, 120) : '';
+      const message = typeof rawAnn.message === 'string' ? rawAnn.message.trim().slice(0, 1000) : '';
+      if (!id || !title || !message) continue;
+      const badge = normalizeAnnouncementBadge(rawAnn.badge);
+      const tone = normalizeAnnouncementTone(rawAnn.tone);
+      const target = normalizeAnnouncementTarget(rawAnn.target);
+      const active = rawAnn.active !== false;
+      const createdBy =
+        typeof rawAnn.createdBy === 'string' && rawAnn.createdBy.trim()
+          ? rawAnn.createdBy.trim().slice(0, 80)
+          : 'Admin';
+      const createdAt = typeof rawAnn.createdAt === 'string' ? rawAnn.createdAt : new Date().toISOString();
+      const updatedAt = typeof rawAnn.updatedAt === 'string' ? rawAnn.updatedAt : createdAt;
+
+      if (this.usePostgres && this.pool) {
+        const existsRes = await this.pool.query('SELECT id FROM app_announcements WHERE id = $1 LIMIT 1', [id]);
+        if (!existsRes.rowCount) {
+          await this.pool.query(
+            `INSERT INTO app_announcements (id, title, message, badge, tone, target, active, created_by, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::timestamptz, $10::timestamptz)`,
+            [id, title, message, badge, tone, target, active, createdBy, createdAt, updatedAt]
+          );
+          restoredAnnouncementsCount += 1;
+        }
+      } else if (!this.memAnnouncements.some((a) => a.id === id)) {
+        this.memAnnouncements.push({
+          id,
+          title,
+          message,
+          badge,
+          tone,
+          target,
+          active,
+          createdBy,
+          createdAt,
+          updatedAt,
+        });
+        restoredAnnouncementsCount += 1;
+      }
+    }
+
+    if (!this.usePostgres && (restoredUsersCount > 0 || restoredLedgerCount > 0 || restoredKnowledgeCount > 0 || restoredAnnouncementsCount > 0)) {
+      await this.persistMemory();
+    }
+
+    let totalUsersCount = this.memUsers.length;
+    if (this.usePostgres && this.pool) {
+      const countRes = await this.pool.query('SELECT COUNT(*)::int AS cnt FROM app_users');
+      totalUsersCount = Number(countRes.rows[0]?.cnt || 0);
+    }
+
+    return {
+      restoredUsersCount,
+      totalUsersCount,
+      restoredLedgerCount,
+      restoredKnowledgeCount,
+      restoredAnnouncementsCount,
+    };
   }
 
   private mapUserRow(r: Record<string, unknown>): StoredUser {

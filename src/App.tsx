@@ -90,6 +90,16 @@ import {
   renderAppIconWithEmojiFile,
   shareEmojiLinkWithAppImage,
 } from './utils/emojiLinkShare';
+import type { User as FirebaseUser } from './firebase';
+import {
+  connectFirebaseGoogleAdmin,
+  disconnectFirebaseGoogle,
+  fetchSnapshotFromFirestore,
+  isVerifiedAdminFirebaseUser,
+  subscribeFirebaseAuth,
+  syncSnapshotToFirestore,
+  type CloudBackupSnapshot,
+} from './services/firebaseCloudSync';
 
 type SelectableNewsfeed = 'feed_a' | 'feed_b' | 'feed_c' | 'feed_bc';
 type PostNewsfeed = SelectableNewsfeed | 'both';
@@ -440,6 +450,12 @@ export default function App() {
   const [showDashboardPermissionModal, setShowDashboardPermissionModal] = useState(false);
   const [permAttemptedOnce, setPermAttemptedOnce] = useState(false);
   const initialGpsRef = useRef<{ lat: number; lng: number; accuracy?: number } | null>(null);
+
+  const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(null);
+  const [firebaseSyncState, setFirebaseSyncState] = useState<'idle' | 'syncing' | 'synced' | 'error'>('idle');
+  const [firebaseLastSyncedAt, setFirebaseLastSyncedAt] = useState<string | null>(null);
+  const [firebaseSyncError, setFirebaseSyncError] = useState('');
+  const firebaseInitialSyncUidRef = useRef<string | null>(null);
 
   const isAdmin = currentUser?.role === 'admin';
 
@@ -1700,6 +1716,146 @@ export default function App() {
       document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
     };
   }, [authToken, fetchSyncedState]);
+
+  // 2b. Firebase Cloud Sync & Auto-Backup / Auto-Restore (Admin Google Session)
+  useEffect(() => {
+    const unsub = subscribeFirebaseAuth((user) => {
+      setFirebaseUser(user);
+      if (!user) {
+        firebaseInitialSyncUidRef.current = null;
+        setFirebaseSyncState('idle');
+        setFirebaseSyncError('');
+      }
+    });
+    return unsub;
+  }, []);
+
+  const pushBackupToFirebase = useCallback(
+    async (silent = true) => {
+      if (!isAdmin || !authToken || !isVerifiedAdminFirebaseUser(firebaseUser)) return;
+      setFirebaseSyncState('syncing');
+      setFirebaseSyncError('');
+      try {
+        const snapshot = (await apiFetch('/api/admin/cloud-backup')) as CloudBackupSnapshot;
+        const result = await syncSnapshotToFirestore(snapshot);
+        setFirebaseSyncState('synced');
+        setFirebaseLastSyncedAt(new Date().toISOString());
+        if (!silent) {
+          showNotice(`Synced ${result.accountsSynced} user account(s) to Firebase Cloud!`);
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Firebase sync failed';
+        setFirebaseSyncState('error');
+        setFirebaseSyncError(msg);
+        if (!silent) showNotice(msg);
+      }
+    },
+    [isAdmin, authToken, firebaseUser, apiFetch]
+  );
+
+  const restoreBackupFromFirebase = useCallback(
+    async (silent = true) => {
+      if (!isAdmin || !authToken || !isVerifiedAdminFirebaseUser(firebaseUser)) return;
+      setFirebaseSyncState('syncing');
+      setFirebaseSyncError('');
+      try {
+        const cloudData = await fetchSnapshotFromFirestore();
+        const result = (await apiFetch('/api/admin/cloud-restore', {
+          method: 'POST',
+          body: JSON.stringify(cloudData),
+        })) as {
+          restoredUsersCount: number;
+          totalUsersCount: number;
+          restoredLedgerCount: number;
+          restoredKnowledgeCount: number;
+          restoredAnnouncementsCount: number;
+        };
+        if (
+          result.restoredUsersCount > 0 ||
+          result.restoredLedgerCount > 0 ||
+          result.restoredKnowledgeCount > 0 ||
+          result.restoredAnnouncementsCount > 0
+        ) {
+          await fetchSyncedState(true);
+          showNotice(
+            `Restored ${result.restoredUsersCount} user account(s) from Firebase Cloud!`
+          );
+        } else if (!silent) {
+          showNotice(`Firebase Cloud checked — all ${result.totalUsersCount} user accounts are already up to date.`);
+        }
+        setFirebaseSyncState('synced');
+        setFirebaseLastSyncedAt(new Date().toISOString());
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Firebase restore failed';
+        setFirebaseSyncState('error');
+        setFirebaseSyncError(msg);
+        if (!silent) showNotice(msg);
+      }
+    },
+    [isAdmin, authToken, firebaseUser, apiFetch, fetchSyncedState]
+  );
+
+  const handleConnectFirebaseAdmin = useCallback(async () => {
+    setFirebaseSyncError('');
+    try {
+      const user = await connectFirebaseGoogleAdmin();
+      setFirebaseUser(user);
+      if (!isVerifiedAdminFirebaseUser(user)) {
+        setFirebaseSyncState('error');
+        const msg = `Connected ${user.email || 'account'}, but Admin email (choyjiez07@gmail.com) is required for Firebase Cloud Sync.`;
+        setFirebaseSyncError(msg);
+        showNotice(msg);
+        return;
+      }
+      showNotice(`Connected Firebase Cloud (${user.email})!`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Google sign-in failed';
+      setFirebaseSyncState('error');
+      setFirebaseSyncError(msg);
+      showNotice(msg);
+    }
+  }, []);
+
+  const handleDisconnectFirebaseAdmin = useCallback(async () => {
+    await disconnectFirebaseGoogle();
+    setFirebaseUser(null);
+    firebaseInitialSyncUidRef.current = null;
+    setFirebaseSyncState('idle');
+    setFirebaseSyncError('');
+    showNotice('Disconnected Firebase Cloud Sync.');
+  }, []);
+
+  useEffect(() => {
+    if (!isAdmin || !authToken || !isVerifiedAdminFirebaseUser(firebaseUser) || !firebaseUser) return;
+    if (firebaseInitialSyncUidRef.current === `${currentUser?.id}:${firebaseUser.uid}`) return;
+    firebaseInitialSyncUidRef.current = `${currentUser?.id}:${firebaseUser.uid}`;
+    void (async () => {
+      await restoreBackupFromFirebase(true);
+      await pushBackupToFirebase(true);
+    })();
+  }, [isAdmin, authToken, currentUser?.id, firebaseUser, restoreBackupFromFirebase, pushBackupToFirebase]);
+
+  useEffect(() => {
+    if (!isAdmin || !authToken || !isVerifiedAdminFirebaseUser(firebaseUser)) return;
+    if (!firebaseInitialSyncUidRef.current) return;
+    const timer = window.setTimeout(() => {
+      void pushBackupToFirebase(true);
+    }, 2500);
+    return () => window.clearTimeout(timer);
+  }, [
+    isAdmin,
+    authToken,
+    firebaseUser,
+    usersList.length,
+    ledgerRows.length,
+    knowledgeBase.length,
+    announcements.length,
+    newsfeedConfig.feedATitle,
+    newsfeedConfig.feedBTitle,
+    newsfeedConfig.feedCTitle,
+    securitySyncTick,
+    pushBackupToFirebase,
+  ]);
 
   // Dedicated RTC Signal Polling Fallback (1.2s idle / 0.5s during active call) so calls ALWAYS ring even if SSE is buffered
   useEffect(() => {
@@ -8710,6 +8866,16 @@ export default function App() {
               onConsumeInitialModule={() => setSecurityInitialModule('home')}
               adminNewsfeedFilter={adminNewsfeedFilter}
               onAdminNewsfeedFilterChange={setAdminNewsfeedFilter}
+              firebaseConnectedEmail={firebaseUser?.email || null}
+              firebaseIsAdminVerified={isVerifiedAdminFirebaseUser(firebaseUser)}
+              firebaseSyncState={firebaseSyncState}
+              firebaseLastSyncedAt={firebaseLastSyncedAt}
+              firebaseSyncError={firebaseSyncError}
+              onConnectFirebase={handleConnectFirebaseAdmin}
+              onDisconnectFirebase={handleDisconnectFirebaseAdmin}
+              onBackupToFirebase={() => pushBackupToFirebase(false)}
+              onRestoreFromFirebase={() => restoreBackupFromFirebase(false)}
+              onCloudStateRestored={() => fetchSyncedState(true)}
             />
           )}
 

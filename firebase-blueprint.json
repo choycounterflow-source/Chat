@@ -138,6 +138,90 @@
         "createdAt": { "type": "string", "format": "date-time" }
       },
       "required": ["uid", "createdAt"]
+    },
+    "CloudAccount": {
+      "title": "CloudAccount",
+      "description": "Admin-only cloud-synced user account vault record for Phone+PIN persistence across restarts.",
+      "type": "object",
+      "properties": {
+        "accountId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "phone": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "pinHash": { "type": "string", "minLength": 10, "maxLength": 256 },
+        "role": { "type": "string", "enum": ["admin", "member"] },
+        "status": { "type": "string", "enum": ["pending", "approved"] },
+        "blockedUsers": { "type": "array", "description": "List of blocked user display names (max 100)." },
+        "avatar": { "type": "string", "maxLength": 200000 },
+        "newsfeed": { "type": "string", "enum": ["feed_a", "feed_b", "feed_c", "feed_bc"] },
+        "accountCreatedAt": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "accountUpdatedAt": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "updatedBy": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "accountId",
+        "name",
+        "phone",
+        "pinHash",
+        "role",
+        "status",
+        "blockedUsers",
+        "newsfeed",
+        "accountCreatedAt",
+        "accountUpdatedAt",
+        "updatedBy",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "CloudNewsfeedConfig": {
+      "title": "CloudNewsfeedConfig",
+      "description": "Admin-only synced custom Newsfeed A/B/C titles.",
+      "type": "object",
+      "properties": {
+        "feedATitle": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "feedBTitle": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "feedCTitle": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "updatedBy": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["feedATitle", "feedBTitle", "feedCTitle", "updatedBy", "updatedAt"]
+    },
+    "CloudAnnouncement": {
+      "title": "CloudAnnouncement",
+      "description": "Admin-only synced announcement slide backup.",
+      "type": "object",
+      "properties": {
+        "annId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "message": { "type": "string", "minLength": 1, "maxLength": 1000 },
+        "badge": { "type": "string", "enum": ["announcement", "reminder", "urgent"] },
+        "tone": { "type": "string", "enum": ["emerald", "amber", "sky", "rose"] },
+        "target": { "type": "string", "enum": ["all", "feed_a", "feed_b", "feed_c", "feed_bc"] },
+        "active": { "type": "boolean" },
+        "createdBy": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "annCreatedAt": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "annUpdatedAt": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "updatedBy": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "annId",
+        "title",
+        "message",
+        "badge",
+        "tone",
+        "target",
+        "active",
+        "createdBy",
+        "annCreatedAt",
+        "annUpdatedAt",
+        "updatedBy",
+        "createdAt",
+        "updatedAt"
+      ]
     }
   },
   "firestore": {
@@ -176,6 +260,18 @@
     "/admins/{userId}": {
       "schema": { "$ref": "#/entities/AdminRecord" },
       "description": "Admin role registry."
+    },
+    "/cloud_accounts/{accountId}": {
+      "schema": { "$ref": "#/entities/CloudAccount" },
+      "description": "Admin-only cloud backup of Phone+PIN user accounts."
+    },
+    "/cloud_newsfeed_config/{docId}": {
+      "schema": { "$ref": "#/entities/CloudNewsfeedConfig" },
+      "description": "Admin-only cloud backup of Newsfeed A/B/C titles."
+    },
+    "/cloud_announcements/{annId}": {
+      "schema": { "$ref": "#/entities/CloudAnnouncement" },
+      "description": "Admin-only cloud backup of announcements."
     }
   }
 }

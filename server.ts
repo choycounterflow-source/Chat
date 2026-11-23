@@ -1831,6 +1831,41 @@ app.delete('/api/choy/users/:id', requireAuth, requireAdmin, async (req: AuthedR
   }
 });
 
+app.get('/api/admin/cloud-backup', requireAuth, requireAdmin, async (_req: AuthedRequest, res: Response) => {
+  try {
+    const snapshot = await store.exportCloudBackup();
+    return res.json(snapshot);
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to export backup' });
+  }
+});
+
+app.post('/api/admin/cloud-restore', requireAuth, requireAdmin, async (req: AuthedRequest, res: Response) => {
+  try {
+    const payload = req.body && typeof req.body === 'object' ? req.body : {};
+    const result = await store.restoreCloudBackup({
+      users: Array.isArray(payload.users) ? payload.users : undefined,
+      settings: payload.settings && typeof payload.settings === 'object' ? payload.settings : undefined,
+      newsfeedConfig:
+        payload.newsfeedConfig && typeof payload.newsfeedConfig === 'object' ? payload.newsfeedConfig : undefined,
+      ledger: Array.isArray(payload.ledger) ? payload.ledger : undefined,
+      knowledge: Array.isArray(payload.knowledge) ? payload.knowledge : undefined,
+      announcements: Array.isArray(payload.announcements) ? payload.announcements : undefined,
+    });
+    if (
+      result.restoredUsersCount > 0 ||
+      result.restoredLedgerCount > 0 ||
+      result.restoredKnowledgeCount > 0 ||
+      result.restoredAnnouncementsCount > 0
+    ) {
+      broadcastSync('all');
+    }
+    return res.json(result);
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to restore backup' });
+  }
+});
+
 // Initialize GoogleGenAI client server-side
 const ai = new GoogleGenAI({
   apiKey: process.env.GEMINI_API_KEY || '',

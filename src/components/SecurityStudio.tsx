@@ -43,7 +43,8 @@ import {
   ChevronLeft,
   ChevronRight,
   Pencil,
-  LocateFixed
+  LocateFixed,
+  Upload
 } from 'lucide-react';
 import { LiveGpsMap, type LiveGpsUserLocation } from './LiveGpsMap';
 import {
@@ -120,6 +121,16 @@ interface SecurityStudioProps {
   onConsumeInitialModule?: () => void;
   adminNewsfeedFilter?: 'all' | StudioNewsfeedChannel;
   onAdminNewsfeedFilterChange?: (val: 'all' | StudioNewsfeedChannel) => void;
+  firebaseConnectedEmail?: string | null;
+  firebaseIsAdminVerified?: boolean;
+  firebaseSyncState?: 'idle' | 'syncing' | 'synced' | 'error';
+  firebaseLastSyncedAt?: string | null;
+  firebaseSyncError?: string;
+  onConnectFirebase?: () => Promise<void> | void;
+  onDisconnectFirebase?: () => Promise<void> | void;
+  onBackupToFirebase?: () => Promise<void> | void;
+  onRestoreFromFirebase?: () => Promise<void> | void;
+  onCloudStateRestored?: () => Promise<void> | void;
 }
 
 interface StudioNoteEntry {
@@ -248,6 +259,16 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
   onConsumeInitialModule,
   adminNewsfeedFilter = 'all',
   onAdminNewsfeedFilterChange,
+  firebaseConnectedEmail = null,
+  firebaseIsAdminVerified = false,
+  firebaseSyncState = 'idle',
+  firebaseLastSyncedAt = null,
+  firebaseSyncError = '',
+  onConnectFirebase,
+  onDisconnectFirebase,
+  onBackupToFirebase,
+  onRestoreFromFirebase,
+  onCloudStateRestored,
 }) => {
   // 1. Direct Admin Links
   const [adminLinks, setAdminLinks] = useState(() => {
@@ -366,6 +387,9 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
   const [newUserPhone, setNewUserPhone] = useState('');
   const [newUserPin, setNewUserPin] = useState('');
   const [confirmDeleteUserId, setConfirmDeleteUserId] = useState<string | null>(null);
+  const [jsonBackupMsg, setJsonBackupMsg] = useState('');
+  const [isImportingJsonBackup, setIsImportingJsonBackup] = useState(false);
+  const importJsonInputRef = React.useRef<HTMLInputElement>(null);
 
   // 6. GPS Tracker state
   const [gpsLocations, setGpsLocations] = useState<LiveGpsUserLocation[]>([]);
@@ -1494,6 +1518,186 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
     link.click();
     document.body.removeChild(link);
   };
+
+  const handleDownloadJsonBackup = async () => {
+    if (!authToken) return;
+    setJsonBackupMsg('');
+    try {
+      const res = await fetch('/api/admin/cloud-backup', {
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to export backup');
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `choychat_backup_${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      setJsonBackupMsg(`Downloaded backup (${Array.isArray(data.users) ? data.users.length : 0} accounts).`);
+    } catch (err) {
+      setJsonBackupMsg(err instanceof Error ? err.message : 'Backup download failed.');
+    }
+  };
+
+  const handleImportJsonBackupFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file || !authToken) return;
+    setIsImportingJsonBackup(true);
+    setJsonBackupMsg('');
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text);
+      const res = await fetch('/api/admin/cloud-restore', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`,
+        },
+        body: JSON.stringify(parsed),
+      });
+      const result = await res.json();
+      if (!res.ok) throw new Error(result.error || 'Failed to restore backup');
+      await onCloudStateRestored?.();
+      setJsonBackupMsg(
+        `Restored ${result.restoredUsersCount ?? 0} account(s) (Total: ${result.totalUsersCount ?? usersList.length}).`
+      );
+    } catch (err) {
+      setJsonBackupMsg(err instanceof Error ? err.message : 'Invalid backup JSON file.');
+    } finally {
+      setIsImportingJsonBackup(false);
+    }
+  };
+
+  const renderFirebaseCloudSyncCard = () => (
+    <div className="p-4 rounded-xl bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700/80 space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <Cloud className="w-4 h-4 text-emerald-700 dark:text-emerald-300" />
+          <div>
+            <div className="text-xs font-bold text-emerald-950 dark:text-white">
+              Firebase Cloud Account Vault &amp; Auto-Backup
+            </div>
+            <div className="text-[11px] text-emerald-700 dark:text-emerald-300">
+              {firebaseConnectedEmail
+                ? firebaseIsAdminVerified
+                  ? `Connected: ${firebaseConnectedEmail} · Auto-syncs accounts to Firestore`
+                  : `Connected (${firebaseConnectedEmail}) — requires choyjiez07@gmail.com`
+                : 'Connect Google (choyjiez07@gmail.com) so accounts never get lost across server resets.'}
+            </div>
+          </div>
+        </div>
+        <span
+          className={`px-2 py-0.5 rounded-lg text-[10px] font-bold uppercase ${
+            firebaseSyncState === 'synced'
+              ? 'bg-emerald-400/25 text-emerald-800 dark:text-emerald-200 border border-emerald-400/40'
+              : firebaseSyncState === 'syncing'
+              ? 'bg-sky-400/25 text-sky-800 dark:text-sky-200 border border-sky-400/40'
+              : firebaseSyncState === 'error'
+              ? 'bg-rose-400/25 text-rose-800 dark:text-rose-200 border border-rose-400/40'
+              : 'bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300'
+          }`}
+        >
+          {firebaseSyncState === 'synced'
+            ? 'Synced'
+            : firebaseSyncState === 'syncing'
+            ? 'Syncing...'
+            : firebaseSyncState === 'error'
+            ? 'Sync Issue'
+            : 'Not Connected'}
+        </span>
+      </div>
+
+      {firebaseSyncError && (
+        <div className="p-2 rounded-lg bg-rose-50 dark:bg-rose-950/60 border border-rose-300 dark:border-rose-700/70 text-[11px] text-rose-800 dark:text-rose-200 break-words">
+          {firebaseSyncError}
+        </div>
+      )}
+
+      {firebaseLastSyncedAt && (
+        <div className="text-[10px] font-mono text-emerald-700 dark:text-emerald-300">
+          Last Firebase sync: {new Date(firebaseLastSyncedAt).toLocaleString()}
+        </div>
+      )}
+
+      <div className="flex flex-wrap items-center gap-2 text-xs">
+        {!firebaseConnectedEmail || !firebaseIsAdminVerified ? (
+          <button
+            type="button"
+            onClick={() => onConnectFirebase?.()}
+            className="px-3 py-1.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold inline-flex items-center gap-1.5 shadow-sm transition"
+          >
+            <Cloud className="w-3.5 h-3.5" />
+            <span>Connect Google Cloud Sync</span>
+          </button>
+        ) : (
+          <>
+            <button
+              type="button"
+              disabled={firebaseSyncState === 'syncing'}
+              onClick={() => onBackupToFirebase?.()}
+              className="px-3 py-1.5 rounded-xl bg-emerald-400 hover:bg-emerald-300 text-slate-950 font-bold inline-flex items-center gap-1.5 transition disabled:opacity-50"
+            >
+              <Save className="w-3.5 h-3.5" />
+              <span>Backup Now to Firebase</span>
+            </button>
+            <button
+              type="button"
+              disabled={firebaseSyncState === 'syncing'}
+              onClick={() => onRestoreFromFirebase?.()}
+              className="px-3 py-1.5 rounded-xl bg-white dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 text-emerald-900 dark:text-emerald-100 font-bold inline-flex items-center gap-1.5 hover:bg-emerald-100 dark:hover:bg-emerald-800 transition disabled:opacity-50"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+              <span>Restore from Firebase</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => onDisconnectFirebase?.()}
+              className="px-2.5 py-1.5 rounded-xl border border-emerald-300 dark:border-emerald-700 text-emerald-700 dark:text-emerald-300 text-[11px] font-semibold hover:bg-emerald-100 dark:hover:bg-emerald-900 transition"
+            >
+              Disconnect
+            </button>
+          </>
+        )}
+
+        <button
+          type="button"
+          onClick={handleDownloadJsonBackup}
+          className="px-3 py-1.5 rounded-xl bg-white dark:bg-slate-900 border border-emerald-300 dark:border-emerald-700 text-emerald-900 dark:text-emerald-100 font-semibold inline-flex items-center gap-1.5 hover:bg-emerald-100 dark:hover:bg-slate-800 transition"
+        >
+          <Download className="w-3.5 h-3.5" />
+          <span>Save JSON Backup</span>
+        </button>
+
+        <button
+          type="button"
+          disabled={isImportingJsonBackup}
+          onClick={() => importJsonInputRef.current?.click()}
+          className="px-3 py-1.5 rounded-xl bg-white dark:bg-slate-900 border border-emerald-300 dark:border-emerald-700 text-emerald-900 dark:text-emerald-100 font-semibold inline-flex items-center gap-1.5 hover:bg-emerald-100 dark:hover:bg-slate-800 transition disabled:opacity-50"
+        >
+          <Upload className="w-3.5 h-3.5" />
+          <span>{isImportingJsonBackup ? 'Importing...' : 'Import JSON Backup'}</span>
+        </button>
+        <input
+          ref={importJsonInputRef}
+          type="file"
+          accept="application/json,.json"
+          onChange={handleImportJsonBackupFile}
+          className="hidden"
+        />
+      </div>
+
+      {jsonBackupMsg && (
+        <div className="text-[11px] font-semibold text-emerald-800 dark:text-emerald-200">
+          {jsonBackupMsg}
+        </div>
+      )}
+    </div>
+  );
 
   const formatBytes = (bytes: number) => {
     if (!bytes) return '0 KB';
@@ -3175,10 +3379,10 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
                 {supabaseStorageProfile.quotaGb} GB Free · {supabaseStorageProfile.dbQuotaMb} MB DB
               </span>
             </div>
-            <div className="text-[11px] font-mono text-emerald-300/90 tabular-nums">
+            <div className="text-[11px] font-mono text-emerald-700 dark:text-emerald-300/90 tabular-nums">
               <span>Status: {mediaStorageMode === 'supabase' ? 'Supabase Storage Connected' : 'Inline Fallback'}</span>
               <span aria-hidden="true"> · </span>
-              <span>DB: {storageMode === 'postgres' ? 'PostgreSQL Live' : 'Memory'}</span>
+              <span>DB: {storageMode === 'postgres' ? 'PostgreSQL Live' : 'Local Disk + Firebase Ready'}</span>
             </div>
             <div className="w-full h-2.5 bg-white dark:bg-slate-900 rounded-full overflow-hidden border border-emerald-200 dark:border-emerald-800">
               <div
@@ -3271,6 +3475,7 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
             </button>
           </div>
         </div>
+        {renderFirebaseCloudSyncCard()}
       </div>
       )}
 
@@ -4161,6 +4366,8 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
             </button>
           </div>
         </div>
+
+        {renderFirebaseCloudSyncCard()}
 
         <form
           onSubmit={(e) => {
