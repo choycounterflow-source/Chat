@@ -80,6 +80,9 @@ import {
   shareEmojiLinkWithAppImage,
 } from './utils/emojiLinkShare';
 
+type SelectableNewsfeed = 'feed_a' | 'feed_b' | 'feed_c' | 'feed_bc';
+type PostNewsfeed = SelectableNewsfeed | 'both';
+
 interface CurrentUser {
   id: string;
   name: string;
@@ -88,7 +91,7 @@ interface CurrentUser {
   status: 'pending' | 'approved';
   blockedUsers: string[];
   avatar?: string;
-  newsfeed?: 'feed_a' | 'feed_b' | 'both';
+  newsfeed?: SelectableNewsfeed;
 }
 
 interface UserAccount {
@@ -98,7 +101,7 @@ interface UserAccount {
   role?: 'admin' | 'member';
   status: 'pending' | 'approved';
   avatar?: string;
-  newsfeed?: 'feed_a' | 'feed_b' | 'both';
+  newsfeed?: SelectableNewsfeed;
   loginDate: string;
 }
 
@@ -109,7 +112,7 @@ interface ViewedProfile {
   phone?: string;
   loginDate?: string;
   avatar: string;
-  newsfeed?: 'feed_a' | 'feed_b' | 'both';
+  newsfeed?: SelectableNewsfeed;
   isSelf: boolean;
 }
 
@@ -122,7 +125,7 @@ interface Post {
   mediaType?: 'text' | 'image' | 'video';
   timestamp: string;
   category: 'feed' | 'myday' | 'video';
-  newsfeed?: 'feed_a' | 'feed_b' | 'both';
+  newsfeed?: PostNewsfeed;
 }
 
 interface Message {
@@ -226,7 +229,32 @@ interface RtcSignalPayload {
 }
 
 const DEFAULT_AVATAR = '/assets/aistudio/image_20261121_145253_f477cbfa.webp';
-const CHAT_ROOMS = ['VIP Group', 'Choy Admin', 'Maria Santos'] as const;
+const CHAT_ROOMS = ['VIP Group', 'Choy Admin'] as const;
+
+function getChannelsForNewsfeedClient(nf?: string): Set<'a' | 'b' | 'c'> {
+  const v = (nf || '').trim().toLowerCase();
+  if (v === 'feed_b') return new Set(['b']);
+  if (v === 'feed_c') return new Set(['c']);
+  if (v === 'feed_bc') return new Set(['b', 'c']);
+  if (v === 'both') return new Set(['a', 'b', 'c']);
+  return new Set(['a']);
+}
+
+function canClientUserSeeCandidate(
+  viewer: { id: string; role: 'admin' | 'member'; newsfeed?: string } | null,
+  candidate: { id: string; role?: 'admin' | 'member'; newsfeed?: string }
+): boolean {
+  if (!viewer) return false;
+  if (viewer.role === 'admin') return true;
+  if (candidate.id === viewer.id) return true;
+  if (candidate.role === 'admin') return true;
+  const vSet = getChannelsForNewsfeedClient(viewer.newsfeed);
+  const cSet = getChannelsForNewsfeedClient(candidate.newsfeed);
+  for (const ch of vSet) {
+    if (cSet.has(ch)) return true;
+  }
+  return false;
+}
 
 const RTC_ICE_CONFIG: RTCConfiguration = {
   iceServers: [
@@ -496,14 +524,16 @@ export default function App() {
   const [newPostMediaName, setNewPostMediaName] = useState('');
   const [newPostType, setNewPostType] = useState<'text' | 'image' | 'video'>('text');
   const [newPostCategory, setNewPostCategory] = useState<'feed' | 'myday' | 'video'>('feed');
-  const [newPostNewsfeed, setNewPostNewsfeed] = useState<'feed_a' | 'feed_b' | 'both'>('both');
-  const [newsfeedConfig, setNewsfeedConfig] = useState<{ feedATitle: string; feedBTitle: string }>(() => ({
+  const [newPostNewsfeed, setNewPostNewsfeed] = useState<SelectableNewsfeed>('feed_a');
+  const [newsfeedConfig, setNewsfeedConfig] = useState<{ feedATitle: string; feedBTitle: string; feedCTitle: string }>(() => ({
     feedATitle: localStorage.getItem('choychat_nf_a_title') || 'Newsfeed A',
     feedBTitle: localStorage.getItem('choychat_nf_b_title') || 'Newsfeed B',
+    feedCTitle: localStorage.getItem('choychat_nf_c_title') || 'Newsfeed C',
   }));
-  const [adminNewsfeedFilter, setAdminNewsfeedFilter] = useState<'all' | 'feed_a' | 'feed_b'>('all');
+  const [adminNewsfeedFilter, setAdminNewsfeedFilter] = useState<'all' | SelectableNewsfeed>('all');
   const [adminNfTitleA, setAdminNfTitleA] = useState(() => localStorage.getItem('choychat_nf_a_title') || 'Newsfeed A');
   const [adminNfTitleB, setAdminNfTitleB] = useState(() => localStorage.getItem('choychat_nf_b_title') || 'Newsfeed B');
+  const [adminNfTitleC, setAdminNfTitleC] = useState(() => localStorage.getItem('choychat_nf_c_title') || 'Newsfeed C');
   const [savingAdminNfTitles, setSavingAdminNfTitles] = useState(false);
   const [adminNfSaved, setAdminNfSaved] = useState(false);
   const [adminNfUserSearch, setAdminNfUserSearch] = useState('');
@@ -512,6 +542,7 @@ export default function App() {
   useEffect(() => {
     setAdminNfTitleA(newsfeedConfig.feedATitle);
     setAdminNfTitleB(newsfeedConfig.feedBTitle);
+    setAdminNfTitleC(newsfeedConfig.feedCTitle);
   }, [newsfeedConfig]);
   const postFileInputRef = useRef<HTMLInputElement>(null);
 
@@ -1175,7 +1206,9 @@ export default function App() {
         phone: safePhone,
         loginDate: matched?.loginDate || target.loginDate || 'Active recently',
         avatar: resolvedAvatar,
-        newsfeed: isSelf ? currentUser?.newsfeed || matched?.newsfeed || 'both' : matched?.newsfeed || 'both',
+        newsfeed: (isSelf
+          ? currentUser?.newsfeed || matched?.newsfeed || 'feed_a'
+          : matched?.newsfeed || 'feed_a') as SelectableNewsfeed,
         isSelf
       });
     },
@@ -1321,10 +1354,15 @@ export default function App() {
             mediaType: (p.mediaType as 'text' | 'image' | 'video') || 'text',
             timestamp: formatIsoTime(typeof p.createdAt === 'string' ? p.createdAt : undefined),
             category: (p.category as 'feed' | 'myday' | 'video') || 'feed',
-            newsfeed:
-              p.newsfeed === 'feed_a' || p.newsfeed === 'feed_b' || p.newsfeed === 'both'
+            newsfeed: (
+              p.newsfeed === 'feed_a' ||
+              p.newsfeed === 'feed_b' ||
+              p.newsfeed === 'feed_c' ||
+              p.newsfeed === 'feed_bc' ||
+              p.newsfeed === 'both'
                 ? p.newsfeed
-                : 'both',
+                : 'feed_a'
+            ) as PostNewsfeed,
           }))
         );
       }
@@ -1402,10 +1440,12 @@ export default function App() {
         const nextCfg = {
           feedATitle: String(data.newsfeedConfig.feedATitle || '').trim() || 'Newsfeed A',
           feedBTitle: String(data.newsfeedConfig.feedBTitle || '').trim() || 'Newsfeed B',
+          feedCTitle: String(data.newsfeedConfig.feedCTitle || '').trim() || 'Newsfeed C',
         };
         setNewsfeedConfig(nextCfg);
         localStorage.setItem('choychat_nf_a_title', nextCfg.feedATitle);
         localStorage.setItem('choychat_nf_b_title', nextCfg.feedBTitle);
+        localStorage.setItem('choychat_nf_c_title', nextCfg.feedCTitle);
       }
       if (Array.isArray(data.ledger)) {
         setLedgerRows(data.ledger);
@@ -1923,6 +1963,8 @@ export default function App() {
     };
   }, [authToken, currentUser, apiFetch, fetchSyncedState]);
 
+  const visibleUsersList = usersList.filter((u) => canClientUserSeeCandidate(currentUser, u));
+
   const messages = [...cloudMessages, ...localMessages, ...queuedMessagesForUi].sort(
     (a, b) => a.createdAtMs - b.createdAtMs
   );
@@ -1930,11 +1972,19 @@ export default function App() {
     const seen = new Set<string>();
     const rooms: string[] = [];
     const meLower = (currentUser?.name || '').trim().toLowerCase();
+    const visibleNameSet = new Set(visibleUsersList.map((u) => u.name.trim().toLowerCase()));
+    const isAllowedRoom = (name: string) => {
+      const lower = name.trim().toLowerCase();
+      if (isAdmin) return true;
+      if (lower === 'vip group' || lower === 'choy admin') return true;
+      return visibleNameSet.has(lower);
+    };
     const addRoom = (name?: string, allowSelf = false) => {
       const clean = (name || '').trim();
       if (!clean) return;
       const lower = clean.toLowerCase();
       if (!allowSelf && meLower && lower === meLower) return;
+      if (!isAllowedRoom(clean)) return;
       if (seen.has(lower)) return;
       seen.add(lower);
       rooms.push(clean);
@@ -1943,7 +1993,7 @@ export default function App() {
     addRoom('VIP Group', true);
     if (activeChat) addRoom(activeChat, true);
     pinnedChatRooms.forEach((r) => addRoom(r, true));
-    usersList.forEach((u) => addRoom(u.name));
+    visibleUsersList.forEach((u) => addRoom(u.name));
     CHAT_ROOMS.forEach((r) => addRoom(r));
     messages.forEach((m) => {
       const recv = (m.receiver || '').trim();
@@ -3216,7 +3266,7 @@ export default function App() {
     }
   };
 
-  const handleUpdateUserNewsfeed = async (userId: string, newsfeed: 'feed_a' | 'feed_b' | 'both') => {
+  const handleUpdateUserNewsfeed = async (userId: string, newsfeed: SelectableNewsfeed) => {
     try {
       const res = await fetch(`/api/admin/users/${userId}/newsfeed`, {
         method: 'PATCH',
@@ -3249,17 +3299,20 @@ export default function App() {
     e.preventDefault();
     const cleanA = adminNfTitleA.trim() || 'Newsfeed A';
     const cleanB = adminNfTitleB.trim() || 'Newsfeed B';
+    const cleanC = adminNfTitleC.trim() || 'Newsfeed C';
     setAdminNfTitleA(cleanA);
     setAdminNfTitleB(cleanB);
+    setAdminNfTitleC(cleanC);
     localStorage.setItem('choychat_nf_a_title', cleanA);
     localStorage.setItem('choychat_nf_b_title', cleanB);
+    localStorage.setItem('choychat_nf_c_title', cleanC);
     setSavingAdminNfTitles(true);
     try {
       const data = await apiFetch('/api/admin/newsfeed-config', {
         method: 'PUT',
-        body: JSON.stringify({ feedATitle: cleanA, feedBTitle: cleanB }),
+        body: JSON.stringify({ feedATitle: cleanA, feedBTitle: cleanB, feedCTitle: cleanC }),
       });
-      const saved = data.newsfeedConfig || { feedATitle: cleanA, feedBTitle: cleanB };
+      const saved = data.newsfeedConfig || { feedATitle: cleanA, feedBTitle: cleanB, feedCTitle: cleanC };
       setNewsfeedConfig(saved);
       setAdminNfSaved(true);
       setTimeout(() => setAdminNfSaved(false), 2000);
@@ -4224,7 +4277,7 @@ export default function App() {
 
   const normalizedSearch = searchQuery.trim().toLowerCase();
 
-  const filteredUsers = usersList.filter((u) => {
+  const filteredUsers = visibleUsersList.filter((u) => {
     if (!normalizedSearch) return true;
     const handle = `@${u.name.toLowerCase().replace(/[^a-z0-9]+/g, '')}`;
     const roleLabel = u.role === 'admin' ? 'admin' : 'member active';
@@ -4240,18 +4293,23 @@ export default function App() {
     );
   });
 
-  const getNewsfeedLabel = (nf?: 'feed_a' | 'feed_b' | 'both') => {
-    if (nf === 'feed_a') return newsfeedConfig.feedATitle;
+  const getNewsfeedLabel = (nf?: PostNewsfeed) => {
     if (nf === 'feed_b') return newsfeedConfig.feedBTitle;
-    return `Both (${newsfeedConfig.feedATitle} & ${newsfeedConfig.feedBTitle})`;
+    if (nf === 'feed_c') return newsfeedConfig.feedCTitle;
+    if (nf === 'feed_bc') return `B & C (${newsfeedConfig.feedBTitle} & ${newsfeedConfig.feedCTitle})`;
+    if (nf === 'both') return 'All Channels';
+    return newsfeedConfig.feedATitle;
   };
 
   const filteredPosts = posts
     .filter((p) => !blockedUsers.includes(p.author.name))
     .filter((p) => {
       if (!isAdmin || adminNewsfeedFilter === 'all') return true;
-      const postNf = p.newsfeed || 'both';
-      return postNf === adminNewsfeedFilter || postNf === 'both';
+      const postNf = p.newsfeed || 'feed_a';
+      if (postNf === 'both') return true;
+      if (adminNewsfeedFilter === 'feed_b') return postNf === 'feed_b' || postNf === 'feed_bc';
+      if (adminNewsfeedFilter === 'feed_c') return postNf === 'feed_c' || postNf === 'feed_bc';
+      return postNf === adminNewsfeedFilter;
     })
     .filter((p) => {
       if (!normalizedSearch) return true;
@@ -5506,7 +5564,7 @@ export default function App() {
                           : 'bg-emerald-50 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-200 border border-emerald-200 dark:border-emerald-700 hover:bg-emerald-100 dark:hover:bg-emerald-800'
                       }`}
                     >
-                      All ({newsfeedConfig.feedATitle} & {newsfeedConfig.feedBTitle})
+                      All Channels
                     </button>
                     <button
                       type="button"
@@ -5529,6 +5587,28 @@ export default function App() {
                       }`}
                     >
                       {newsfeedConfig.feedBTitle}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setAdminNewsfeedFilter('feed_c')}
+                      className={`px-3 py-1 rounded-xl text-[11px] font-bold transition ${
+                        adminNewsfeedFilter === 'feed_c'
+                          ? 'bg-emerald-500 text-slate-950 shadow-sm'
+                          : 'bg-emerald-50 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-200 border border-emerald-200 dark:border-emerald-700 hover:bg-emerald-100 dark:hover:bg-emerald-800'
+                      }`}
+                    >
+                      {newsfeedConfig.feedCTitle}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setAdminNewsfeedFilter('feed_bc')}
+                      className={`px-3 py-1 rounded-xl text-[11px] font-bold transition ${
+                        adminNewsfeedFilter === 'feed_bc'
+                          ? 'bg-emerald-500 text-slate-950 shadow-sm'
+                          : 'bg-emerald-50 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-200 border border-emerald-200 dark:border-emerald-700 hover:bg-emerald-100 dark:hover:bg-emerald-800'
+                      }`}
+                    >
+                      B &amp; C
                     </button>
                   </div>
                 </div>
@@ -5573,12 +5653,13 @@ export default function App() {
                       <span className="text-[11px] font-bold text-emerald-800 dark:text-emerald-200">Target Newsfeed (Admin):</span>
                       <select
                         value={newPostNewsfeed}
-                        onChange={(e) => setNewPostNewsfeed(e.target.value as 'feed_a' | 'feed_b' | 'both')}
+                        onChange={(e) => setNewPostNewsfeed(e.target.value as SelectableNewsfeed)}
                         className="p-1.5 rounded-xl bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 text-emerald-950 dark:text-white text-xs font-bold"
                       >
                         <option value="feed_a">{newsfeedConfig.feedATitle}</option>
                         <option value="feed_b">{newsfeedConfig.feedBTitle}</option>
-                        <option value="both">Both ({newsfeedConfig.feedATitle} & {newsfeedConfig.feedBTitle})</option>
+                        <option value="feed_c">{newsfeedConfig.feedCTitle}</option>
+                        <option value="feed_bc">B &amp; C ({newsfeedConfig.feedBTitle} &amp; {newsfeedConfig.feedCTitle})</option>
                       </select>
                     </div>
                   )}
@@ -5785,7 +5866,7 @@ export default function App() {
                 <div className="flex items-center justify-between text-[11px] text-emerald-700 dark:text-emerald-300 px-0.5">
                   <span>
                     Showing <span className="font-bold">{filteredUsers.length}</span> of{' '}
-                    <span className="font-bold">{usersList.length}</span> user{usersList.length === 1 ? '' : 's'}
+                    <span className="font-bold">{visibleUsersList.length}</span> user{visibleUsersList.length === 1 ? '' : 's'}
                   </span>
                   {normalizedSearch && (
                     <button
@@ -7911,12 +7992,12 @@ export default function App() {
                   </button>
                 </div>
                 <p className="text-xs text-emerald-800 dark:text-emerald-200">
-                  Only the Admin sees and controls Newsfeed setup. Assign each user to {newsfeedConfig.feedATitle}, {newsfeedConfig.feedBTitle}, or Both A &amp; B. Regular users only see posts from their assigned feed.
+                  Only the Admin sees and controls Newsfeed setup. Assign each user to one of 4 choices: <span className="font-bold">{newsfeedConfig.feedATitle}</span>, <span className="font-bold">{newsfeedConfig.feedBTitle}</span>, <span className="font-bold">{newsfeedConfig.feedCTitle}</span>, or <span className="font-bold">B &amp; C</span>. Users in Newsfeed A cannot see or search Newsfeed B/C users.
                 </p>
 
                 <form
                   onSubmit={handleSaveAdminNewsfeedTitles}
-                  className="grid grid-cols-1 sm:grid-cols-2 gap-3 p-3.5 rounded-xl bg-emerald-50 dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-800"
+                  className="grid grid-cols-1 sm:grid-cols-3 gap-3 p-3.5 rounded-xl bg-emerald-50 dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-800"
                 >
                   <div className="space-y-1">
                     <label className="text-[11px] font-bold text-emerald-900 dark:text-emerald-200">
@@ -7942,7 +8023,19 @@ export default function App() {
                       className="w-full p-2 bg-white dark:bg-slate-950 border border-emerald-300 dark:border-emerald-700 rounded-xl text-xs text-emerald-950 dark:text-white"
                     />
                   </div>
-                  <div className="sm:col-span-2 flex flex-wrap items-center justify-between gap-2 pt-1">
+                  <div className="space-y-1">
+                    <label className="text-[11px] font-bold text-emerald-900 dark:text-emerald-200">
+                      Newsfeed C Name
+                    </label>
+                    <input
+                      type="text"
+                      maxLength={60}
+                      value={adminNfTitleC}
+                      onChange={(e) => setAdminNfTitleC(e.target.value)}
+                      className="w-full p-2 bg-white dark:bg-slate-950 border border-emerald-300 dark:border-emerald-700 rounded-xl text-xs text-emerald-950 dark:text-white"
+                    />
+                  </div>
+                  <div className="sm:col-span-3 flex flex-wrap items-center justify-between gap-2 pt-1">
                     <button
                       type="submit"
                       disabled={savingAdminNfTitles}
@@ -7976,7 +8069,7 @@ export default function App() {
                         <th className="p-3">User Name</th>
                         <th className="p-3">Phone</th>
                         <th className="p-3">Role</th>
-                        <th className="p-3">Assigned Newsfeed</th>
+                        <th className="p-3">Assigned Newsfeed (4 Choices)</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-emerald-200 dark:divide-emerald-800 bg-white dark:bg-emerald-950/50">
@@ -7998,18 +8091,19 @@ export default function App() {
                             </td>
                             <td className="p-3">
                               <select
-                                value={u.newsfeed || 'both'}
+                                value={u.newsfeed || 'feed_a'}
                                 onChange={(e) =>
                                   handleUpdateUserNewsfeed(
                                     u.id,
-                                    e.target.value as 'feed_a' | 'feed_b' | 'both'
+                                    e.target.value as SelectableNewsfeed
                                   )
                                 }
                                 className="p-1.5 rounded-lg bg-white dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 text-emerald-950 dark:text-white font-bold text-xs"
                               >
                                 <option value="feed_a">{newsfeedConfig.feedATitle}</option>
                                 <option value="feed_b">{newsfeedConfig.feedBTitle}</option>
-                                <option value="both">Both ({newsfeedConfig.feedATitle} &amp; {newsfeedConfig.feedBTitle})</option>
+                                <option value="feed_c">{newsfeedConfig.feedCTitle}</option>
+                                <option value="feed_bc">B &amp; C ({newsfeedConfig.feedBTitle} &amp; {newsfeedConfig.feedCTitle})</option>
                               </select>
                             </td>
                           </tr>
@@ -8053,6 +8147,7 @@ export default function App() {
                 setNewsfeedConfig(cfg);
                 localStorage.setItem('choychat_nf_a_title', cfg.feedATitle);
                 localStorage.setItem('choychat_nf_b_title', cfg.feedBTitle);
+                localStorage.setItem('choychat_nf_c_title', cfg.feedCTitle);
               }}
             />
           )}
@@ -8313,16 +8408,17 @@ export default function App() {
                             Assign Newsfeed (Admin):
                           </span>
                           <select
-                            value={viewed.newsfeed || 'both'}
+                            value={viewed.newsfeed || 'feed_a'}
                             onChange={(e) => {
-                              const nextNf = e.target.value as 'feed_a' | 'feed_b' | 'both';
+                              const nextNf = e.target.value as SelectableNewsfeed;
                               handleUpdateUserNewsfeed(viewed.id!, nextNf);
                             }}
                             className="px-2 py-1 rounded-lg bg-white dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 text-[11px] font-bold text-emerald-950 dark:text-white"
                           >
                             <option value="feed_a">{newsfeedConfig.feedATitle}</option>
                             <option value="feed_b">{newsfeedConfig.feedBTitle}</option>
-                            <option value="both">Both ({newsfeedConfig.feedATitle} & {newsfeedConfig.feedBTitle})</option>
+                            <option value="feed_c">{newsfeedConfig.feedCTitle}</option>
+                            <option value="feed_bc">B &amp; C ({newsfeedConfig.feedBTitle} &amp; {newsfeedConfig.feedCTitle})</option>
                           </select>
                         </div>
                       )}

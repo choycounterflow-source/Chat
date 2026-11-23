@@ -13,6 +13,8 @@ const webpush = require('web-push') as typeof WebPushType;
 import {
   ChoyStore,
   ALLOWED_CHAT_ROOMS,
+  normalizeUserNewsfeed,
+  normalizePostNewsfeed,
   signSessionToken,
   verifySessionToken,
   verifyPin,
@@ -22,6 +24,7 @@ import {
   sanitizeWebsiteUrl,
   clampNum,
   type StoredUser,
+  type NewsfeedChannel,
 } from './src/server/choyStore.ts';
 import {
   getSupabaseStorageStatus,
@@ -61,6 +64,44 @@ function escapeHtml(raw: string): string {
 }
 const sseClients = new Set<SseClient>();
 const userLastSeenMap = new Map<string, number>();
+
+function getChannelsForNewsfeed(nf?: string): Set<'a' | 'b' | 'c'> {
+  const v = (nf || '').trim().toLowerCase();
+  if (v === 'feed_b') return new Set(['b']);
+  if (v === 'feed_c') return new Set(['c']);
+  if (v === 'feed_bc') return new Set(['b', 'c']);
+  if (v === 'both') return new Set(['a', 'b', 'c']);
+  return new Set(['a']);
+}
+
+function hasNewsfeedOverlap(nfA?: string, nfB?: string): boolean {
+  const setA = getChannelsForNewsfeed(nfA);
+  const setB = getChannelsForNewsfeed(nfB);
+  for (const ch of setA) {
+    if (setB.has(ch)) return true;
+  }
+  return false;
+}
+
+function canViewerSeeUser(
+  viewer: { id: string; role: 'admin' | 'member'; newsfeed?: string },
+  candidate: { id: string; role: 'admin' | 'member'; newsfeed?: string }
+): boolean {
+  if (viewer.role === 'admin') return true;
+  if (candidate.id === viewer.id) return true;
+  if (candidate.role === 'admin') return true;
+  return hasNewsfeedOverlap(normalizeUserNewsfeed(viewer.newsfeed), normalizeUserNewsfeed(candidate.newsfeed));
+}
+
+function canViewerSeePost(
+  viewer: { id: string; role: 'admin' | 'member'; newsfeed?: string },
+  post: { authorId: string; newsfeed?: string }
+): boolean {
+  if (viewer.role === 'admin') return true;
+  if (post.authorId === viewer.id) return true;
+  if ((post.newsfeed || '').trim().toLowerCase() === 'both') return true;
+  return hasNewsfeedOverlap(normalizeUserNewsfeed(viewer.newsfeed), normalizePostNewsfeed(post.newsfeed));
+}
 
 let vapidReadyPromise: Promise<string> | null = null;
 async function ensureWebPushConfigured(): Promise<string> {
@@ -1138,6 +1179,17 @@ app.post('/api/choy/rtc/signal', requireAuth, async (req: AuthedRequest, res: Re
       return res.status(400).json({ error: 'callId is required' });
     }
 
+    if (user.role !== 'admin') {
+      const targetLower = targetName.toLowerCase();
+      if (targetLower !== 'vip group' && targetLower !== 'choy admin') {
+        const allUsers = await store.listUsers(false);
+        const targetUser = allUsers.find((u) => u.name.trim().toLowerCase() === targetLower);
+        if (targetUser && !canViewerSeeUser(user, targetUser)) {
+          return res.status(403).json({ error: 'User is outside your assigned newsfeed channel.' });
+        }
+      }
+    }
+
     const result = sendRtcSignal(targetName, user.id, {
       type,
       callId,
@@ -1195,7 +1247,7 @@ app.get('/api/choy/state', requireAuth, async (req: AuthedRequest, res: Response
     const user = req.choyUser!;
     touchUserPresence(user.name);
     const isAdmin = user.role === 'admin';
-    const [posts, allMessages, users, knowledge, leaderboard, emojiLinks, newsfeedConfig] = await Promise.all([
+    const [posts, allMessages, allUsers, knowledge, leaderboard, emojiLinks, newsfeedConfig] = await Promise.all([
       store.listPosts(),
       store.listMessages(),
       store.listUsers(isAdmin),
@@ -1206,24 +1258,38 @@ app.get('/api/choy/state', requireAuth, async (req: AuthedRequest, res: Response
     ]);
     const activeEmojiLink = emojiLinks.find((l) => l.pinnedToAppIcon) || emojiLinks[0] || null;
 
+    const visibleUsers = isAdmin
+      ? allUsers
+      : allUsers.filter((candidate) => canViewerSeeUser(user, candidate));
+    const visibleUserIds = new Set(visibleUsers.map((u) => u.id));
+    const visibleUserNamesLower = new Set(visibleUsers.map((u) => u.name.trim().toLowerCase()));
+
     const myNameLower = user.name.trim().toLowerCase();
     const messages = isAdmin
       ? allMessages
       : allMessages.filter((m) => {
           const roomLower = m.roomId.trim().toLowerCase();
-          return (
-            roomLower === 'vip group' ||
+          const senderLower = m.senderName.trim().toLowerCase();
+          const isSenderVisible =
+            m.senderId === 'system' ||
             m.senderId === user.id ||
-            m.senderName.trim().toLowerCase() === myNameLower ||
-            roomLower === myNameLower
-          );
+            visibleUserIds.has(m.senderId) ||
+            visibleUserNamesLower.has(senderLower);
+          if (roomLower === 'vip group') {
+            return isSenderVisible;
+          }
+          if (m.senderId === user.id || senderLower === myNameLower) {
+            return roomLower === 'choy admin' || visibleUserNamesLower.has(roomLower);
+          }
+          if (roomLower === myNameLower) {
+            return isSenderVisible;
+          }
+          return false;
         });
 
-    const userNewsfeed = user.newsfeed || 'both';
-    const filteredPosts =
-      isAdmin || userNewsfeed === 'both'
-        ? posts
-        : posts.filter((p) => p.newsfeed === userNewsfeed || p.newsfeed === 'both');
+    const filteredPosts = isAdmin
+      ? posts
+      : posts.filter((p) => canViewerSeePost(user, p));
 
     let ledger = undefined;
     let settings = undefined;
@@ -1241,11 +1307,11 @@ app.get('/api/choy/state', requireAuth, async (req: AuthedRequest, res: Response
         status: user.status,
         blockedUsers: user.blockedUsers,
         avatar: user.avatar,
-        newsfeed: user.newsfeed,
+        newsfeed: normalizeUserNewsfeed(user.newsfeed),
       },
       posts: filteredPosts,
       messages,
-      users,
+      users: visibleUsers,
       knowledge,
       leaderboard,
       emojiLinks,
@@ -1273,11 +1339,11 @@ app.post('/api/choy/posts', requireAuth, async (req: AuthedRequest, res: Respons
     const rawCat = req.body?.category;
     const category: 'feed' | 'myday' | 'video' =
       rawCat === 'myday' || rawCat === 'video' ? rawCat : 'feed';
-    const userNf = user.newsfeed || 'both';
-    let postNewsfeed: 'feed_a' | 'feed_b' | 'both' = userNf;
+    const userNf = normalizeUserNewsfeed(user.newsfeed);
+    let postNewsfeed: NewsfeedChannel = userNf;
     if (user.role === 'admin') {
-      const rawNf = req.body?.newsfeed;
-      if (rawNf === 'feed_a' || rawNf === 'feed_b' || rawNf === 'both') {
+      const rawNf = typeof req.body?.newsfeed === 'string' ? req.body.newsfeed.trim().toLowerCase() : '';
+      if (rawNf === 'feed_a' || rawNf === 'feed_b' || rawNf === 'feed_c' || rawNf === 'feed_bc' || rawNf === 'both') {
         postNewsfeed = rawNf;
       }
     } else {
@@ -1330,6 +1396,9 @@ app.post('/api/choy/messages', requireAuth, async (req: AuthedRequest, res: Resp
       const allUsers = await store.listUsers(true);
       const matchedUser = allUsers.find((u) => u.name.trim().toLowerCase() === rawRoomId.toLowerCase());
       if (matchedUser) {
+        if (!canViewerSeeUser(user, matchedUser)) {
+          return res.status(403).json({ error: 'You can only message users in your assigned newsfeed channel.' });
+        }
         resolvedRoomId = matchedUser.name.trim();
       }
     }
@@ -1422,12 +1491,16 @@ app.put('/api/choy/blocked-users', requireAuth, async (req: AuthedRequest, res: 
 app.patch('/api/admin/users/:id/newsfeed', requireAuth, requireAdmin, async (req: AuthedRequest, res: Response) => {
   try {
     const userId = req.params.id;
-    const newsfeed = req.body?.newsfeed;
-    const updated = await store.updateUserNewsfeed(userId, newsfeed);
+    const rawNf = typeof req.body?.newsfeed === 'string' ? req.body.newsfeed.trim().toLowerCase() : '';
+    if (rawNf !== 'feed_a' && rawNf !== 'feed_b' && rawNf !== 'feed_c' && rawNf !== 'feed_bc') {
+      return res.status(400).json({ error: 'Newsfeed must be feed_a, feed_b, feed_c, or feed_bc' });
+    }
+    const updated = await store.updateUserNewsfeed(userId, rawNf);
     if (!updated) {
       return res.status(404).json({ error: 'User not found' });
     }
     broadcastSync('users');
+    broadcastSync('posts');
     return res.json({
       ok: true,
       user: {
@@ -1446,11 +1519,59 @@ app.patch('/api/admin/users/:id/newsfeed', requireAuth, requireAdmin, async (req
   }
 });
 
+app.patch('/api/admin/users/:id/pin', requireAuth, requireAdmin, async (req: AuthedRequest, res: Response) => {
+  try {
+    const hasBearer = Boolean(req.headers.authorization?.startsWith('Bearer '));
+    if (!hasBearer) {
+      const origin = req.headers.origin;
+      const expectedHost = (req.headers['x-forwarded-host'] || req.headers.host || '').toString().split(',')[0].trim();
+      const hasRequestedWith = req.headers['x-requested-with'] === 'XMLHttpRequest';
+      let originMatches = false;
+      if (typeof origin === 'string' && expectedHost) {
+        try {
+          originMatches = new URL(origin).host === expectedHost;
+        } catch {
+          originMatches = false;
+        }
+      }
+      if (!originMatches && !hasRequestedWith) {
+        return res.status(403).json({ error: 'Cross-origin request blocked' });
+      }
+    }
+
+    const userId = String(req.params.id || '').trim();
+    const newPin = typeof req.body?.pin === 'string' ? req.body.pin.trim() : '';
+    if (!userId) {
+      return res.status(400).json({ error: 'User ID is required' });
+    }
+    if (!newPin || newPin.length < 4 || newPin.length > 64) {
+      return res.status(400).json({ error: 'PIN must be between 4 and 64 characters' });
+    }
+
+    const updated = await store.updateUserPin(userId, newPin);
+    if (!updated) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    broadcastSync('users');
+    return res.json({
+      ok: true,
+      user: {
+        id: updated.id,
+        name: updated.name,
+        role: updated.role,
+      },
+    });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to update user PIN' });
+  }
+});
+
 app.put('/api/admin/newsfeed-config', requireAuth, requireAdmin, async (req: AuthedRequest, res: Response) => {
   try {
     const feedATitle = typeof req.body?.feedATitle === 'string' ? req.body.feedATitle : '';
     const feedBTitle = typeof req.body?.feedBTitle === 'string' ? req.body.feedBTitle : '';
-    const saved = await store.saveNewsfeedConfig({ feedATitle, feedBTitle });
+    const feedCTitle = typeof req.body?.feedCTitle === 'string' ? req.body.feedCTitle : '';
+    const saved = await store.saveNewsfeedConfig({ feedATitle, feedBTitle, feedCTitle });
     broadcastSync('settings');
     return res.json({ ok: true, newsfeedConfig: saved });
   } catch (err: unknown) {

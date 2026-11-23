@@ -47,13 +47,15 @@ import {
   shareEmojiLinkWithAppImage,
 } from '../utils/emojiLinkShare';
 
+export type StudioNewsfeedChannel = 'feed_a' | 'feed_b' | 'feed_c' | 'feed_bc';
+
 export interface SecurityUserAccount {
   id: string;
   name: string;
   phone: string;
   role?: 'admin' | 'member';
   status: 'pending' | 'approved';
-  newsfeed?: 'feed_a' | 'feed_b' | 'both';
+  newsfeed?: StudioNewsfeedChannel;
   loginDate: string;
 }
 
@@ -69,7 +71,7 @@ interface SecurityStudioProps {
   setUsersList: React.Dispatch<React.SetStateAction<SecurityUserAccount[]>>;
   onAddUser?: (name: string, phone: string) => Promise<void> | void;
   onDeleteUser?: (userId: string) => Promise<void> | void;
-  onUpdateUserNewsfeed?: (userId: string, newsfeed: 'feed_a' | 'feed_b' | 'both') => Promise<void> | void;
+  onUpdateUserNewsfeed?: (userId: string, newsfeed: StudioNewsfeedChannel) => Promise<void> | void;
   deletingUserIds?: string[];
   isCloudSynced?: boolean;
   storageMode?: 'postgres' | 'memory';
@@ -86,8 +88,8 @@ interface SecurityStudioProps {
   onEmojiLinksChanged?: (links: EmojiLinkItem[]) => void;
   defaultAppIcon?: string;
   syncTick?: number;
-  newsfeedConfig?: { feedATitle: string; feedBTitle: string };
-  onNewsfeedConfigChanged?: (cfg: { feedATitle: string; feedBTitle: string }) => void;
+  newsfeedConfig?: { feedATitle: string; feedBTitle: string; feedCTitle: string };
+  onNewsfeedConfigChanged?: (cfg: { feedATitle: string; feedBTitle: string; feedCTitle: string }) => void;
 }
 
 interface StudioNoteEntry {
@@ -228,6 +230,9 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
   const [newsfeedBTitle, setNewsfeedBTitle] = useState(
     () => newsfeedConfig?.feedBTitle || localStorage.getItem('choychat_nf_b_title') || 'Newsfeed B'
   );
+  const [newsfeedCTitle, setNewsfeedCTitle] = useState(
+    () => newsfeedConfig?.feedCTitle || localStorage.getItem('choychat_nf_c_title') || 'Newsfeed C'
+  );
   const [nfTitlesSaved, setNfTitlesSaved] = useState(false);
   const [savingNfTitles, setSavingNfTitles] = useState(false);
 
@@ -240,6 +245,10 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
     if (newsfeedConfig.feedBTitle) {
       setNewsfeedBTitle(newsfeedConfig.feedBTitle);
       localStorage.setItem('choychat_nf_b_title', newsfeedConfig.feedBTitle);
+    }
+    if (newsfeedConfig.feedCTitle) {
+      setNewsfeedCTitle(newsfeedConfig.feedCTitle);
+      localStorage.setItem('choychat_nf_c_title', newsfeedConfig.feedCTitle);
     }
   }, [newsfeedConfig]);
 
@@ -339,6 +348,14 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
   const [isFingerprinting, setIsFingerprinting] = useState(false);
   const [expandedToolId, setExpandedToolId] = useState<string | null>(null);
 
+  // 8. Admin-Only User Account PIN Setup state
+  const [userPinDrafts, setUserPinDrafts] = useState<Record<string, string>>({});
+  const [showUserPinMap, setShowUserPinMap] = useState<Record<string, boolean>>({});
+  const [savingPinUserId, setSavingPinUserId] = useState<string | null>(null);
+  const [pinActionMsg, setPinActionMsg] = useState('');
+  const [pinActionErr, setPinActionErr] = useState('');
+  const [pinSearchQuery, setPinSearchQuery] = useState('');
+
   // 9. Active Dashboard Module & Type Notes
   const [activeStudioModule, setActiveStudioModule] = useState<
     | 'home'
@@ -350,6 +367,7 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
     | 'storage'
     | 'newsfeeds'
     | 'gps_tracker'
+    | 'user_pins'
     | 'users'
     | 'tools_guide'
   >('home');
@@ -1538,9 +1556,17 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
             accent: 'border-cyan-300 dark:border-cyan-500/60 hover:border-cyan-400',
           },
           {
+            id: 'user_pins' as const,
+            title: 'Change User Account PINs',
+            subtitle: 'Admin-only PIN setup & reset for all registered user accounts',
+            badge: 'Admin Only',
+            icon: <KeyRound className="w-5 h-5 text-rose-600 dark:text-rose-300" />,
+            accent: 'border-rose-300 dark:border-rose-500/60 hover:border-rose-400',
+          },
+          {
             id: 'newsfeeds' as const,
-            title: 'Newsfeeds A & B Assignment',
-            subtitle: 'Rename Newsfeed channels and assign each user to A, B, or Both',
+            title: 'Newsfeeds A, B, C & B+C Setup',
+            subtitle: 'Rename Newsfeeds A, B, C & assign each user to 1 of 4 separated channels',
             badge: `${usersList.length} users`,
             icon: <Globe className="w-5 h-5 text-emerald-600 dark:text-emerald-300" />,
             accent: 'border-emerald-300 dark:border-emerald-600/70 hover:border-emerald-400',
@@ -2993,18 +3019,18 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
       </div>
       )}
 
-      {/* NEWSFEEDS A & B SETUP & USER ASSIGNMENT */}
+      {/* NEWSFEEDS A, B, C & B+C SETUP & USER ASSIGNMENT */}
       {activeStudioModule === 'newsfeeds' && (
       <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-5 space-y-4 shadow">
         <div className="flex items-center gap-2">
           <Globe className="w-4 h-4 text-emerald-700 dark:text-emerald-300" />
-          <h3 className="text-sm font-bold text-emerald-950 dark:text-white">Newsfeeds A & B Setup & User Assignment</h3>
+          <h3 className="text-sm font-bold text-emerald-950 dark:text-white">Newsfeeds A, B, C &amp; B+C Setup &amp; User Assignment</h3>
         </div>
         <p className="text-xs text-emerald-800 dark:text-emerald-200">
-          Configure separated Newsfeeds ({newsfeedATitle} vs {newsfeedBTitle}). Users assigned to Newsfeed A will only see posts from users in Newsfeed A and Both A&B. Users in Newsfeed B will only see Newsfeed B and Both A&B.
+          Strictly separates users and search results across 4 choices: <span className="font-bold">{newsfeedATitle}</span>, <span className="font-bold">{newsfeedBTitle}</span>, <span className="font-bold">{newsfeedCTitle}</span>, or <span className="font-bold">B &amp; C</span>. Users in Newsfeed A cannot see or search Newsfeed B/C users, and Newsfeed B/C users cannot see Newsfeed A users.
         </p>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-800">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-800">
           <div className="space-y-1">
             <label className="text-[11px] font-bold text-emerald-900 dark:text-emerald-200">Newsfeed A Name</label>
             <input
@@ -3023,17 +3049,29 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
               className="w-full p-2 bg-white dark:bg-slate-950 border border-emerald-300 dark:border-emerald-700 rounded-xl text-xs text-emerald-950 dark:text-white"
             />
           </div>
-          <div className="sm:col-span-2 flex items-center justify-between pt-1">
+          <div className="space-y-1">
+            <label className="text-[11px] font-bold text-emerald-900 dark:text-emerald-200">Newsfeed C Name</label>
+            <input
+              type="text"
+              value={newsfeedCTitle}
+              onChange={(e) => setNewsfeedCTitle(e.target.value)}
+              className="w-full p-2 bg-white dark:bg-slate-950 border border-emerald-300 dark:border-emerald-700 rounded-xl text-xs text-emerald-950 dark:text-white"
+            />
+          </div>
+          <div className="sm:col-span-3 flex items-center justify-between pt-1">
             <button
               type="button"
               disabled={savingNfTitles}
               onClick={async () => {
                 const cleanA = newsfeedATitle.trim() || 'Newsfeed A';
                 const cleanB = newsfeedBTitle.trim() || 'Newsfeed B';
+                const cleanC = newsfeedCTitle.trim() || 'Newsfeed C';
                 setNewsfeedATitle(cleanA);
                 setNewsfeedBTitle(cleanB);
+                setNewsfeedCTitle(cleanC);
                 localStorage.setItem('choychat_nf_a_title', cleanA);
                 localStorage.setItem('choychat_nf_b_title', cleanB);
+                localStorage.setItem('choychat_nf_c_title', cleanC);
                 if (authToken) {
                   setSavingNfTitles(true);
                   try {
@@ -3044,21 +3082,21 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
                         Authorization: `Bearer ${authToken}`,
                       },
                       credentials: 'same-origin',
-                      body: JSON.stringify({ feedATitle: cleanA, feedBTitle: cleanB }),
+                      body: JSON.stringify({ feedATitle: cleanA, feedBTitle: cleanB, feedCTitle: cleanC }),
                     });
                     const data = await res.json().catch(() => ({}));
                     if (res.ok && data.newsfeedConfig) {
                       onNewsfeedConfigChanged?.(data.newsfeedConfig);
                     } else {
-                      onNewsfeedConfigChanged?.({ feedATitle: cleanA, feedBTitle: cleanB });
+                      onNewsfeedConfigChanged?.({ feedATitle: cleanA, feedBTitle: cleanB, feedCTitle: cleanC });
                     }
                   } catch {
-                    onNewsfeedConfigChanged?.({ feedATitle: cleanA, feedBTitle: cleanB });
+                    onNewsfeedConfigChanged?.({ feedATitle: cleanA, feedBTitle: cleanB, feedCTitle: cleanC });
                   } finally {
                     setSavingNfTitles(false);
                   }
                 } else {
-                  onNewsfeedConfigChanged?.({ feedATitle: cleanA, feedBTitle: cleanB });
+                  onNewsfeedConfigChanged?.({ feedATitle: cleanA, feedBTitle: cleanB, feedCTitle: cleanC });
                 }
                 setNfTitlesSaved(true);
                 setTimeout(() => setNfTitlesSaved(false), 2000);
@@ -3077,19 +3115,24 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
               <tr>
                 <th className="p-3">User Name</th>
                 <th className="p-3">Phone / ID</th>
-                <th className="p-3">Assigned Newsfeed</th>
+                <th className="p-3">Assigned Newsfeed (4 Choices)</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-emerald-200 dark:divide-emerald-800 bg-white dark:bg-emerald-950/50">
-              {usersList.map((u) => (
+              {usersList.map((u) => {
+                const currentVal: StudioNewsfeedChannel =
+                  u.newsfeed === 'feed_b' || u.newsfeed === 'feed_c' || u.newsfeed === 'feed_bc'
+                    ? u.newsfeed
+                    : 'feed_a';
+                return (
                 <tr key={u.id} className="hover:bg-emerald-50 dark:hover:bg-emerald-900/40">
                   <td className="p-3 font-bold text-emerald-950 dark:text-white">{u.name}</td>
                   <td className="p-3 font-mono text-emerald-700 dark:text-emerald-300">{u.phone}</td>
                   <td className="p-3">
                     <select
-                      value={u.newsfeed || 'both'}
+                      value={currentVal}
                       onChange={(e) => {
-                        const val = e.target.value as 'feed_a' | 'feed_b' | 'both';
+                        const val = e.target.value as StudioNewsfeedChannel;
                         if (onUpdateUserNewsfeed) {
                           onUpdateUserNewsfeed(u.id, val);
                         } else {
@@ -3102,11 +3145,190 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
                     >
                       <option value="feed_a">{newsfeedATitle || 'Newsfeed A'}</option>
                       <option value="feed_b">{newsfeedBTitle || 'Newsfeed B'}</option>
-                      <option value="both">Both A & B</option>
+                      <option value="feed_c">{newsfeedCTitle || 'Newsfeed C'}</option>
+                      <option value="feed_bc">B &amp; C ({newsfeedBTitle || 'Newsfeed B'} &amp; {newsfeedCTitle || 'Newsfeed C'})</option>
                     </select>
                   </td>
                 </tr>
-              ))}
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      )}
+
+      {/* ADMIN-ONLY CHANGE USER ACCOUNT PINS */}
+      {activeStudioModule === 'user_pins' && (
+      <div className="bg-white dark:bg-emerald-900/60 border border-rose-300 dark:border-rose-500/40 rounded-2xl p-5 space-y-4 shadow">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <KeyRound className="w-4 h-4 text-rose-600 dark:text-rose-300" />
+            <h3 className="text-sm font-bold text-emerald-950 dark:text-white">
+              Change PIN Setup — All User Accounts (Admin Only Access)
+            </h3>
+          </div>
+          <span className="px-2.5 py-1 rounded-lg bg-rose-100 dark:bg-rose-500/20 border border-rose-300 dark:border-rose-500/40 text-rose-800 dark:text-rose-200 font-bold text-[10px] uppercase">
+            Admin Only · Encrypted on Server
+          </span>
+        </div>
+        <p className="text-xs text-emerald-800 dark:text-emerald-200 leading-relaxed">
+          Only the Admin can open this dashboard or update login PINs. Enter a new PIN (4–64 characters) for any user account and tap <span className="font-bold">Save PIN</span>. Existing PINs stay encrypted on the server for privacy.
+        </p>
+
+        {pinActionMsg && (
+          <div className="p-3 rounded-xl bg-emerald-100 dark:bg-emerald-500/20 border border-emerald-400/60 text-emerald-900 dark:text-emerald-200 font-bold text-xs flex items-center justify-between gap-2">
+            <span>{pinActionMsg}</span>
+            <button type="button" onClick={() => setPinActionMsg('')} className="font-bold px-1">✕</button>
+          </div>
+        )}
+        {pinActionErr && (
+          <div className="p-3 rounded-xl bg-rose-100 dark:bg-rose-500/20 border border-rose-400/60 text-rose-900 dark:text-rose-200 font-bold text-xs flex items-center justify-between gap-2">
+            <span>{pinActionErr}</span>
+            <button type="button" onClick={() => setPinActionErr('')} className="font-bold px-1">✕</button>
+          </div>
+        )}
+
+        <div className="flex flex-wrap items-center gap-2">
+          <input
+            type="text"
+            value={pinSearchQuery}
+            onChange={(e) => setPinSearchQuery(e.target.value)}
+            placeholder="Search user account by name or phone..."
+            className="flex-1 min-w-[200px] p-2.5 bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 rounded-xl text-xs text-emerald-950 dark:text-white placeholder-emerald-600/60 dark:placeholder-emerald-400"
+          />
+          <span className="text-[11px] font-bold text-emerald-700 dark:text-emerald-300">
+            {usersList.length} Account{usersList.length === 1 ? '' : 's'}
+          </span>
+        </div>
+
+        <div className="overflow-x-auto rounded-xl border border-emerald-200 dark:border-emerald-800">
+          <table className="w-full text-left border-collapse text-xs whitespace-nowrap">
+            <thead className="bg-emerald-50 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300 text-[10px] uppercase">
+              <tr>
+                <th className="p-3">User Account</th>
+                <th className="p-3">Phone / Login ID</th>
+                <th className="p-3">Role &amp; Channel</th>
+                <th className="p-3">New Login PIN (4+ chars)</th>
+                <th className="p-3 text-right">Action</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-emerald-200 dark:divide-emerald-800 bg-white dark:bg-emerald-950/50">
+              {usersList
+                .filter((u) => {
+                  const q = pinSearchQuery.trim().toLowerCase();
+                  if (!q) return true;
+                  return (
+                    u.name.toLowerCase().includes(q) ||
+                    (u.phone || '').toLowerCase().includes(q) ||
+                    (u.role || 'member').toLowerCase().includes(q)
+                  );
+                })
+                .map((u) => {
+                  const draft = userPinDrafts[u.id] || '';
+                  const isRevealed = Boolean(showUserPinMap[u.id]);
+                  const isSaving = savingPinUserId === u.id;
+                  const channelLabel =
+                    u.newsfeed === 'feed_b'
+                      ? newsfeedBTitle || 'Newsfeed B'
+                      : u.newsfeed === 'feed_c'
+                      ? newsfeedCTitle || 'Newsfeed C'
+                      : u.newsfeed === 'feed_bc'
+                      ? 'B & C'
+                      : newsfeedATitle || 'Newsfeed A';
+                  return (
+                    <tr key={u.id} className="hover:bg-emerald-50 dark:hover:bg-emerald-900/40">
+                      <td className="p-3 font-bold text-emerald-950 dark:text-white">{u.name}</td>
+                      <td className="p-3 font-mono text-emerald-700 dark:text-emerald-300">{u.phone}</td>
+                      <td className="p-3">
+                        <div className="flex items-center gap-1.5">
+                          <span
+                            className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
+                              u.role === 'admin'
+                                ? 'bg-amber-100 dark:bg-amber-500/20 text-amber-800 dark:text-amber-300'
+                                : 'bg-emerald-100 dark:bg-emerald-500/20 text-emerald-800 dark:text-emerald-300'
+                            }`}
+                          >
+                            {u.role === 'admin' ? 'Admin' : 'Member'}
+                          </span>
+                          <span className="px-2 py-0.5 rounded bg-emerald-100 dark:bg-emerald-900 text-emerald-800 dark:text-emerald-200 text-[10px] font-semibold">
+                            {channelLabel}
+                          </span>
+                        </div>
+                      </td>
+                      <td className="p-3">
+                        <div className="flex items-center gap-1.5">
+                          <input
+                            type={isRevealed ? 'text' : 'password'}
+                            value={draft}
+                            minLength={4}
+                            maxLength={64}
+                            placeholder="Enter new PIN (4+ chars)"
+                            onChange={(e) =>
+                              setUserPinDrafts((prev) => ({ ...prev, [u.id]: e.target.value }))
+                            }
+                            className="w-44 p-2 rounded-lg bg-emerald-50 dark:bg-slate-950 border border-emerald-300 dark:border-emerald-700 text-xs font-mono text-emerald-950 dark:text-white"
+                          />
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setShowUserPinMap((prev) => ({ ...prev, [u.id]: !prev[u.id] }))
+                            }
+                            className="p-2 rounded-lg border border-emerald-300 dark:border-emerald-700 bg-white dark:bg-emerald-900 text-emerald-800 dark:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-800"
+                            title={isRevealed ? 'Hide PIN' : 'Show PIN'}
+                          >
+                            {isRevealed ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                          </button>
+                        </div>
+                      </td>
+                      <td className="p-3 text-right">
+                        <button
+                          type="button"
+                          disabled={isSaving || draft.trim().length < 4}
+                          onClick={async () => {
+                            const cleanPin = draft.trim();
+                            if (cleanPin.length < 4 || cleanPin.length > 64) {
+                              setPinActionErr('PIN must be between 4 and 64 characters.');
+                              return;
+                            }
+                            if (!authToken) {
+                              setPinActionErr('Admin login session required to save PIN.');
+                              return;
+                            }
+                            setSavingPinUserId(u.id);
+                            setPinActionErr('');
+                            setPinActionMsg('');
+                            try {
+                              const res = await fetch(`/api/admin/users/${encodeURIComponent(u.id)}/pin`, {
+                                method: 'PATCH',
+                                headers: {
+                                  'Content-Type': 'application/json',
+                                  Authorization: `Bearer ${authToken}`,
+                                },
+                                credentials: 'same-origin',
+                                body: JSON.stringify({ pin: cleanPin }),
+                              });
+                              const data = await res.json().catch(() => ({}));
+                              if (!res.ok) {
+                                throw new Error(data.error || 'Failed to update user PIN');
+                              }
+                              setUserPinDrafts((prev) => ({ ...prev, [u.id]: '' }));
+                              setPinActionMsg(`Login PIN updated & encrypted for ${u.name}!`);
+                            } catch (err) {
+                              setPinActionErr(err instanceof Error ? err.message : 'Failed to update PIN');
+                            } finally {
+                              setSavingPinUserId(null);
+                            }
+                          }}
+                          className="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs inline-flex items-center gap-1.5 transition disabled:opacity-50"
+                        >
+                          <Save className="w-3.5 h-3.5" />
+                          <span>{isSaving ? 'Saving...' : 'Save PIN'}</span>
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
             </tbody>
           </table>
         </div>

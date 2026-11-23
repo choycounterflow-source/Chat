@@ -1,6 +1,27 @@
 import crypto from 'crypto';
 import { Pool } from 'pg';
 
+export type NewsfeedChannel = 'feed_a' | 'feed_b' | 'feed_c' | 'feed_bc' | 'both';
+export type SelectableNewsfeedChannel = 'feed_a' | 'feed_b' | 'feed_c' | 'feed_bc';
+
+export function normalizeUserNewsfeed(raw: unknown): SelectableNewsfeedChannel {
+  const val = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
+  if (val === 'feed_b') return 'feed_b';
+  if (val === 'feed_c') return 'feed_c';
+  if (val === 'feed_bc') return 'feed_bc';
+  return 'feed_a';
+}
+
+export function normalizePostNewsfeed(raw: unknown): NewsfeedChannel {
+  const val = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
+  if (val === 'feed_a') return 'feed_a';
+  if (val === 'feed_b') return 'feed_b';
+  if (val === 'feed_c') return 'feed_c';
+  if (val === 'feed_bc') return 'feed_bc';
+  if (val === 'both') return 'both';
+  return 'feed_a';
+}
+
 export interface StoredUser {
   id: string;
   name: string;
@@ -10,7 +31,7 @@ export interface StoredUser {
   status: 'pending' | 'approved';
   blockedUsers: string[];
   avatar?: string;
-  newsfeed: 'feed_a' | 'feed_b' | 'both';
+  newsfeed: SelectableNewsfeedChannel;
   createdAt: string;
   updatedAt: string;
 }
@@ -22,7 +43,7 @@ export interface PublicUserDTO {
   role: 'admin' | 'member';
   status: 'pending' | 'approved';
   avatar?: string;
-  newsfeed: 'feed_a' | 'feed_b' | 'both';
+  newsfeed: SelectableNewsfeedChannel;
   loginDate: string;
 }
 
@@ -36,7 +57,7 @@ export interface StoredPost {
   mediaUrl?: string;
   mediaType: 'text' | 'image' | 'video';
   category: 'feed' | 'myday' | 'video';
-  newsfeed: 'feed_a' | 'feed_b' | 'both';
+  newsfeed: NewsfeedChannel;
   createdAt: string;
 }
 
@@ -142,6 +163,7 @@ export interface StoredEnvVaultEntry {
 export interface StoredNewsfeedConfig {
   feedATitle: string;
   feedBTitle: string;
+  feedCTitle: string;
 }
 
 export interface SessionPayload {
@@ -154,6 +176,7 @@ const DEFAULT_AVATAR = '/assets/aistudio/image_20261121_145253_f477cbfa.webp';
 const DEFAULT_NEWSFEED_CONFIG: StoredNewsfeedConfig = {
   feedATitle: 'Newsfeed A',
   feedBTitle: 'Newsfeed B',
+  feedCTitle: 'Newsfeed C',
 };
 const DEFAULT_SETTINGS: StoredPricesSettings = {
   fiveH: 50,
@@ -168,7 +191,7 @@ const DEFAULT_SETTINGS: StoredPricesSettings = {
   defOneSack: 0,
 };
 
-export const ALLOWED_CHAT_ROOMS = ['VIP Group', 'Choy Admin', 'Maria Santos'] as const;
+export const ALLOWED_CHAT_ROOMS = ['VIP Group', 'Choy Admin'] as const;
 
 const SESSION_SIGNING_KEY =
   process.env.SESSION_SECRET && process.env.SESSION_SECRET.length >= 16
@@ -416,12 +439,12 @@ export class ChoyStore {
         status TEXT NOT NULL DEFAULT 'approved',
         blocked_users JSONB NOT NULL DEFAULT '[]'::jsonb,
         avatar_url TEXT,
-        newsfeed TEXT NOT NULL DEFAULT 'both',
+        newsfeed TEXT NOT NULL DEFAULT 'feed_a',
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
       ALTER TABLE app_users ADD COLUMN IF NOT EXISTS avatar_url TEXT;
-      ALTER TABLE app_users ADD COLUMN IF NOT EXISTS newsfeed TEXT NOT NULL DEFAULT 'both';
+      ALTER TABLE app_users ADD COLUMN IF NOT EXISTS newsfeed TEXT NOT NULL DEFAULT 'feed_a';
       CREATE TABLE IF NOT EXISTS app_posts (
         id TEXT PRIMARY KEY,
         author_id TEXT NOT NULL,
@@ -734,7 +757,7 @@ export class ChoyStore {
       role: 'admin',
       status: 'approved',
       blockedUsers: [],
-      newsfeed: 'both',
+      newsfeed: 'feed_a',
       createdAt: now,
       updatedAt: now,
     };
@@ -756,15 +779,12 @@ export class ChoyStore {
     pin: string;
     role: 'admin' | 'member';
     status: 'pending' | 'approved';
-    newsfeed?: 'feed_a' | 'feed_b' | 'both';
+    newsfeed?: SelectableNewsfeedChannel;
   }): Promise<StoredUser> {
     await this.ready();
     const id = (params.role === 'admin' ? 'admin_' : 'u_') + crypto.randomUUID().slice(0, 10);
     const now = new Date().toISOString();
-    const newsfeed =
-      params.newsfeed === 'feed_a' || params.newsfeed === 'feed_b' || params.newsfeed === 'both'
-        ? params.newsfeed
-        : 'both';
+    const newsfeed = normalizeUserNewsfeed(params.newsfeed);
     const user: StoredUser = {
       id,
       name: params.name.slice(0, 80),
@@ -789,9 +809,9 @@ export class ChoyStore {
     return user;
   }
 
-  public async updateUserNewsfeed(userId: string, newsfeed: 'feed_a' | 'feed_b' | 'both'): Promise<StoredUser | null> {
+  public async updateUserNewsfeed(userId: string, newsfeed: unknown): Promise<StoredUser | null> {
     await this.ready();
-    const clean = newsfeed === 'feed_a' || newsfeed === 'feed_b' ? newsfeed : 'both';
+    const clean = normalizeUserNewsfeed(newsfeed);
     if (this.usePostgres && this.pool) {
       const res = await this.pool.query(
         'UPDATE app_users SET newsfeed = $1, updated_at = NOW() WHERE id = $2 RETURNING *',
@@ -803,6 +823,24 @@ export class ChoyStore {
     const found = this.memUsers.find((u) => u.id === userId);
     if (!found) return null;
     found.newsfeed = clean;
+    found.updatedAt = new Date().toISOString();
+    return found;
+  }
+
+  public async updateUserPin(userId: string, newPin: string): Promise<StoredUser | null> {
+    await this.ready();
+    const nextHash = hashPin(newPin);
+    if (this.usePostgres && this.pool) {
+      const res = await this.pool.query(
+        'UPDATE app_users SET pin_hash = $1, updated_at = NOW() WHERE id = $2 RETURNING *',
+        [nextHash, userId]
+      );
+      if (res.rows.length === 0) return null;
+      return this.mapUserRow(res.rows[0]);
+    }
+    const found = this.memUsers.find((u) => u.id === userId);
+    if (!found) return null;
+    found.pinHash = nextHash;
     found.updatedAt = new Date().toISOString();
     return found;
   }
@@ -823,7 +861,7 @@ export class ChoyStore {
       role: u.role,
       status: u.status,
       avatar: u.avatar,
-      newsfeed: u.newsfeed,
+      newsfeed: normalizeUserNewsfeed(u.newsfeed),
       loginDate: u.updatedAt.slice(0, 16).replace('T', ' '),
     }));
   }
@@ -1039,28 +1077,21 @@ export class ChoyStore {
         mediaUrl: r.media_url || undefined,
         mediaType: r.media_type,
         category: r.category,
-        newsfeed: (r.newsfeed === 'feed_a' || r.newsfeed === 'feed_b' || r.newsfeed === 'both'
-          ? r.newsfeed
-          : 'both') as 'feed_a' | 'feed_b' | 'both',
+        newsfeed: normalizePostNewsfeed(r.newsfeed),
         createdAt: new Date(r.created_at).toISOString(),
       }));
     }
     return [...this.memPosts]
       .map((p) => ({
         ...p,
-        newsfeed: (p.newsfeed === 'feed_a' || p.newsfeed === 'feed_b' || p.newsfeed === 'both'
-          ? p.newsfeed
-          : 'both') as 'feed_a' | 'feed_b' | 'both',
+        newsfeed: normalizePostNewsfeed(p.newsfeed),
       }))
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   }
 
   public async createPost(post: Omit<StoredPost, 'id' | 'createdAt'>): Promise<StoredPost> {
     await this.ready();
-    const nf =
-      post.newsfeed === 'feed_a' || post.newsfeed === 'feed_b' || post.newsfeed === 'both'
-        ? post.newsfeed
-        : 'both';
+    const nf = normalizePostNewsfeed(post.newsfeed);
     const item: StoredPost = {
       ...post,
       newsfeed: nf,
@@ -1423,6 +1454,10 @@ export class ChoyStore {
             typeof d.feedBTitle === 'string' && d.feedBTitle.trim()
               ? d.feedBTitle.trim().slice(0, 60)
               : DEFAULT_NEWSFEED_CONFIG.feedBTitle,
+          feedCTitle:
+            typeof d.feedCTitle === 'string' && d.feedCTitle.trim()
+              ? d.feedCTitle.trim().slice(0, 60)
+              : DEFAULT_NEWSFEED_CONFIG.feedCTitle,
         };
       }
       return { ...DEFAULT_NEWSFEED_CONFIG };
@@ -1440,7 +1475,11 @@ export class ChoyStore {
       typeof next.feedBTitle === 'string' && next.feedBTitle.trim()
         ? next.feedBTitle.trim().slice(0, 60)
         : DEFAULT_NEWSFEED_CONFIG.feedBTitle;
-    const clean: StoredNewsfeedConfig = { feedATitle, feedBTitle };
+    const feedCTitle =
+      typeof next.feedCTitle === 'string' && next.feedCTitle.trim()
+        ? next.feedCTitle.trim().slice(0, 60)
+        : DEFAULT_NEWSFEED_CONFIG.feedCTitle;
+    const clean: StoredNewsfeedConfig = { feedATitle, feedBTitle, feedCTitle };
 
     if (this.usePostgres && this.pool) {
       await this.pool.query(
@@ -1958,9 +1997,7 @@ export class ChoyStore {
 
   private mapUserRow(r: Record<string, unknown>): StoredUser {
     const rawAvatar = typeof r.avatar_url === 'string' ? r.avatar_url.trim() : '';
-    const rawNewsfeed = typeof r.newsfeed === 'string' ? r.newsfeed.trim().toLowerCase() : 'both';
-    const newsfeed: 'feed_a' | 'feed_b' | 'both' =
-      rawNewsfeed === 'feed_a' || rawNewsfeed === 'feed_b' ? rawNewsfeed : 'both';
+    const newsfeed = normalizeUserNewsfeed(r.newsfeed);
     return {
       id: String(r.id),
       name: String(r.name),
