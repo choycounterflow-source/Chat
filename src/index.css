@@ -22,6 +22,30 @@
     --text-secondary: #a7f3d0;
   }
 
+  html[data-color-theme="ocean"] {
+    --surface-canvas: #f0f9ff;
+  }
+
+  html.dark[data-color-theme="ocean"] {
+    --surface-canvas: #082f49;
+  }
+
+  html[data-color-theme="sunset"] {
+    --surface-canvas: #fff7ed;
+  }
+
+  html.dark[data-color-theme="sunset"] {
+    --surface-canvas: #1c1917;
+  }
+
+  html[data-color-theme="royal"] {
+    --surface-canvas: #f5f3ff;
+  }
+
+  html.dark[data-color-theme="royal"] {
+    --surface-canvas: #1e1b4b;
+  }
+
   html[data-font-scale="compact"] {
     font-size: 14.5px;
   }
@@ -72,4 +96,30 @@ html[data-reduced-motion="true"] *::after {
 html[data-reduced-motion="true"] .choy-ticker-track {
   animation: none !important;
 }
+
+.choy-leaflet-container .leaflet-control-attribution {
+  font-size: 9px !important;
+  background: rgba(255, 255, 255, 0.78) !important;
+  color: #064e3b !important;
+}
+
+@keyframes choyGpsPulse {
+  0% {
+    transform: scale(0.85);
+    opacity: 0.75;
+  }
+  70% {
+    transform: scale(1.75);
+    opacity: 0;
+  }
+  100% {
+    transform: scale(1.75);
+    opacity: 0;
+  }
+}
+
+.choy-gps-pulse-ring {
+  animation: choyGpsPulse 1.8s cubic-bezier(0.22, 1, 0.36, 1) infinite;
+}
+
 

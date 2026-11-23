@@ -1,10 +1,12 @@
 import { useEffect, useState, useCallback } from 'react';
+import { THEME_PRESETS, type ColorThemeId } from '../themePresets';
 
 export type ThemeMode = 'dark' | 'light' | 'system';
 export type ResolvedTheme = 'dark' | 'light';
 export type FontScale = 'compact' | 'standard' | 'large';
 
 const STORAGE_THEME_KEY = 'choychat_theme_mode';
+const STORAGE_COLOR_THEME_KEY = 'choychat_color_theme_v1';
 const STORAGE_FONT_KEY = 'choychat_font_scale';
 const STORAGE_MOTION_KEY = 'choychat_reduced_motion';
 
@@ -16,6 +18,16 @@ function readStoredThemeMode(): ThemeMode {
     // ignore storage errors
   }
   return 'dark';
+}
+
+function readStoredColorTheme(): ColorThemeId {
+  try {
+    const val = localStorage.getItem(STORAGE_COLOR_THEME_KEY);
+    if (val === 'forest' || val === 'ocean' || val === 'sunset' || val === 'royal') return val;
+  } catch {
+    // ignore storage errors
+  }
+  return 'forest';
 }
 
 function readStoredFontScale(): FontScale {
@@ -51,6 +63,7 @@ function getSystemTheme(): ResolvedTheme {
 
 export function useThemePreferences() {
   const [themeMode, setThemeModeState] = useState<ThemeMode>(readStoredThemeMode);
+  const [colorTheme, setColorThemeState] = useState<ColorThemeId>(readStoredColorTheme);
   const [systemTheme, setSystemTheme] = useState<ResolvedTheme>(getSystemTheme);
   const [fontScale, setFontScaleState] = useState<FontScale>(readStoredFontScale);
   const [reducedMotion, setReducedMotionState] = useState<boolean>(readStoredReducedMotion);
@@ -76,12 +89,14 @@ export function useThemePreferences() {
     const isDark = resolvedTheme === 'dark';
     root.classList.toggle('dark', isDark);
     root.style.colorScheme = isDark ? 'dark' : 'light';
+    root.setAttribute('data-color-theme', colorTheme);
 
+    const preset = THEME_PRESETS[colorTheme];
     const metaTheme = document.querySelector('meta[name="theme-color"]');
     if (metaTheme) {
-      metaTheme.setAttribute('content', isDark ? '#022c22' : '#ecfdf5');
+      metaTheme.setAttribute('content', isDark ? preset.metaDark : preset.metaLight);
     }
-  }, [resolvedTheme]);
+  }, [resolvedTheme, colorTheme]);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -101,6 +116,15 @@ export function useThemePreferences() {
     setThemeModeState(mode);
     try {
       localStorage.setItem(STORAGE_THEME_KEY, mode);
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  const setColorTheme = useCallback((id: ColorThemeId) => {
+    setColorThemeState(id);
+    try {
+      localStorage.setItem(STORAGE_COLOR_THEME_KEY, id);
     } catch {
       // ignore
     }
@@ -131,16 +155,19 @@ export function useThemePreferences() {
 
   const resetAppearance = useCallback(() => {
     setThemeMode('dark');
+    setColorTheme('forest');
     setFontScale('standard');
     setReducedMotion(false);
-  }, [setThemeMode, setFontScale, setReducedMotion]);
+  }, [setThemeMode, setColorTheme, setFontScale, setReducedMotion]);
 
   return {
     themeMode,
     resolvedTheme,
+    colorTheme,
     fontScale,
     reducedMotion,
     setThemeMode,
+    setColorTheme,
     toggleLightDark,
     setFontScale,
     setReducedMotion,

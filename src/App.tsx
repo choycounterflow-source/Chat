@@ -69,7 +69,8 @@ import {
   Pause,
   Play,
   ChevronLeft,
-  ChevronRight
+  ChevronRight,
+  Palette
 } from 'lucide-react';
 import { PWAInstallButton } from './components/PWAInstallButton';
 import { OfflineIndicator } from './components/OfflineIndicator';
@@ -82,6 +83,7 @@ import { GitHubIntelligence } from './components/GitHubIntelligence';
 import { ChatVideoPlayer } from './components/ChatVideoPlayer';
 import { ImageZoomModal } from './components/ImageZoomModal';
 import { useThemePreferences } from './hooks/useThemePreferences';
+import { COLOR_THEME_LIST, THEME_PRESETS } from './themePresets';
 import {
   type EmojiLinkItem,
   buildEmojiShareUrl,
@@ -373,18 +375,22 @@ function urlBase64ToUint8Array(base64String: string): Uint8Array<ArrayBuffer> {
 }
 
 export default function App() {
-  // Appearance & Theme Preferences (Light / Dark / System, Text Size, Reduce Motion)
+  // Appearance & Theme Preferences (Color Scheme, Light / Dark / System, Text Size, Reduce Motion)
   const {
     themeMode,
     resolvedTheme,
+    colorTheme,
     fontScale,
     reducedMotion,
     setThemeMode,
+    setColorTheme,
     toggleLightDark,
     setFontScale,
     setReducedMotion,
     resetAppearance
   } = useThemePreferences();
+
+  const theme = THEME_PRESETS[colorTheme];
 
   const [msgBgMode, setMsgBgMode] = useState<'default' | 'black' | 'white'>(() => {
     try {
@@ -1641,6 +1647,8 @@ export default function App() {
             if (eventName === 'sync') {
               fetchSyncedState(true);
               setSecuritySyncTick((prev) => prev + 1);
+            } else if (eventName === 'gps') {
+              window.dispatchEvent(new CustomEvent('choy-gps-ping'));
             } else if (eventName === 'rtc' && dataLines.length > 0) {
               try {
                 const payload = JSON.parse(dataLines.join('\n')) as RtcSignalPayload;
@@ -2008,27 +2016,86 @@ export default function App() {
     };
   }, [authToken, apiFetch, fetchSyncedState, subscribeToBackgroundPush, flushOfflineQueue]);
 
-  // Periodic GPS location ping for admin tracking when mobile data / online is active
+  // Continuous real-time GPS movement watch for Admin Live Map tracking
   useEffect(() => {
     if (!authToken || !currentUser) return;
-    const sendGpsPing = () => {
-      if ('geolocation' in navigator && navigator.onLine) {
+    if (!('geolocation' in navigator)) return;
+
+    let lastSentAt = 0;
+    let lastCoords: { lat: number; lng: number } | null = null;
+    let inFlight = false;
+
+    const approxDistMeters = (a: { lat: number; lng: number }, b: { lat: number; lng: number }) => {
+      const toRad = (deg: number) => (deg * Math.PI) / 180;
+      const dLat = toRad(b.lat - a.lat);
+      const dLng = toRad(b.lng - a.lng);
+      const x =
+        Math.sin(dLat / 2) ** 2 +
+        Math.cos(toRad(a.lat)) * Math.cos(toRad(b.lat)) * Math.sin(dLng / 2) ** 2;
+      return 2 * 6371000 * Math.asin(Math.min(1, Math.sqrt(x)));
+    };
+
+    const emitPosition = (pos: GeolocationPosition, force = false) => {
+      if (!navigator.onLine || inFlight) return;
+      const { latitude, longitude, accuracy, speed, heading } = pos.coords;
+      const now = Date.now();
+      const movedMeters = lastCoords ? approxDistMeters(lastCoords, { lat: latitude, lng: longitude }) : 999;
+      const elapsed = now - lastSentAt;
+
+      if (!force) {
+        if (elapsed < 3500) return;
+        if (movedMeters < 5 && elapsed < 12000) return;
+      }
+
+      inFlight = true;
+      lastSentAt = now;
+      lastCoords = { lat: latitude, lng: longitude };
+
+      void apiFetch('/api/choy/gps/ping', {
+        method: 'POST',
+        body: JSON.stringify({
+          lat: latitude,
+          lng: longitude,
+          accuracy,
+          speed: typeof speed === 'number' && Number.isFinite(speed) ? speed : undefined,
+          heading: typeof heading === 'number' && Number.isFinite(heading) ? heading : undefined,
+        }),
+      })
+        .catch(() => {})
+        .finally(() => {
+          inFlight = false;
+        });
+    };
+
+    // Immediate initial position ping
+    navigator.geolocation.getCurrentPosition(
+      (pos) => emitPosition(pos, true),
+      () => {},
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 5000 }
+    );
+
+    // Live movement watcher so pins glide smoothly on Admin's Live Map
+    const watchId = navigator.geolocation.watchPosition(
+      (pos) => emitPosition(pos, false),
+      () => {},
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 3000 }
+    );
+
+    // Fallback heartbeat every 15s while online
+    const gpsInterval = window.setInterval(() => {
+      if (navigator.onLine && Date.now() - lastSentAt >= 14000) {
         navigator.geolocation.getCurrentPosition(
-          (pos) => {
-            const { latitude, longitude, accuracy } = pos.coords;
-            void apiFetch('/api/choy/gps/ping', {
-              method: 'POST',
-              body: JSON.stringify({ lat: latitude, lng: longitude, accuracy }),
-            }).catch(() => {});
-          },
+          (pos) => emitPosition(pos, true),
           () => {},
-          { timeout: 15000, maximumAge: 60000 }
+          { enableHighAccuracy: true, timeout: 10000, maximumAge: 5000 }
         );
       }
+    }, 15000);
+
+    return () => {
+      navigator.geolocation.clearWatch(watchId);
+      window.clearInterval(gpsInterval);
     };
-    sendGpsPing();
-    const gpsInterval = setInterval(sendGpsPing, 45000);
-    return () => clearInterval(gpsInterval);
   }, [authToken, currentUser?.id, apiFetch]);
 
   // Deep-link handler when user taps a Home-Screen Message or Video Call Notification
@@ -4837,7 +4904,7 @@ export default function App() {
   }
 
   return (
-    <div className="fixed inset-0 bg-emerald-50 dark:bg-emerald-950/95 text-emerald-950 dark:text-slate-100 flex flex-col md:flex-row overflow-hidden text-sm">
+    <div className={`fixed inset-0 ${theme.appShellBg} flex flex-col md:flex-row overflow-hidden text-sm transition-colors`}>
       <input
         ref={profileAvatarInputRef}
         type="file"
@@ -5373,13 +5440,13 @@ export default function App() {
         })()}
 
       {/* SIDEBAR / MOBILE SWIPEABLE NAV BAR */}
-      <aside className="w-full md:w-60 bg-white/95 dark:bg-emerald-900/90 border-b md:border-b-0 md:border-r border-emerald-200 dark:border-emerald-800 p-2.5 md:p-3 flex flex-row md:flex-col justify-between shrink-0 overflow-x-auto md:overflow-x-hidden md:overflow-y-auto touch-pan-x md:touch-pan-y overscroll-x-contain [-webkit-overflow-scrolling:touch]">
+      <aside className={`w-full md:w-60 ${theme.sidebarBg} border-b md:border-b-0 md:border-r p-2.5 md:p-3 flex flex-row md:flex-col justify-between shrink-0 overflow-x-auto md:overflow-x-hidden md:overflow-y-auto touch-pan-x md:touch-pan-y overscroll-x-contain [-webkit-overflow-scrolling:touch] transition-colors`}>
         <div className="flex md:flex-col items-center md:items-stretch gap-1.5 w-max md:w-full">
           <div className="hidden md:flex items-center gap-2.5 px-2 py-2 mb-2">
             <button
               type="button"
               onClick={() => setIsAppIconShareModalOpen(true)}
-              className="relative w-10 h-13 rounded-lg border-2 border-emerald-400 bg-emerald-50 dark:bg-emerald-950 p-0.5 shrink-0 hover:scale-105 transition shadow cursor-pointer group"
+              className={`relative w-10 h-13 rounded-lg border-2 ${theme.sidebarBrandBorder} p-0.5 shrink-0 hover:scale-105 transition shadow cursor-pointer group`}
               title={`Open App Icon Emoji Link (${activeEmojiLink?.emojiCode || '🔐🟢💬✨🚀'})`}
             >
               <img
@@ -5387,13 +5454,13 @@ export default function App() {
                 alt="Choy Chat App Icon"
                 className="w-full h-full object-contain rounded"
               />
-              <span className="absolute -bottom-1.5 left-1/2 -translate-x-1/2 px-1.5 py-0.5 rounded-full bg-emerald-950 border border-amber-400 text-[9px] leading-none whitespace-nowrap shadow">
+              <span className="absolute -bottom-1.5 left-1/2 -translate-x-1/2 px-1.5 py-0.5 rounded-full bg-slate-950 border border-amber-400 text-[9px] leading-none whitespace-nowrap shadow">
                 {activeEmojiLink?.emojiCode || '🔐🟢💬'}
               </span>
             </button>
             <div className="min-w-0">
-              <div className="text-sm font-bold text-emerald-950 dark:text-white truncate">Choy Chat</div>
-              <div className="text-[10px] text-emerald-700 dark:text-emerald-300 flex items-center gap-1">
+              <div className={`text-sm font-bold truncate ${theme.sidebarTitleText}`}>Choy Chat</div>
+              <div className={`text-[10px] flex items-center gap-1 ${theme.sidebarSubText}`}>
                 <Cloud className="w-3 h-3" /> {storageMode === 'postgres' ? 'Postgres Synced' : 'Live Synced'}
               </div>
             </div>
@@ -5403,8 +5470,8 @@ export default function App() {
             <button
               type="button"
               onClick={() => setActiveTab('feed')}
-              className={`px-3 py-2 rounded-xl flex items-center gap-2 shrink-0 whitespace-nowrap ${
-                activeTab === 'feed' ? 'bg-emerald-400 text-slate-950 font-bold' : 'text-emerald-100 hover:bg-emerald-800'
+              className={`px-3 py-2 rounded-xl flex items-center gap-2 shrink-0 whitespace-nowrap transition ${
+                activeTab === 'feed' ? theme.navActive : theme.navInactive
               }`}
             >
               <Home className="w-4 h-4 shrink-0" />
@@ -5413,10 +5480,8 @@ export default function App() {
             <button
               type="button"
               onClick={() => setActiveTab('people')}
-              className={`px-3 py-2 rounded-xl flex items-center gap-2 shrink-0 whitespace-nowrap ${
-                activeTab === 'people'
-                  ? 'bg-emerald-400 text-slate-950 font-bold'
-                  : 'text-emerald-100 hover:bg-emerald-800'
+              className={`px-3 py-2 rounded-xl flex items-center gap-2 shrink-0 whitespace-nowrap transition ${
+                activeTab === 'people' ? theme.navActive : theme.navInactive
               }`}
             >
               <Users className="w-4 h-4 shrink-0" />
@@ -5425,10 +5490,8 @@ export default function App() {
             <button
               type="button"
               onClick={() => setActiveTab('videos')}
-              className={`px-3 py-2 rounded-xl flex items-center gap-2 shrink-0 whitespace-nowrap ${
-                activeTab === 'videos'
-                  ? 'bg-emerald-400 text-slate-950 font-bold'
-                  : 'text-emerald-100 hover:bg-emerald-800'
+              className={`px-3 py-2 rounded-xl flex items-center gap-2 shrink-0 whitespace-nowrap transition ${
+                activeTab === 'videos' ? theme.navActive : theme.navInactive
               }`}
             >
               <Video className="w-4 h-4 shrink-0" />
@@ -5437,10 +5500,8 @@ export default function App() {
             <button
               type="button"
               onClick={() => setActiveTab('messages')}
-              className={`px-3 py-2 rounded-xl flex items-center gap-2 shrink-0 whitespace-nowrap ${
-                activeTab === 'messages'
-                  ? 'bg-emerald-400 text-slate-950 font-bold'
-                  : 'text-emerald-100 hover:bg-emerald-800'
+              className={`px-3 py-2 rounded-xl flex items-center gap-2 shrink-0 whitespace-nowrap transition ${
+                activeTab === 'messages' ? theme.navActive : theme.navInactive
               }`}
             >
               <MessageSquare className="w-4 h-4 shrink-0" />
@@ -5450,10 +5511,8 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => setActiveTab('ledger')}
-                className={`px-3 py-2 rounded-xl flex items-center gap-2 shrink-0 whitespace-nowrap ${
-                  activeTab === 'ledger'
-                    ? 'bg-emerald-400 text-slate-950 font-bold'
-                    : 'text-emerald-100 hover:bg-emerald-800'
+                className={`px-3 py-2 rounded-xl flex items-center gap-2 shrink-0 whitespace-nowrap transition ${
+                  activeTab === 'ledger' ? theme.navActive : theme.navInactive
                 }`}
               >
                 <FileSpreadsheet className="w-4 h-4 shrink-0" />
@@ -5463,10 +5522,8 @@ export default function App() {
             <button
               type="button"
               onClick={() => setActiveTab('analytics')}
-              className={`px-3 py-2 rounded-xl flex items-center gap-2 shrink-0 whitespace-nowrap ${
-                activeTab === 'analytics'
-                  ? 'bg-emerald-400 text-slate-950 font-bold'
-                  : 'text-emerald-100 hover:bg-emerald-800'
+              className={`px-3 py-2 rounded-xl flex items-center gap-2 shrink-0 whitespace-nowrap transition ${
+                activeTab === 'analytics' ? theme.navActive : theme.navInactive
               }`}
             >
               <Award className="w-4 h-4 shrink-0" />
@@ -5475,8 +5532,8 @@ export default function App() {
             <button
               type="button"
               onClick={() => setActiveTab('choyai')}
-              className={`px-3 py-2 rounded-xl flex items-center gap-2 shrink-0 whitespace-nowrap ${
-                activeTab === 'choyai' ? 'bg-cyan-400 text-slate-950 font-bold' : 'text-cyan-200 hover:bg-emerald-800'
+              className={`px-3 py-2 rounded-xl flex items-center gap-2 shrink-0 whitespace-nowrap transition ${
+                activeTab === 'choyai' ? 'bg-cyan-400 text-slate-950 font-bold' : theme.navInactive
               }`}
             >
               <img
@@ -5489,10 +5546,8 @@ export default function App() {
             <button
               type="button"
               onClick={() => setActiveTab('github')}
-              className={`px-3 py-2 rounded-xl flex items-center gap-2 shrink-0 whitespace-nowrap ${
-                activeTab === 'github'
-                  ? 'bg-emerald-400 text-slate-950 font-bold'
-                  : 'text-emerald-100 hover:bg-emerald-800'
+              className={`px-3 py-2 rounded-xl flex items-center gap-2 shrink-0 whitespace-nowrap transition ${
+                activeTab === 'github' ? theme.navActive : theme.navInactive
               }`}
             >
               <GitBranch className="w-4 h-4 shrink-0" />
@@ -5501,14 +5556,14 @@ export default function App() {
             <button
               type="button"
               onClick={() => setActiveTab('profile')}
-              className={`md:hidden px-3 py-2 rounded-xl flex items-center gap-2 shrink-0 whitespace-nowrap ${
-                activeTab === 'profile' ? 'bg-emerald-400 text-slate-950 font-bold' : 'text-emerald-100 hover:bg-emerald-800'
+              className={`md:hidden px-3 py-2 rounded-xl flex items-center gap-2 shrink-0 whitespace-nowrap transition ${
+                activeTab === 'profile' ? theme.navActive : theme.navInactive
               }`}
             >
               <img
                 src={getUserAvatar(currentUser)}
                 alt=""
-                className={`w-4 h-5 rounded bg-emerald-50 dark:bg-emerald-950 shrink-0 border border-emerald-400 ${
+                className={`w-4 h-5 rounded bg-white dark:bg-slate-900 shrink-0 border border-emerald-400 ${
                   isCustomAvatar(getUserAvatar(currentUser)) ? 'object-cover' : 'object-contain'
                 }`}
               />
@@ -5525,10 +5580,10 @@ export default function App() {
                 <button
                   type="button"
                   onClick={() => setActiveTab('admin_knowledge')}
-                  className={`px-3 py-2 rounded-xl flex items-center gap-2 shrink-0 whitespace-nowrap ${
+                  className={`px-3 py-2 rounded-xl flex items-center gap-2 shrink-0 whitespace-nowrap transition ${
                     activeTab === 'admin_knowledge'
                       ? 'bg-indigo-600 text-white font-bold'
-                      : 'text-indigo-200 hover:bg-emerald-800'
+                      : 'text-indigo-700 hover:bg-indigo-100 dark:text-indigo-200 dark:hover:bg-indigo-900/60'
                   }`}
                 >
                   <Database className="w-4 h-4 shrink-0" />
@@ -5537,10 +5592,10 @@ export default function App() {
                 <button
                   type="button"
                   onClick={() => setActiveTab('admin_prices')}
-                  className={`px-3 py-2 rounded-xl flex items-center gap-2 shrink-0 whitespace-nowrap ${
+                  className={`px-3 py-2 rounded-xl flex items-center gap-2 shrink-0 whitespace-nowrap transition ${
                     activeTab === 'admin_prices'
                       ? 'bg-indigo-600 text-white font-bold'
-                      : 'text-indigo-200 hover:bg-emerald-800'
+                      : 'text-indigo-700 hover:bg-indigo-100 dark:text-indigo-200 dark:hover:bg-indigo-900/60'
                   }`}
                 >
                   <Sliders className="w-4 h-4 shrink-0" />
@@ -5549,10 +5604,10 @@ export default function App() {
                 <button
                   type="button"
                   onClick={() => setActiveTab('admin_newsfeeds')}
-                  className={`px-3 py-2 rounded-xl flex items-center gap-2 whitespace-nowrap shrink-0 ${
+                  className={`px-3 py-2 rounded-xl flex items-center gap-2 whitespace-nowrap shrink-0 transition ${
                     activeTab === 'admin_newsfeeds'
                       ? 'bg-indigo-600 text-white font-bold'
-                      : 'text-indigo-200 hover:bg-emerald-800'
+                      : 'text-indigo-700 hover:bg-indigo-100 dark:text-indigo-200 dark:hover:bg-indigo-900/60'
                   }`}
                 >
                   <Globe className="w-4 h-4 shrink-0" />
@@ -5561,10 +5616,10 @@ export default function App() {
                 <button
                   type="button"
                   onClick={() => setActiveTab('admin_security')}
-                  className={`px-3 py-2 rounded-xl flex items-center gap-2 whitespace-nowrap shrink-0 ${
+                  className={`px-3 py-2 rounded-xl flex items-center gap-2 whitespace-nowrap shrink-0 transition ${
                     activeTab === 'admin_security'
                       ? 'bg-indigo-600 text-white font-bold'
-                      : 'text-indigo-200 hover:bg-emerald-800'
+                      : 'text-indigo-700 hover:bg-indigo-100 dark:text-indigo-200 dark:hover:bg-indigo-900/60'
                   }`}
                 >
                   <Key className="w-4 h-4 shrink-0" />
@@ -5575,27 +5630,27 @@ export default function App() {
           </nav>
         </div>
 
-        <div className="hidden md:block pt-3 border-t border-emerald-200 dark:border-emerald-800 space-y-2">
+        <div className={`hidden md:block pt-3 border-t ${theme.sidebarFooterBorder} space-y-2`}>
           <button
             type="button"
             onClick={() => setActiveTab('profile')}
-            className="w-full p-2 rounded-xl bg-emerald-50 dark:bg-emerald-950/70 border border-emerald-200 dark:border-emerald-800 flex items-center gap-2 text-left hover:bg-emerald-100 dark:hover:bg-emerald-800/70 transition"
+            className={`w-full p-2 rounded-xl border ${theme.sidebarCard} flex items-center gap-2 text-left transition`}
           >
             <img
               src={getUserAvatar(currentUser)}
               alt=""
-              className={`w-8 h-11 rounded-lg bg-emerald-50 dark:bg-emerald-950 shrink-0 border border-emerald-500/50 ${
+              className={`w-8 h-11 rounded-lg bg-white dark:bg-slate-900 shrink-0 border border-current/25 ${
                 isCustomAvatar(getUserAvatar(currentUser)) ? 'object-cover' : 'object-contain'
               }`}
             />
             <div className="min-w-0 flex-1">
-              <div className="text-[11px] font-bold text-emerald-950 dark:text-white truncate">{currentUser.name}</div>
-              <div className="text-[9px] text-emerald-700 dark:text-emerald-300 truncate">{isAdmin ? 'Admin • Synced' : 'Member • Synced'}</div>
+              <div className={`text-[11px] font-bold truncate ${theme.sidebarTitleText}`}>{currentUser.name}</div>
+              <div className={`text-[9px] truncate ${theme.sidebarMutedText}`}>{isAdmin ? 'Admin • Synced' : 'Member • Synced'}</div>
             </div>
           </button>
-          <div className="flex items-center justify-between gap-1.5 px-2.5 py-2 rounded-xl bg-emerald-50 dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-800 text-xs">
-            <span className="font-bold text-emerald-950 dark:text-white flex items-center gap-1.5 truncate">
-              <MessageSquare className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" /> Headbubble
+          <div className={`flex items-center justify-between gap-1.5 px-2.5 py-2 rounded-xl border ${theme.sidebarCard} text-xs`}>
+            <span className={`font-bold flex items-center gap-1.5 truncate ${theme.sidebarTitleText}`}>
+              <MessageSquare className={`w-3.5 h-3.5 shrink-0 ${theme.sidebarMutedText}`} /> Headbubble
             </span>
             <div className="flex items-center gap-1 shrink-0">
               {isDocPipSupported && (
@@ -5606,7 +5661,7 @@ export default function App() {
                   className={`px-2 py-1 rounded-lg text-[10px] font-bold transition ${
                     isHeadBubblePipOpen
                       ? 'bg-amber-400 text-slate-950 shadow'
-                      : 'bg-white dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 text-emerald-800 dark:text-emerald-200 hover:bg-emerald-100'
+                      : theme.chatSecondaryBtn + ' border'
                   }`}
                 >
                   {isHeadBubblePipOpen ? 'Popped' : 'Pop Out'}
@@ -5627,8 +5682,8 @@ export default function App() {
                 }}
                 className={`px-2 py-1 rounded-lg text-[10px] font-bold transition ${
                   chatHeadBubbleEnabled
-                    ? 'bg-emerald-400 text-slate-950 shadow'
-                    : 'bg-emerald-200 dark:bg-emerald-900 text-emerald-700 dark:text-emerald-300'
+                    ? theme.navActive
+                    : theme.drawerSegmentedInactive
                 }`}
               >
                 {chatHeadBubbleEnabled ? 'ON' : 'OFF'}
@@ -5638,7 +5693,7 @@ export default function App() {
           <button
             type="button"
             onClick={() => setIsMenuDrawerOpen(true)}
-            className="w-full px-3 py-2 rounded-xl bg-emerald-50 dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-800 text-emerald-900 dark:text-emerald-100 text-xs font-semibold hover:bg-emerald-100 dark:hover:bg-emerald-800 flex items-center justify-center gap-2 transition"
+            className={`w-full px-3 py-2 rounded-xl border ${theme.sidebarCard} ${theme.sidebarTitleText} text-xs font-semibold flex items-center justify-center gap-2 transition`}
           >
             <MoreVertical className="w-3.5 h-3.5" /> Menu &amp; Settings
           </button>
@@ -5648,43 +5703,43 @@ export default function App() {
       {/* MAIN VIEW */}
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
         {/* TOP BAR — FULL-WIDTH DESIGNED CHOY CHAT BANNER */}
-        <header className="relative z-30 flex flex-col px-3 sm:px-5 pt-3 pb-3 border-b border-emerald-200 dark:border-emerald-700/70 bg-gradient-to-b from-white via-emerald-50/70 to-emerald-50 dark:from-emerald-950 dark:via-emerald-900/70 dark:to-emerald-950/90 shrink-0 gap-2.5">
+        <header className={`relative z-30 flex flex-col px-3 sm:px-5 pt-3 pb-3 border-b ${theme.topHeaderBg} shrink-0 gap-2.5 transition-colors`}>
           {/* Full-width edge-to-edge CHOY CHAT Hero Banner */}
-          <div className="relative w-full overflow-hidden rounded-2xl border border-amber-500/50 dark:border-amber-400/45 bg-gradient-to-r from-emerald-100 via-white to-emerald-100 dark:from-emerald-950 dark:via-emerald-900/95 dark:to-emerald-950 px-3 sm:px-6 py-2.5 sm:py-3.5 shadow-[0_4px_20px_rgba(6,95,70,0.12)] dark:shadow-[0_0_25px_rgba(16,185,129,0.22)]">
-            {/* Soft ambient emerald & gold glow */}
-            <div className="pointer-events-none absolute -top-10 left-1/4 w-48 h-24 rounded-full bg-amber-400/20 dark:bg-amber-400/15 blur-2xl"></div>
-            <div className="pointer-events-none absolute -bottom-10 right-1/4 w-48 h-24 rounded-full bg-emerald-400/20 blur-2xl"></div>
+          <div className={`relative w-full overflow-hidden rounded-2xl border ${theme.heroCard} px-3 sm:px-6 py-2.5 sm:py-3.5 transition-colors`}>
+            {/* Soft ambient glow */}
+            <div className={`pointer-events-none absolute -top-10 left-1/4 w-48 h-24 rounded-full ${theme.heroGlowA} blur-2xl`}></div>
+            <div className={`pointer-events-none absolute -bottom-10 right-1/4 w-48 h-24 rounded-full ${theme.heroGlowB} blur-2xl`}></div>
 
-            {/* Ornamental Gold Corner Accents */}
-            <span className="pointer-events-none absolute top-1.5 left-1.5 w-3.5 h-3.5 border-t-2 border-l-2 border-amber-600/70 dark:border-amber-300/80 rounded-tl-md"></span>
-            <span className="pointer-events-none absolute top-1.5 right-1.5 w-3.5 h-3.5 border-t-2 border-r-2 border-amber-600/70 dark:border-amber-300/80 rounded-tr-md"></span>
-            <span className="pointer-events-none absolute bottom-1.5 left-1.5 w-3.5 h-3.5 border-b-2 border-l-2 border-amber-600/70 dark:border-amber-300/80 rounded-bl-md"></span>
-            <span className="pointer-events-none absolute bottom-1.5 right-1.5 w-3.5 h-3.5 border-b-2 border-r-2 border-amber-600/70 dark:border-amber-300/80 rounded-br-md"></span>
+            {/* Ornamental Corner Accents */}
+            <span className={`pointer-events-none absolute top-1.5 left-1.5 w-3.5 h-3.5 border-t-2 border-l-2 ${theme.heroCorner} rounded-tl-md`}></span>
+            <span className={`pointer-events-none absolute top-1.5 right-1.5 w-3.5 h-3.5 border-t-2 border-r-2 ${theme.heroCorner} rounded-tr-md`}></span>
+            <span className={`pointer-events-none absolute bottom-1.5 left-1.5 w-3.5 h-3.5 border-b-2 border-l-2 ${theme.heroCorner} rounded-bl-md`}></span>
+            <span className={`pointer-events-none absolute bottom-1.5 right-1.5 w-3.5 h-3.5 border-b-2 border-r-2 ${theme.heroCorner} rounded-br-md`}></span>
 
             <div className="relative z-10 w-full flex items-center justify-between gap-2 sm:gap-4">
               {/* Left ornamental wing */}
               <div className="hidden xs:flex sm:flex items-center gap-1.5 flex-1 min-w-[20px]">
-                <span className="h-[2px] flex-1 bg-gradient-to-r from-transparent via-amber-500/80 dark:via-amber-400/80 to-emerald-600 dark:to-emerald-300"></span>
-                <span className="w-2 h-2 rotate-45 bg-amber-500 dark:bg-amber-300 shadow-[0_0_8px_rgba(251,191,36,0.7)] shrink-0"></span>
+                <span className={`h-[2px] flex-1 bg-gradient-to-r ${theme.heroWingLeft}`}></span>
+                <span className={`w-2 h-2 rotate-45 ${theme.heroGem} shrink-0`}></span>
               </div>
 
               {/* Stretched Full-Width CHOY CHAT Wordmark */}
-              <h1 className="flex-1 sm:flex-none text-center font-black uppercase leading-none select-none text-[clamp(1.65rem,7.2vw,3.4rem)] tracking-[0.18em] sm:tracking-[0.28em] md:tracking-[0.34em] bg-gradient-to-r from-emerald-950 via-emerald-700 via-50% to-amber-700 dark:from-amber-200 dark:via-white dark:via-50% dark:to-emerald-300 bg-clip-text text-transparent drop-shadow-[0_2px_10px_rgba(16,185,129,0.2)] dark:drop-shadow-[0_3px_14px_rgba(251,191,36,0.4)] whitespace-nowrap pl-[0.18em] sm:pl-[0.28em] md:pl-[0.34em]">
+              <h1 className={`flex-1 sm:flex-none text-center font-black uppercase leading-none select-none text-[clamp(1.65rem,7.2vw,3.4rem)] tracking-[0.18em] sm:tracking-[0.28em] md:tracking-[0.34em] bg-gradient-to-r ${theme.heroWordmark} bg-clip-text text-transparent whitespace-nowrap pl-[0.18em] sm:pl-[0.28em] md:pl-[0.34em]`}>
                 CHOY CHAT
               </h1>
 
               {/* Right ornamental wing */}
               <div className="hidden xs:flex sm:flex items-center gap-1.5 flex-1 min-w-[20px]">
-                <span className="w-2 h-2 rotate-45 bg-amber-500 dark:bg-amber-300 shadow-[0_0_8px_rgba(251,191,36,0.7)] shrink-0"></span>
-                <span className="h-[2px] flex-1 bg-gradient-to-l from-transparent via-amber-500/80 dark:via-amber-400/80 to-emerald-600 dark:to-emerald-300"></span>
+                <span className={`w-2 h-2 rotate-45 ${theme.heroGem} shrink-0`}></span>
+                <span className={`h-[2px] flex-1 bg-gradient-to-l ${theme.heroWingRight}`}></span>
               </div>
             </div>
 
-            {/* Subtle gold bottom shimmer line */}
-            <div className="relative z-10 mt-1.5 flex items-center justify-center gap-2 text-[9px] sm:text-[10px] font-bold uppercase tracking-[0.25em] text-amber-800/90 dark:text-amber-200/85">
-              <span className="h-px w-8 sm:w-16 bg-gradient-to-r from-transparent to-amber-600/60 dark:to-amber-300/70"></span>
+            {/* Subtle bottom shimmer line */}
+            <div className={`relative z-10 mt-1.5 flex items-center justify-center gap-2 text-[9px] sm:text-[10px] font-bold uppercase tracking-[0.25em] ${theme.heroSubtitleRow}`}>
+              <span className={`h-px w-8 sm:w-16 bg-gradient-to-r from-transparent ${theme.heroSubtitleLineLeft}`}></span>
               <span className="truncate">VIP Social • Live Cloud Sync</span>
-              <span className="h-px w-8 sm:w-16 bg-gradient-to-l from-transparent to-amber-600/60 dark:to-amber-300/70"></span>
+              <span className={`h-px w-8 sm:w-16 bg-gradient-to-l from-transparent ${theme.heroSubtitleLineRight}`}></span>
             </div>
           </div>
 
@@ -5693,20 +5748,20 @@ export default function App() {
             <button
               type="button"
               onClick={() => setIsAppIconShareModalOpen(true)}
-              className="flex items-center gap-1.5 px-2 py-1 rounded-xl bg-white dark:bg-emerald-900 border border-amber-400/70 dark:border-amber-400/60 hover:bg-emerald-50 dark:hover:bg-emerald-800 transition shrink-0 shadow-xs"
+              className={`flex items-center gap-1.5 px-2 py-1 rounded-xl border transition shrink-0 shadow-xs ${theme.searchButton}`}
               title="Share Emoji Link with App Icon Image"
             >
               <img
                 src={activeEmojiLink?.iconUrl || DEFAULT_AVATAR}
                 alt="App Icon"
-                className="w-6 h-7 rounded-md object-contain bg-emerald-950 border border-emerald-400/60 shrink-0"
+                className="w-6 h-7 rounded-md object-contain bg-slate-950 border border-white/30 shrink-0"
               />
               <span className="text-xs leading-none tracking-tight">
                 {activeEmojiLink?.emojiCode || '🔐🟢💬✨🚀'}
               </span>
             </button>
             <div ref={searchContainerRef} className="relative flex-1 min-w-0 z-30">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-emerald-700 dark:text-emerald-300 pointer-events-none" />
+              <Search className={`absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 pointer-events-none ${theme.searchIcon}`} />
               <input
                 type="text"
                 placeholder="Search users, posts, chats..."
@@ -5716,7 +5771,7 @@ export default function App() {
                   setSearchQuery(e.target.value);
                   setIsSearchOpen(true);
                 }}
-                className="w-full pl-9 pr-8 py-2 bg-white dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700/80 rounded-xl text-xs text-emerald-950 dark:text-white placeholder-emerald-600/60 dark:placeholder-emerald-400 focus:outline-none focus:border-amber-500 dark:focus:border-amber-300/80 shadow-inner"
+                className={`w-full pl-9 pr-8 py-2 border rounded-xl text-xs focus:outline-none shadow-inner ${theme.searchInput}`}
               />
               {searchQuery && (
                 <button
@@ -5814,7 +5869,7 @@ export default function App() {
             <button
               type="button"
               onClick={() => setIsMenuDrawerOpen(true)}
-              className="p-2.5 bg-white dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 rounded-xl text-emerald-900 dark:text-emerald-100 hover:bg-emerald-100 dark:hover:bg-emerald-800 hover:border-amber-400/70 transition shrink-0 shadow-xs"
+              className={`p-2.5 border rounded-xl transition shrink-0 shadow-xs ${theme.searchButton}`}
               title="Open Menu & Settings"
               aria-label="Open Menu and Settings"
               aria-expanded={isMenuDrawerOpen}
@@ -6019,7 +6074,7 @@ export default function App() {
                       onClick={() => setNewPostCategory('feed')}
                       className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl transition ${
                         newPostCategory === 'feed'
-                          ? 'bg-gradient-to-r from-emerald-400 to-teal-400 text-slate-950 font-extrabold shadow-md'
+                          ? theme.feedTabActive
                           : 'text-emerald-800 dark:text-emerald-200 bg-emerald-100/90 dark:bg-emerald-950/80 hover:bg-emerald-200/80 dark:hover:bg-emerald-800'
                       }`}
                     >
@@ -6030,7 +6085,7 @@ export default function App() {
                       onClick={() => setNewPostCategory('myday')}
                       className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl transition ${
                         newPostCategory === 'myday'
-                          ? 'bg-gradient-to-r from-emerald-400 to-teal-400 text-slate-950 font-extrabold shadow-md'
+                          ? theme.feedTabActive
                           : 'text-emerald-800 dark:text-emerald-200 bg-emerald-100/90 dark:bg-emerald-950/80 hover:bg-emerald-200/80 dark:hover:bg-emerald-800'
                       }`}
                     >
@@ -6731,11 +6786,11 @@ export default function App() {
                 )}
 
             <div className={`flex flex-col md:grid md:grid-cols-3 gap-3 md:gap-4 md:h-[580px]`}>
-              <div className={`bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-3 flex flex-col space-y-2 shrink-0 ${
+              <div className={`${theme.messagesPanelCard} border rounded-2xl p-3 flex flex-col space-y-2 shrink-0 transition-colors ${
                 activeChatMobileView ? 'hidden md:flex' : 'flex'
               }`}>
                 <div className="flex items-center justify-between gap-2">
-                  <div className="text-xs font-bold text-emerald-700 dark:text-emerald-300 uppercase">Chats</div>
+                  <div className={`text-xs font-bold uppercase ${theme.sidebarMutedText}`}>Chats</div>
                   {msgSearchQuery.trim() && (
                     <button
                       type="button"
@@ -6864,9 +6919,7 @@ export default function App() {
                             markRoomSeen(room);
                           }}
                           className={`p-2.5 rounded-xl text-xs flex items-center justify-between gap-2 transition w-full text-left ${
-                            isActive
-                              ? 'bg-emerald-200/90 dark:bg-emerald-800 text-emerald-950 dark:text-white border-2 border-emerald-500 dark:border-amber-400 font-bold shadow-md'
-                              : 'bg-emerald-50/80 dark:bg-emerald-950 text-emerald-900 dark:text-emerald-200 border border-emerald-200 dark:border-emerald-800 hover:bg-emerald-100 dark:hover:bg-emerald-800'
+                            isActive ? theme.chatRoomActive : theme.chatRoomInactive
                           }`}
                         >
                           <div className="flex items-center gap-2.5 min-w-0 flex-1">
@@ -6933,17 +6986,17 @@ export default function App() {
                     ? 'bg-black border-neutral-800 text-white'
                     : msgBgMode === 'white'
                     ? 'bg-white border-slate-300 text-black'
-                    : 'bg-white dark:bg-emerald-900/60 border-emerald-200 dark:border-emerald-700/50'
+                    : theme.messagesPanelCard
                 } ${activeChatMobileView ? 'flex' : 'hidden md:flex'}`}
               >
                 {/* Responsive Swipeable Chat Header */}
                 <div
-                  className={`p-3 border-b space-y-2 text-xs font-bold shrink-0 ${
+                  className={`p-3 border-b space-y-2 text-xs font-bold shrink-0 transition-colors ${
                     msgBgMode === 'black'
                       ? 'border-neutral-800 bg-neutral-950 text-white'
                       : msgBgMode === 'white'
                       ? 'border-slate-200 bg-white text-black'
-                      : 'border-emerald-200 dark:border-emerald-800 text-emerald-950 dark:text-white'
+                      : theme.chatHeaderDefault
                   }`}
                 >
                   <div className="flex items-center justify-between gap-2">
@@ -6951,7 +7004,7 @@ export default function App() {
                       <button
                         type="button"
                         onClick={() => setActiveChatMobileView(false)}
-                        className="md:hidden p-1.5 rounded-lg bg-emerald-100 dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 text-emerald-900 dark:text-emerald-100 hover:bg-emerald-200 dark:hover:bg-emerald-800 transition shrink-0"
+                        className={`md:hidden p-1.5 rounded-lg border transition shrink-0 ${theme.chatHeaderBackBtn}`}
                         title="Back to chats list"
                         aria-label="Back to chats list"
                       >
@@ -6964,7 +7017,7 @@ export default function App() {
                               ? 'text-white'
                               : msgBgMode === 'white'
                               ? 'text-black'
-                              : 'text-emerald-950 dark:text-white'
+                              : theme.sidebarTitleText
                           }`}
                         >
                           {activeChat}
@@ -6978,14 +7031,14 @@ export default function App() {
                               ? 'hover:bg-neutral-800'
                               : msgBgMode === 'white'
                               ? 'hover:bg-slate-100'
-                              : 'hover:bg-emerald-50 dark:hover:bg-emerald-800/60'
+                              : theme.chatHeaderSubtleHover
                           }`}
                           title={`View ${activeChat}'s profile`}
                         >
                           <img
                             src={getUserAvatar({ name: activeChat })}
                             alt=""
-                            className={`w-6 h-7 rounded-md bg-emerald-50 dark:bg-emerald-950 border border-emerald-500/50 shrink-0 ${
+                            className={`w-6 h-7 rounded-md bg-white dark:bg-slate-900 border border-current/25 shrink-0 ${
                               isCustomAvatar(getUserAvatar({ name: activeChat })) ? 'object-cover' : 'object-contain'
                             }`}
                           />
@@ -6995,7 +7048,7 @@ export default function App() {
                                 ? 'text-white'
                                 : msgBgMode === 'white'
                                 ? 'text-black'
-                                : 'text-emerald-950 dark:text-white group-hover:text-emerald-700 dark:group-hover:text-emerald-300'
+                                : theme.sidebarTitleText
                             }`}
                           >
                             {activeChat}
@@ -7042,7 +7095,7 @@ export default function App() {
                           setSelectedGalleryVideo(null);
                           setIsMediaGalleryOpen(true);
                         }}
-                        className="px-2.5 py-1.5 bg-emerald-100/80 dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 text-emerald-800 dark:text-emerald-200 rounded-lg flex items-center gap-1 shadow shrink-0 whitespace-nowrap hover:text-emerald-950 dark:hover:text-white text-[11px]"
+                        className={`px-2.5 py-1.5 border rounded-lg flex items-center gap-1 shadow shrink-0 whitespace-nowrap text-[11px] transition ${theme.chatSecondaryBtn}`}
                         title="Shared Media Gallery"
                       >
                         <ImageIcon className="w-3.5 h-3.5" /> Gallery
@@ -7050,23 +7103,23 @@ export default function App() {
                       <div className="relative group/backup shrink-0">
                         <button
                           type="button"
-                          className="px-2.5 py-1.5 bg-emerald-100/80 dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 text-emerald-800 dark:text-emerald-200 rounded-lg flex items-center gap-1 shadow whitespace-nowrap hover:text-emerald-950 dark:hover:text-white text-[11px]"
+                          className={`px-2.5 py-1.5 border rounded-lg flex items-center gap-1 shadow whitespace-nowrap text-[11px] transition ${theme.chatSecondaryBtn}`}
                           title="Download Chat Backup"
                         >
                           <Download className="w-3.5 h-3.5" /> Backup
                         </button>
-                        <div className="absolute right-0 top-full mt-1 hidden group-hover/backup:flex flex-col bg-white dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 rounded-xl shadow-xl z-30 p-1 min-w-[120px] space-y-1">
+                        <div className={`absolute right-0 top-full mt-1 hidden group-hover/backup:flex flex-col ${theme.drawerAside} border rounded-xl shadow-xl z-30 p-1 min-w-[120px] space-y-1`}>
                           <button
                             type="button"
                             onClick={() => handleDownloadChatBackup('json')}
-                            className="w-full text-left px-3 py-1.5 rounded-lg hover:bg-emerald-100 dark:hover:bg-emerald-900 text-xs font-bold text-emerald-950 dark:text-white"
+                            className={`w-full text-left px-3 py-1.5 rounded-lg text-xs font-bold ${theme.drawerSegmentedInactive}`}
                           >
                             JSON File
                           </button>
                           <button
                             type="button"
                             onClick={() => handleDownloadChatBackup('txt')}
-                            className="w-full text-left px-3 py-1.5 rounded-lg hover:bg-emerald-100 dark:hover:bg-emerald-900 text-xs font-bold text-emerald-950 dark:text-white"
+                            className={`w-full text-left px-3 py-1.5 rounded-lg text-xs font-bold ${theme.drawerSegmentedInactive}`}
                           >
                             Text File (.txt)
                           </button>
@@ -7075,7 +7128,7 @@ export default function App() {
                       <button
                         type="button"
                         onClick={() => startVideoCall(activeChat)}
-                        className="px-2.5 py-1.5 bg-emerald-400 text-slate-950 rounded-lg flex items-center gap-1 shadow shrink-0 whitespace-nowrap text-[11px] font-bold hover:bg-emerald-300 transition"
+                        className={`px-2.5 py-1.5 rounded-lg flex items-center gap-1 shadow shrink-0 whitespace-nowrap text-[11px] transition ${theme.chatAccentBtn}`}
                       >
                         <PhoneCall className="w-3.5 h-3.5" /> Call
                       </button>
@@ -7084,7 +7137,7 @@ export default function App() {
                   <div className="space-y-1.5 w-full">
                     <div className="flex flex-wrap items-center gap-1.5 w-full">
                       <div className="relative flex-1 min-w-[180px]">
-                        <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-emerald-700 dark:text-emerald-300 pointer-events-none" />
+                        <Search className={`absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 pointer-events-none ${theme.searchIcon}`} />
                         <input
                           type="text"
                           placeholder={
@@ -7094,13 +7147,13 @@ export default function App() {
                           }
                           value={msgSearchQuery}
                           onChange={(e) => setMsgSearchQuery(e.target.value)}
-                          className="w-full pl-8 pr-7 py-1.5 bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 rounded-lg text-[11px] font-normal text-emerald-950 dark:text-white placeholder-emerald-600/60 dark:placeholder-emerald-400 focus:outline-none focus:border-emerald-500"
+                          className={`w-full pl-8 pr-7 py-1.5 border rounded-lg text-[11px] font-normal focus:outline-none ${theme.chatSearchInputDefault}`}
                         />
                         {msgSearchQuery && (
                           <button
                             type="button"
                             onClick={() => setMsgSearchQuery('')}
-                            className="absolute right-2 top-1/2 -translate-y-1/2 p-0.5 rounded text-emerald-700 dark:text-emerald-300 hover:bg-emerald-200/70 dark:hover:bg-emerald-800 transition"
+                            className={`absolute right-2 top-1/2 -translate-y-1/2 p-0.5 rounded transition ${theme.drawerSegmentedInactive}`}
                             aria-label="Clear message search"
                             title="Clear search"
                           >
@@ -7108,14 +7161,14 @@ export default function App() {
                           </button>
                         )}
                       </div>
-                      <div className="inline-flex rounded-lg bg-emerald-100/80 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 p-0.5 shrink-0">
+                      <div className={`inline-flex rounded-lg border p-0.5 shrink-0 ${theme.drawerSectionCard}`}>
                         <button
                           type="button"
                           onClick={() => setMsgSearchScope('all')}
                           className={`px-2 py-1 rounded-md text-[10px] font-bold transition ${
                             msgSearchScope === 'all'
-                              ? 'bg-emerald-400 text-slate-950 shadow-2xs'
-                              : 'text-emerald-800 dark:text-emerald-300 hover:text-emerald-950 dark:hover:text-white'
+                              ? theme.chatActivePill
+                              : theme.drawerSegmentedInactive
                           }`}
                         >
                           All Chats
@@ -7125,8 +7178,8 @@ export default function App() {
                           onClick={() => setMsgSearchScope('room')}
                           className={`px-2 py-1 rounded-md text-[10px] font-bold transition ${
                             msgSearchScope === 'room'
-                              ? 'bg-emerald-400 text-slate-950 shadow-2xs'
-                              : 'text-emerald-800 dark:text-emerald-300 hover:text-emerald-950 dark:hover:text-white'
+                              ? theme.chatActivePill
+                              : theme.drawerSegmentedInactive
                           }`}
                         >
                           This Chat
@@ -7138,7 +7191,7 @@ export default function App() {
                             ? 'bg-neutral-900 border-neutral-700'
                             : msgBgMode === 'white'
                             ? 'bg-slate-100 border-slate-300'
-                            : 'bg-emerald-100/80 dark:bg-emerald-950 border-emerald-300 dark:border-emerald-700'
+                            : theme.drawerSectionCard
                         }`}
                         title="Message Background Color"
                       >
@@ -7147,15 +7200,15 @@ export default function App() {
                           onClick={() => selectMsgBgMode('default')}
                           className={`px-2 py-1 rounded-md text-[10px] font-bold inline-flex items-center gap-1 transition ${
                             msgBgMode === 'default'
-                              ? 'bg-emerald-400 text-slate-950 shadow-2xs'
+                              ? theme.chatActivePill
                               : msgBgMode === 'black'
                               ? 'text-neutral-300 hover:text-white'
                               : 'text-slate-700 hover:text-black'
                           }`}
-                          title="Default Emerald Chat Background"
+                          title="Use Active Theme Chat Surface"
                         >
-                          <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 border border-emerald-700 shrink-0" />
-                          <span>Default</span>
+                          <span className={`w-2.5 h-2.5 rounded-full bg-gradient-to-br ${theme.swatchGradient} border border-white/60 shrink-0`} />
+                          <span>Theme</span>
                         </button>
                         <button
                           type="button"
@@ -7165,7 +7218,7 @@ export default function App() {
                               ? 'bg-black text-white border border-white/60 shadow-2xs'
                               : msgBgMode === 'white'
                               ? 'text-slate-800 hover:bg-slate-200'
-                              : 'text-emerald-900 dark:text-emerald-200 hover:bg-emerald-200/70 dark:hover:bg-emerald-800'
+                              : theme.drawerSegmentedInactive
                           }`}
                           title="Black Background / White Font"
                         >
@@ -7180,7 +7233,7 @@ export default function App() {
                               ? 'bg-white text-black border border-slate-400 shadow-2xs'
                               : msgBgMode === 'black'
                               ? 'text-neutral-200 hover:bg-neutral-800'
-                              : 'text-emerald-900 dark:text-emerald-200 hover:bg-emerald-200/70 dark:hover:bg-emerald-800'
+                              : theme.drawerSegmentedInactive
                           }`}
                           title="White Background / Black Font"
                         >
@@ -7198,16 +7251,16 @@ export default function App() {
                         )
                         .filter((m) => messageMatchesFullText(m, q, currentUser?.name || '')).length;
                       return (
-                        <div className="flex items-center justify-between gap-2 px-1 text-[10px] font-normal text-emerald-700 dark:text-emerald-300">
+                        <div className={`flex items-center justify-between gap-2 px-1 text-[10px] font-normal ${theme.sidebarMutedText}`}>
                           <span>
-                            Found <span className="font-bold text-emerald-950 dark:text-white">{matchCount}</span> match
+                            Found <span className={`font-bold ${theme.sidebarTitleText}`}>{matchCount}</span> match
                             {matchCount === 1 ? '' : 'es'}{' '}
                             {msgSearchScope === 'all' ? 'across all chat history (newest first)' : `in ${activeChat}`}
                           </span>
                           <button
                             type="button"
                             onClick={() => setMsgSearchQuery('')}
-                            className="font-bold text-emerald-800 dark:text-amber-300 hover:underline shrink-0"
+                            className={`font-bold hover:underline shrink-0 ${theme.sidebarTitleText}`}
                           >
                             Clear
                           </button>
@@ -7223,7 +7276,7 @@ export default function App() {
                       ? 'bg-black text-white'
                       : msgBgMode === 'white'
                       ? 'bg-white text-black'
-                      : ''
+                      : theme.chatBodyDefaultBg
                   }`}
                 >
                   {(() => {
@@ -7288,14 +7341,16 @@ export default function App() {
                               ? 'text-neutral-300'
                               : msgBgMode === 'white'
                               ? 'text-slate-700'
-                              : 'text-emerald-700 dark:text-emerald-300'
+                              : m.isMe
+                              ? theme.chatBubbleMeMeta
+                              : theme.chatBubbleOtherMeta
                           }`}
                         >
                           {isCrossRoomSearch && (
                             <button
                               type="button"
                               onClick={() => jumpToSearchResultMessage(m)}
-                              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-emerald-200/90 dark:bg-emerald-800 text-emerald-950 dark:text-amber-200 font-bold hover:bg-emerald-300 dark:hover:bg-emerald-700 transition"
+                              className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded font-bold transition ${theme.chatSecondaryBtn}`}
                               title={`Open ${roomLabel} chat at this message`}
                             >
                               <span>{highlightSearchMatches(roomLabel, trimmedMsgQuery)}</span>
@@ -7310,7 +7365,7 @@ export default function App() {
                                 ? 'hover:text-white'
                                 : msgBgMode === 'white'
                                 ? 'hover:text-black'
-                                : 'hover:text-emerald-950 dark:hover:text-white'
+                                : 'hover:opacity-80'
                             }`}
                             title={`View ${m.sender}'s profile`}
                           >
@@ -7333,7 +7388,9 @@ export default function App() {
                               ? m.isMe
                                 ? 'bg-slate-200/80 border border-slate-300 text-black'
                                 : 'bg-slate-50 border border-slate-300 text-black shadow-2xs'
-                              : 'bg-emerald-50 dark:bg-emerald-950 text-emerald-950 dark:text-slate-100'
+                              : m.isMe
+                              ? theme.chatBubbleMeDefault
+                              : theme.chatBubbleOtherDefault
                           } ${
                             m.isQueuedOffline ? 'border border-amber-400/80 opacity-90' : ''
                           } ${
@@ -7365,7 +7422,9 @@ export default function App() {
                                     ? 'bg-neutral-950 border-neutral-700 text-white'
                                     : msgBgMode === 'white'
                                     ? 'bg-white border-slate-300 text-black'
-                                    : 'bg-white/80 dark:bg-emerald-900/70 border-emerald-300/70 dark:border-emerald-700/70 text-emerald-950 dark:text-emerald-100'
+                                    : m.isMe
+                                    ? theme.chatBubbleMeAudioBox
+                                    : theme.chatBubbleOtherAudioBox
                                 }`}
                               >
                                 <div
@@ -7374,7 +7433,9 @@ export default function App() {
                                       ? 'text-neutral-300'
                                       : msgBgMode === 'white'
                                       ? 'text-slate-800'
-                                      : 'text-emerald-700 dark:text-emerald-300'
+                                      : m.isMe
+                                      ? theme.chatBubbleMeAudioLabel
+                                      : theme.chatBubbleOtherAudioLabel
                                   }`}
                                 >
                                   <Mic className="w-3.5 h-3.5 shrink-0" />
@@ -7387,7 +7448,9 @@ export default function App() {
                                       ? 'text-white'
                                       : msgBgMode === 'white'
                                       ? 'text-black'
-                                      : 'text-emerald-950 dark:text-slate-100'
+                                      : m.isMe
+                                      ? theme.chatBubbleMeAudioText
+                                      : theme.chatBubbleOtherAudioText
                                   }`}
                                 >
                                   {trimmedMsgQuery
@@ -7401,7 +7464,17 @@ export default function App() {
                             </div>
                           )}
                           {m.mediaType === 'file' && (
-                            <div className="text-amber-700 dark:text-amber-300 text-[10px]">📎 File Attachment</div>
+                            <div
+                              className={`text-[10px] font-semibold ${
+                                msgBgMode === 'default'
+                                  ? m.isMe
+                                    ? theme.chatBubbleMeFileText
+                                    : theme.chatBubbleOtherFileText
+                                  : 'text-amber-500'
+                              }`}
+                            >
+                              📎 File Attachment
+                            </div>
                           )}
                           {m.text && (
                             <div translate="no" className="notranslate break-words">
@@ -7414,7 +7487,13 @@ export default function App() {
                               {m.reactions.map((emoji, rIdx) => (
                                 <span
                                   key={rIdx}
-                                  className="px-1.5 py-0.5 rounded-full bg-white dark:bg-emerald-900/80 text-[10px] border border-emerald-300 dark:border-emerald-700"
+                                  className={`px-1.5 py-0.5 rounded-full text-[10px] border ${
+                                    msgBgMode === 'default'
+                                      ? m.isMe
+                                        ? theme.chatBubbleMeReactionChip
+                                        : theme.chatBubbleOtherReactionChip
+                                      : 'bg-white/90 text-slate-900 border-slate-300'
+                                  }`}
                                 >
                                   {emoji}
                                 </span>
@@ -7432,12 +7511,12 @@ export default function App() {
                               }
                               className={`inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded border transition ${
                                 openReactionPickerMsgId === m.id
-                                  ? 'bg-emerald-400 text-slate-950 border-emerald-400 shadow-sm'
+                                  ? theme.chatActivePill + ' border-transparent'
                                   : msgBgMode === 'black'
                                   ? 'bg-neutral-900 hover:bg-neutral-800 text-white border-neutral-700'
                                   : msgBgMode === 'white'
                                   ? 'bg-slate-100 hover:bg-slate-200 text-black border-slate-300'
-                                  : 'bg-emerald-50 dark:bg-emerald-950 hover:bg-emerald-200 dark:hover:bg-emerald-800 text-emerald-800 dark:text-emerald-200 border-emerald-200 dark:border-emerald-800/80'
+                                  : theme.chatSecondaryBtn
                               }`}
                               title="React with emoji"
                               aria-label="React with emoji"
@@ -7448,7 +7527,7 @@ export default function App() {
 
                             {openReactionPickerMsgId === m.id && (
                               <div
-                                className={`absolute bottom-full mb-1.5 z-20 flex items-center gap-0.5 p-1 rounded-2xl bg-white dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-600 shadow-lg ${
+                                className={`absolute bottom-full mb-1.5 z-20 flex items-center gap-0.5 p-1 rounded-2xl ${theme.drawerAside} border shadow-lg ${
                                   m.isMe ? 'right-0' : 'left-0'
                                 }`}
                               >
@@ -7460,7 +7539,7 @@ export default function App() {
                                       setOpenReactionPickerMsgId(null);
                                       void addReactionToMessage(m, emoji);
                                     }}
-                                    className="text-sm w-7 h-7 flex items-center justify-center rounded-xl hover:bg-emerald-100 dark:hover:bg-emerald-800 hover:scale-110 transition"
+                                    className={`text-sm w-7 h-7 flex items-center justify-center rounded-xl hover:scale-110 transition ${theme.drawerSegmentedInactive}`}
                                     title={`React ${emoji}`}
                                   >
                                     {emoji}
@@ -7477,7 +7556,7 @@ export default function App() {
                                   ? 'bg-neutral-900 hover:bg-neutral-800 text-white border-neutral-700'
                                   : msgBgMode === 'white'
                                   ? 'bg-slate-100 hover:bg-slate-200 text-black border-slate-300'
-                                  : 'bg-emerald-50 dark:bg-emerald-950 hover:bg-emerald-200 dark:hover:bg-emerald-800 text-emerald-800 dark:text-emerald-200 border-emerald-200 dark:border-emerald-800/80'
+                                  : theme.chatSecondaryBtn
                               }`}
                               title="Forward message to another user or room"
                             >
@@ -7499,7 +7578,7 @@ export default function App() {
                       ? 'border-neutral-800 bg-neutral-950 text-white'
                       : msgBgMode === 'white'
                       ? 'border-slate-200 bg-slate-50 text-black'
-                      : 'border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950'
+                      : theme.chatComposerBarDefault
                   }`}
                 >
                   {(() => {
@@ -7725,7 +7804,7 @@ export default function App() {
                               ? 'bg-neutral-900 border-neutral-700 focus-within:border-amber-400'
                               : msgBgMode === 'white'
                               ? 'bg-white border-slate-300 focus-within:border-emerald-600'
-                              : 'bg-emerald-100/80 dark:bg-emerald-900 border-emerald-300 dark:border-emerald-700 focus-within:border-amber-500 dark:focus-within:border-amber-300/80'
+                              : theme.chatComposerBoxDefault
                           }`}
                         >
                           <input
@@ -7747,7 +7826,7 @@ export default function App() {
                                 ? 'text-white placeholder-neutral-400'
                                 : msgBgMode === 'white'
                                 ? 'text-black placeholder-slate-500'
-                                : 'text-emerald-950 dark:text-white placeholder-emerald-600/60 dark:placeholder-emerald-400'
+                                : `${theme.sidebarTitleText} placeholder-current/45`
                             }`}
                           />
                           <div
@@ -7756,7 +7835,7 @@ export default function App() {
                                 ? 'border-neutral-800 bg-neutral-950/60'
                                 : msgBgMode === 'white'
                                 ? 'border-slate-200 bg-slate-50/80'
-                                : 'border-emerald-200/80 dark:border-emerald-800/80 bg-white/35 dark:bg-emerald-950/35'
+                                : theme.chatComposerDividerDefault
                             }`}
                           >
                             <div className="flex items-center gap-1 min-w-0">
@@ -7769,7 +7848,7 @@ export default function App() {
                                     ? 'text-neutral-200 hover:bg-neutral-800'
                                     : msgBgMode === 'white'
                                     ? 'text-slate-700 hover:bg-slate-200'
-                                    : 'text-emerald-700 dark:text-emerald-300 hover:bg-emerald-200/70 dark:hover:bg-emerald-800'
+                                    : theme.chatComposerIconDefault
                                 }`}
                                 title="Send Photo / Image"
                               >
@@ -7784,7 +7863,7 @@ export default function App() {
                                     ? 'text-neutral-200 hover:bg-neutral-800'
                                     : msgBgMode === 'white'
                                     ? 'text-slate-700 hover:bg-slate-200'
-                                    : 'text-emerald-700 dark:text-emerald-300 hover:bg-emerald-200/70 dark:hover:bg-emerald-800'
+                                    : theme.chatComposerIconDefault
                                 }`}
                                 title="Attach Video, Audio, or File"
                               >
@@ -7799,7 +7878,7 @@ export default function App() {
                                     ? 'text-neutral-200 hover:bg-neutral-800'
                                     : msgBgMode === 'white'
                                     ? 'text-slate-700 hover:bg-slate-200'
-                                    : 'text-emerald-700 dark:text-emerald-300 hover:bg-emerald-200/70 dark:hover:bg-emerald-800'
+                                    : theme.chatComposerIconDefault
                                 }`}
                                 title="Record voice message"
                               >
@@ -7815,7 +7894,7 @@ export default function App() {
                                     ? 'text-cyan-300 hover:bg-neutral-800'
                                     : msgBgMode === 'white'
                                     ? 'text-cyan-700 hover:bg-slate-200'
-                                    : 'text-cyan-700 dark:text-cyan-300 hover:bg-emerald-200/70 dark:hover:bg-emerald-800'
+                                    : theme.chatComposerIconDefault
                                 }`}
                                 title="Attach synced Video/Image URL"
                               >
@@ -7826,12 +7905,12 @@ export default function App() {
                                 onClick={() => setShowMsgEmojiPicker((prev) => !prev)}
                                 className={`p-1.5 rounded-lg transition shrink-0 ${
                                   showMsgEmojiPicker
-                                    ? 'bg-emerald-400 text-slate-950'
+                                    ? theme.chatActivePill
                                     : msgBgMode === 'black'
                                     ? 'text-neutral-200 hover:bg-neutral-800'
                                     : msgBgMode === 'white'
                                     ? 'text-slate-700 hover:bg-slate-200'
-                                    : 'text-emerald-700 dark:text-emerald-300 hover:bg-emerald-200/70 dark:hover:bg-emerald-800'
+                                    : theme.chatComposerIconDefault
                                 }`}
                                 title={showMsgEmojiPicker ? 'Hide emojis' : 'Open emojis'}
                                 aria-label={showMsgEmojiPicker ? 'Hide emojis' : 'Open emojis'}
@@ -7843,7 +7922,7 @@ export default function App() {
                             <button
                               type="submit"
                               disabled={isProcessingAudio || isUploadingMsgMedia || isSendingMsg || (!msgInput.trim() && !msgMediaUrl)}
-                              className="px-3.5 py-1.5 bg-emerald-400 text-slate-950 font-bold text-xs rounded-xl shadow hover:bg-emerald-300 transition shrink-0 disabled:opacity-50"
+                              className={`px-3.5 py-1.5 text-xs rounded-xl shadow transition shrink-0 disabled:opacity-50 ${theme.chatAccentBtn}`}
                             >
                               {isSendingMsg ? 'Sending...' : 'Send'}
                             </button>
@@ -9287,21 +9366,21 @@ export default function App() {
           aria-label="Menu and Settings"
         >
           <aside
-            className="w-full max-w-sm h-full bg-white dark:bg-emerald-950 border-l border-emerald-200 dark:border-emerald-800 shadow-2xl flex flex-col overflow-hidden"
+            className={`w-full max-w-sm h-full ${theme.drawerAside} border-l shadow-2xl flex flex-col overflow-hidden transition-colors`}
             onClick={(e) => e.stopPropagation()}
           >
             {/* Drawer Header */}
-            <div className="px-4 py-3.5 border-b border-emerald-200 dark:border-emerald-800 bg-emerald-50/80 dark:bg-emerald-900/70 flex items-center justify-between gap-2 shrink-0">
+            <div className={`px-4 py-3.5 border-b ${theme.drawerHeader} flex items-center justify-between gap-2 shrink-0`}>
               <div className="flex items-center gap-2 min-w-0">
-                <MoreVertical className="w-4 h-4 text-emerald-700 dark:text-emerald-300 shrink-0" />
-                <span className="text-sm font-black text-emerald-950 dark:text-white truncate">
+                <MoreVertical className={`w-4 h-4 shrink-0 ${theme.drawerHeaderIcon}`} />
+                <span className={`text-sm font-black truncate ${theme.drawerHeaderTitle}`}>
                   Menu &amp; Settings
                 </span>
               </div>
               <button
                 type="button"
                 onClick={() => setIsMenuDrawerOpen(false)}
-                className="p-1.5 rounded-xl bg-white dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-700 text-emerald-800 dark:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-800 transition"
+                className={`p-1.5 rounded-xl border transition ${theme.drawerCloseBtn}`}
                 aria-label="Close menu"
               >
                 <X className="w-4 h-4" />
@@ -9490,33 +9569,93 @@ export default function App() {
                 )}
               </div>
 
-              {/* Appearance & Theme Controls */}
-              <section className="p-4 rounded-2xl bg-emerald-50/70 dark:bg-emerald-900/40 border border-emerald-200 dark:border-emerald-800 space-y-4">
-                <div className="flex items-center justify-between gap-2 pb-2.5 border-b border-emerald-200 dark:border-emerald-800">
+              {/* Themes & Appearance Controls */}
+              <section className={`p-4 rounded-2xl border ${theme.drawerSectionCard} space-y-4`}>
+                <div className={`flex items-center justify-between gap-2 pb-2.5 border-b ${theme.drawerSectionBorder}`}>
                   <div>
-                    <h3 className="text-xs font-black uppercase tracking-wider text-emerald-950 dark:text-white">
-                      Appearance &amp; Theme
+                    <h3 className={`text-xs font-black uppercase tracking-wider flex items-center gap-1.5 ${theme.sidebarTitleText}`}>
+                      <Palette className={`w-3.5 h-3.5 shrink-0 ${theme.drawerHeaderIcon}`} />
+                      <span>Themes &amp; Appearance</span>
                     </h3>
-                    <p className="text-[11px] text-emerald-700 dark:text-emerald-300 mt-0.5">
-                      Active: {resolvedTheme === 'dark' ? 'Dark' : 'Light'}
+                    <p className={`text-[11px] mt-0.5 ${theme.sidebarMutedText}`}>
+                      Theme: <span className="font-bold">{theme.name}</span> · {resolvedTheme === 'dark' ? 'Dark' : 'Light'}
                     </p>
                   </div>
                   <button
                     type="button"
                     onClick={resetAppearance}
-                    className="px-2.5 py-1.5 rounded-lg border border-emerald-300 dark:border-emerald-700 bg-white dark:bg-emerald-950 text-emerald-800 dark:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-800 text-[11px] font-semibold inline-flex items-center gap-1 transition"
+                    className={`px-2.5 py-1.5 rounded-lg border text-[11px] font-semibold inline-flex items-center gap-1 transition ${theme.drawerCloseBtn}`}
                   >
                     <RotateCcw className="w-3 h-3" /> Reset
                   </button>
                 </div>
 
-                {/* Color Theme Selector */}
+                {/* Predefined Color Scheme Themes Picker */}
                 <div className="space-y-2">
-                  <div className="text-[11px] font-bold text-emerald-950 dark:text-white">Color Theme</div>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className={`text-[11px] font-bold ${theme.sidebarTitleText}`}>Themes</span>
+                    <span className={`text-[10px] ${theme.sidebarMutedText}`}>Updates headers &amp; chat bubbles</span>
+                  </div>
                   <div
                     role="radiogroup"
-                    aria-label="Application color theme"
-                    className="grid grid-cols-3 gap-1.5 p-1 rounded-xl bg-white dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-800"
+                    aria-label="Predefined color themes"
+                    className="grid grid-cols-2 gap-2"
+                  >
+                    {COLOR_THEME_LIST.map((preset) => {
+                      const isSelected = colorTheme === preset.id;
+                      return (
+                        <button
+                          key={preset.id}
+                          type="button"
+                          role="radio"
+                          aria-checked={isSelected}
+                          onClick={() => {
+                            setColorTheme(preset.id);
+                            showNotice(`${preset.name} theme applied`);
+                          }}
+                          className={`p-2.5 rounded-xl border text-left transition flex flex-col gap-2 ${
+                            isSelected
+                              ? `${theme.drawerAside} ring-2 ring-amber-400 border-amber-400 shadow-sm`
+                              : `${theme.drawerAside} opacity-90 hover:opacity-100`
+                          }`}
+                        >
+                          {/* Mini UI Header + Bubble Preview */}
+                          <div className="w-full rounded-lg border border-black/10 dark:border-white/10 overflow-hidden bg-slate-50 dark:bg-slate-900/70 p-1.5 space-y-1">
+                            <div className={`h-2 w-full rounded-full bg-gradient-to-r ${preset.previewHeaderBar}`} />
+                            <div className="flex flex-col gap-1 pt-0.5">
+                              <div className={`h-2 w-9 rounded-full self-start ${preset.previewBubbleOther}`} />
+                              <div className={`h-2 w-11 rounded-full self-end ${preset.previewBubbleMe}`} />
+                            </div>
+                          </div>
+                          <div className="flex items-center justify-between gap-1.5">
+                            <div className="min-w-0">
+                              <div className={`text-xs font-extrabold truncate flex items-center gap-1.5 ${theme.sidebarTitleText}`}>
+                                <span className={`w-2.5 h-2.5 rounded-full bg-gradient-to-br ${preset.swatchGradient} shrink-0`} />
+                                <span>{preset.name}</span>
+                              </div>
+                              <div className={`text-[10px] truncate ${theme.sidebarMutedText}`}>
+                                {preset.subtitle}
+                              </div>
+                            </div>
+                            {isSelected && (
+                              <span className={`w-5 h-5 rounded-full inline-flex items-center justify-center shrink-0 ${theme.chatActivePill}`}>
+                                <Check className="w-3 h-3" />
+                              </span>
+                            )}
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Brightness Mode Selector */}
+                <div className={`space-y-2 pt-2 border-t ${theme.drawerSectionBorder}`}>
+                  <div className={`text-[11px] font-bold ${theme.sidebarTitleText}`}>Brightness Mode</div>
+                  <div
+                    role="radiogroup"
+                    aria-label="Brightness mode"
+                    className={`grid grid-cols-3 gap-1.5 p-1 rounded-xl border ${theme.drawerAside}`}
                   >
                     {(
                       [
@@ -9535,9 +9674,7 @@ export default function App() {
                           aria-checked={isActive}
                           onClick={() => setThemeMode(opt.id)}
                           className={`min-h-[42px] px-2 py-2 rounded-lg flex items-center justify-center gap-1.5 text-xs font-semibold transition ${
-                            isActive
-                              ? 'bg-emerald-600 text-white dark:bg-emerald-400 dark:text-slate-950 shadow-xs'
-                              : 'text-emerald-800 hover:bg-emerald-100 dark:text-emerald-200 dark:hover:bg-emerald-900'
+                            isActive ? theme.drawerSegmentedActive : theme.drawerSegmentedInactive
                           }`}
                         >
                           <Icon className="w-3.5 h-3.5 shrink-0" />
@@ -9549,16 +9686,16 @@ export default function App() {
                 </div>
 
                 {/* Message Background Color Selector */}
-                <div className="space-y-2 pt-2 border-t border-emerald-200 dark:border-emerald-800">
-                  <div className="text-[11px] font-bold text-emerald-950 dark:text-white">Message Background Color</div>
+                <div className={`space-y-2 pt-2 border-t ${theme.drawerSectionBorder}`}>
+                  <div className={`text-[11px] font-bold ${theme.sidebarTitleText}`}>Message Background Color</div>
                   <div
                     role="radiogroup"
                     aria-label="Message background color"
-                    className="grid grid-cols-3 gap-1.5 p-1 rounded-xl bg-white dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-800"
+                    className={`grid grid-cols-3 gap-1.5 p-1 rounded-xl border ${theme.drawerAside}`}
                   >
                     {(
                       [
-                        { id: 'default', label: 'Default', swatch: 'bg-emerald-500 border-emerald-700' },
+                        { id: 'default', label: 'Themed', swatch: `bg-gradient-to-br ${theme.swatchGradient} border-white/60` },
                         { id: 'black', label: 'Black / White', swatch: 'bg-black border-neutral-400' },
                         { id: 'white', label: 'White / Black', swatch: 'bg-white border-slate-500' },
                       ] as const
@@ -9572,9 +9709,7 @@ export default function App() {
                           aria-checked={isActive}
                           onClick={() => selectMsgBgMode(opt.id)}
                           className={`min-h-[40px] px-2 py-2 rounded-lg flex items-center justify-center gap-1.5 text-[11px] font-semibold transition ${
-                            isActive
-                              ? 'bg-emerald-600 text-white dark:bg-emerald-400 dark:text-slate-950 shadow-xs'
-                              : 'text-emerald-800 hover:bg-emerald-100 dark:text-emerald-200 dark:hover:bg-emerald-900'
+                            isActive ? theme.drawerSegmentedActive : theme.drawerSegmentedInactive
                           }`}
                         >
                           <span className={`w-3 h-3 rounded-full border shrink-0 ${opt.swatch}`} />
@@ -9586,10 +9721,10 @@ export default function App() {
                 </div>
 
                 {/* Quick Dark Mode Switch */}
-                <div className="flex items-center justify-between gap-3 pt-2 border-t border-emerald-200 dark:border-emerald-800">
+                <div className={`flex items-center justify-between gap-3 pt-2 border-t ${theme.drawerSectionBorder}`}>
                   <div className="min-w-0">
-                    <div className="text-xs font-semibold text-emerald-950 dark:text-white">Dark Mode Switch</div>
-                    <div className="text-[10px] text-emerald-700 dark:text-emerald-300">Quick daylight / night toggle</div>
+                    <div className={`text-xs font-semibold ${theme.sidebarTitleText}`}>Dark Mode Switch</div>
+                    <div className={`text-[10px] ${theme.sidebarMutedText}`}>Quick daylight / night toggle</div>
                   </div>
                   <button
                     type="button"
@@ -9598,13 +9733,11 @@ export default function App() {
                     aria-label="Toggle dark mode"
                     onClick={toggleLightDark}
                     className={`relative inline-flex h-7 w-12 shrink-0 items-center rounded-full border transition-colors ${
-                      resolvedTheme === 'dark'
-                        ? 'bg-emerald-400 border-emerald-300'
-                        : 'bg-emerald-200 border-emerald-300'
+                      resolvedTheme === 'dark' ? theme.drawerSwitchTrackOn : theme.drawerSwitchTrackOff
                     }`}
                   >
                     <span
-                      className={`inline-flex h-5 w-5 items-center justify-center rounded-full bg-white text-emerald-950 shadow transition-transform ${
+                      className={`inline-flex h-5 w-5 items-center justify-center rounded-full bg-white text-slate-900 shadow transition-transform ${
                         resolvedTheme === 'dark' ? 'translate-x-6' : 'translate-x-1'
                       }`}
                     >
@@ -9618,14 +9751,14 @@ export default function App() {
                 </div>
 
                 {/* Reading Text Size */}
-                <div className="space-y-2 pt-2 border-t border-emerald-200 dark:border-emerald-800">
+                <div className={`space-y-2 pt-2 border-t ${theme.drawerSectionBorder}`}>
                   <div className="flex items-center justify-between text-[11px]">
-                    <span className="font-bold text-emerald-950 dark:text-white inline-flex items-center gap-1.5">
-                      <Type className="w-3.5 h-3.5 text-emerald-700 dark:text-emerald-300" /> Reading Text Size
+                    <span className={`font-bold inline-flex items-center gap-1.5 ${theme.sidebarTitleText}`}>
+                      <Type className={`w-3.5 h-3.5 ${theme.sidebarMutedText}`} /> Reading Text Size
                     </span>
-                    <span className="font-mono text-emerald-700 dark:text-emerald-300 capitalize">{fontScale}</span>
+                    <span className={`font-mono capitalize ${theme.sidebarMutedText}`}>{fontScale}</span>
                   </div>
-                  <div className="grid grid-cols-3 gap-1.5 p-1 rounded-xl bg-white dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-800">
+                  <div className={`grid grid-cols-3 gap-1.5 p-1 rounded-xl border ${theme.drawerAside}`}>
                     {(
                       [
                         { id: 'compact', label: 'Compact' },
@@ -9640,9 +9773,7 @@ export default function App() {
                           type="button"
                           onClick={() => setFontScale(opt.id)}
                           className={`min-h-[36px] px-2 py-1.5 rounded-lg text-xs font-semibold transition ${
-                            active
-                              ? 'bg-emerald-600 text-white dark:bg-emerald-400 dark:text-slate-950 shadow-xs'
-                              : 'text-emerald-800 hover:bg-emerald-100 dark:text-emerald-200 dark:hover:bg-emerald-900'
+                            active ? theme.drawerSegmentedActive : theme.drawerSegmentedInactive
                           }`}
                         >
                           {opt.label}
@@ -9653,10 +9784,10 @@ export default function App() {
                 </div>
 
                 {/* Reduce Motion */}
-                <div className="flex items-center justify-between gap-3 pt-2 border-t border-emerald-200 dark:border-emerald-800">
+                <div className={`flex items-center justify-between gap-3 pt-2 border-t ${theme.drawerSectionBorder}`}>
                   <div className="min-w-0">
-                    <div className="text-xs font-semibold text-emerald-950 dark:text-white">Reduce Motion</div>
-                    <div className="text-[10px] text-emerald-700 dark:text-emerald-300">Minimize animations &amp; transitions</div>
+                    <div className={`text-xs font-semibold ${theme.sidebarTitleText}`}>Reduce Motion</div>
+                    <div className={`text-[10px] ${theme.sidebarMutedText}`}>Minimize animations &amp; transitions</div>
                   </div>
                   <button
                     type="button"
@@ -9665,9 +9796,7 @@ export default function App() {
                     aria-label="Toggle reduced motion"
                     onClick={() => setReducedMotion(!reducedMotion)}
                     className={`relative inline-flex h-7 w-12 shrink-0 items-center rounded-full border transition-colors ${
-                      reducedMotion
-                        ? 'bg-emerald-600 dark:bg-emerald-400 border-emerald-500 dark:border-emerald-300'
-                        : 'bg-emerald-200 dark:bg-emerald-950 border-emerald-300 dark:border-emerald-700'
+                      reducedMotion ? theme.drawerSwitchTrackOn : theme.drawerSwitchTrackOff
                     }`}
                   >
                     <span

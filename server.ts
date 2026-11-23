@@ -46,6 +46,7 @@ interface SseClient {
   res: Response;
   userId: string;
   userName: string;
+  role: 'admin' | 'member';
 }
 
 const DEFAULT_PROFILE_ICON = '/assets/aistudio/image_20261121_145253_f477cbfa.webp';
@@ -241,6 +242,18 @@ function getOnlineUserNames(now = Date.now()): string[] {
 function broadcastSync(topic: string) {
   const payload = `event: sync\ndata: ${JSON.stringify({ topic, ts: Date.now() })}\n\n`;
   for (const client of sseClients) {
+    try {
+      client.res.write(payload);
+    } catch {
+      sseClients.delete(client);
+    }
+  }
+}
+
+function broadcastGpsToAdmins(userId: string) {
+  const payload = `event: gps\ndata: ${JSON.stringify({ userId, ts: Date.now() })}\n\n`;
+  for (const client of sseClients) {
+    if (client.role !== 'admin') continue;
     try {
       client.res.write(payload);
     } catch {
@@ -895,7 +908,7 @@ app.get('/api/choy/stream', requireAuth, (req: AuthedRequest, res: Response) => 
   res.flushHeaders?.();
   res.write(`:${' '.repeat(2048)}\n\n`);
   res.write(`event: connected\ndata: ${JSON.stringify({ ok: true, uid: user.id, latestRtcSeq: rtcSignalSeq })}\n\n`);
-  const client: SseClient = { res, userId: user.id, userName: user.name };
+  const client: SseClient = { res, userId: user.id, userName: user.name, role: user.role };
   sseClients.add(client);
 
   const keepAlive = setInterval(() => {
@@ -1001,11 +1014,25 @@ app.get('/api/choy/rtc/poll', requireAuth, (req: AuthedRequest, res: Response) =
 app.post('/api/choy/gps/ping', requireAuth, async (req: AuthedRequest, res: Response) => {
   try {
     const user = req.choyUser!;
-    const { lat, lng, accuracy } = req.body || {};
-    if (typeof lat !== 'number' || typeof lng !== 'number') {
+    const { lat, lng, accuracy, speed, heading } = req.body || {};
+    if (
+      typeof lat !== 'number' ||
+      typeof lng !== 'number' ||
+      !Number.isFinite(lat) ||
+      !Number.isFinite(lng) ||
+      lat < -90 ||
+      lat > 90 ||
+      lng < -180 ||
+      lng > 180
+    ) {
       return res.status(400).json({ error: 'Valid lat and lng required' });
     }
-    await store.upsertLocation(user.id, user.name, lat, lng, typeof accuracy === 'number' ? accuracy : undefined);
+    const safeAcc = typeof accuracy === 'number' && Number.isFinite(accuracy) && accuracy >= 0 ? accuracy : undefined;
+    const safeSpeed = typeof speed === 'number' && Number.isFinite(speed) && speed >= 0 ? speed : undefined;
+    const safeHeading =
+      typeof heading === 'number' && Number.isFinite(heading) && heading >= 0 && heading <= 360 ? heading : undefined;
+    await store.upsertLocation(user.id, user.name, lat, lng, safeAcc, safeSpeed, safeHeading);
+    broadcastGpsToAdmins(user.id);
     res.json({ success: true });
   } catch (err) {
     console.error('[GPS Ping Error]:', err);
@@ -1019,8 +1046,17 @@ app.get('/api/admin/gps/locations', requireAuth, async (req: AuthedRequest, res:
     if (user.role !== 'admin') {
       return res.status(403).json({ error: 'Admin access required' });
     }
-    const locations = await store.getAllLocations();
-    res.json({ locations });
+    const [locations, users] = await Promise.all([store.getAllLocations(), store.listUsers(true)]);
+    const avatarById = new Map<string, string | undefined>();
+    for (const u of users) {
+      avatarById.set(u.id, u.avatar);
+    }
+    res.json({
+      locations: locations.map((l) => ({
+        ...l,
+        avatar: avatarById.get(l.userId),
+      })),
+    });
   } catch (err) {
     console.error('[Get GPS Locations Error]:', err);
     res.status(500).json({ error: 'Failed to fetch locations' });

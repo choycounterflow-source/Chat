@@ -42,8 +42,10 @@ import {
   Play,
   ChevronLeft,
   ChevronRight,
-  Pencil
+  Pencil,
+  LocateFixed
 } from 'lucide-react';
+import { LiveGpsMap, type LiveGpsUserLocation } from './LiveGpsMap';
 import {
   type EmojiLinkItem,
   generateEmojiFromUrl,
@@ -366,11 +368,12 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
   const [confirmDeleteUserId, setConfirmDeleteUserId] = useState<string | null>(null);
 
   // 6. GPS Tracker state
-  const [gpsLocations, setGpsLocations] = useState<
-    Array<{ userId: string; userName: string; lat: number; lng: number; accuracy?: number; updatedAt: string }>
-  >([]);
+  const [gpsLocations, setGpsLocations] = useState<LiveGpsUserLocation[]>([]);
   const [isLoadingGps, setIsLoadingGps] = useState(false);
   const [gpsError, setGpsError] = useState('');
+  const [selectedGpsUserId, setSelectedGpsUserId] = useState<string | null>(null);
+  const [followGpsUser, setFollowGpsUser] = useState(true);
+  const [liveGpsAutoRefresh, setLiveGpsAutoRefresh] = useState(true);
 
   // 7. Security Studio PIN Lock & Fingerprint state
   const [securityPin, setSecurityPin] = useState(() => localStorage.getItem('choychat_security_studio_pin') || '');
@@ -1260,10 +1263,12 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
     }
   ];
 
-  const fetchGpsLocations = async () => {
+  const fetchGpsLocations = async (silent = false) => {
     if (!authToken) return;
-    setIsLoadingGps(true);
-    setGpsError('');
+    if (!silent) {
+      setIsLoadingGps(true);
+      setGpsError('');
+    }
     try {
       const res = await fetch('/api/admin/gps/locations', {
         headers: { Authorization: `Bearer ${authToken}` },
@@ -1272,14 +1277,24 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
         const data = await res.json();
         if (data && Array.isArray(data.locations)) {
           setGpsLocations(data.locations);
+          setSelectedGpsUserId((prev) =>
+            prev && data.locations.some((l: LiveGpsUserLocation) => l.userId === prev)
+              ? prev
+              : data.locations[0]?.userId || null
+          );
+          setGpsError('');
         }
-      } else {
+      } else if (!silent) {
         setGpsError('Failed to fetch user locations.');
       }
     } catch {
-      setGpsError('Network error fetching locations.');
+      if (!silent) {
+        setGpsError('Network error fetching locations.');
+      }
     } finally {
-      setIsLoadingGps(false);
+      if (!silent) {
+        setIsLoadingGps(false);
+      }
     }
   };
 
@@ -1288,6 +1303,24 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
       void fetchGpsLocations();
     }
   }, [authToken]);
+
+  useEffect(() => {
+    if (!authToken || activeStudioModule !== 'gps_tracker') return;
+    void fetchGpsLocations(true);
+    const onLiveGpsPing = () => {
+      void fetchGpsLocations(true);
+    };
+    window.addEventListener('choy-gps-ping', onLiveGpsPing);
+    const timer = liveGpsAutoRefresh
+      ? window.setInterval(() => {
+          void fetchGpsLocations(true);
+        }, 3000)
+      : null;
+    return () => {
+      window.removeEventListener('choy-gps-ping', onLiveGpsPing);
+      if (timer) window.clearInterval(timer);
+    };
+  }, [authToken, activeStudioModule, liveGpsAutoRefresh]);
 
   const refreshStorageStats = async () => {
     try {
@@ -1803,9 +1836,9 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
           },
           {
             id: 'gps_tracker' as const,
-            title: 'Admin Live GPS Tracker',
-            subtitle: 'Monitor active member coordinates, accuracy & open Google Maps',
-            badge: `${gpsLocations.length} pinned`,
+            title: 'Admin Live GPS Map',
+            subtitle: 'Watch moving user pins, trails, live speed & accuracy on Leaflet Map',
+            badge: `${gpsLocations.length} live`,
             icon: <MapPin className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />,
             accent: 'border-emerald-300 dark:border-emerald-600/70 hover:border-emerald-400',
           },
@@ -3981,80 +4014,130 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
       </div>
       )}
 
-      {/* ADMIN GPS TRACKER */}
+      {/* ADMIN LIVE MAP GPS TRACKER (LEAFLET) */}
       {activeStudioModule === 'gps_tracker' && (
-      <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-5 space-y-4 shadow">
+      <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-4 sm:p-5 space-y-4 shadow">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2">
             <MapPin className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
-            <h3 className="text-sm font-bold text-emerald-950 dark:text-white">Admin Live GPS Tracker</h3>
+            <h3 className="text-sm font-bold text-emerald-950 dark:text-white">Admin Live Moving GPS Map</h3>
           </div>
-          <button
-            type="button"
-            onClick={fetchGpsLocations}
-            disabled={isLoadingGps}
-            className="px-3 py-1.5 rounded-lg bg-emerald-400 text-slate-950 font-bold text-xs flex items-center gap-1.5 disabled:opacity-50"
-          >
-            <RefreshCw className={`w-3.5 h-3.5 ${isLoadingGps ? 'animate-spin' : ''}`} />
-            {isLoadingGps ? 'Locating...' : 'Refresh GPS Radar'}
-          </button>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setLiveGpsAutoRefresh((prev) => !prev)}
+              className={`px-2.5 py-1.5 rounded-lg text-[11px] font-bold border transition inline-flex items-center gap-1.5 ${
+                liveGpsAutoRefresh
+                  ? 'bg-emerald-100 dark:bg-emerald-500/20 border-emerald-400 text-emerald-900 dark:text-emerald-200'
+                  : 'bg-white dark:bg-emerald-950 border-emerald-300 dark:border-emerald-700 text-emerald-700 dark:text-emerald-300'
+              }`}
+            >
+              <span className={`w-2 h-2 rounded-full ${liveGpsAutoRefresh ? 'bg-emerald-500 animate-ping' : 'bg-slate-400'}`} />
+              <span>{liveGpsAutoRefresh ? 'Live Stream ON (3s)' : 'Live Stream Paused'}</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => void fetchGpsLocations(false)}
+              disabled={isLoadingGps}
+              className="px-3 py-1.5 rounded-lg bg-emerald-400 hover:bg-emerald-300 text-slate-950 font-bold text-xs flex items-center gap-1.5 disabled:opacity-50"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${isLoadingGps ? 'animate-spin' : ''}`} />
+              {isLoadingGps ? 'Locating...' : 'Refresh Map'}
+            </button>
+          </div>
         </div>
         <p className="text-xs text-emerald-800 dark:text-emerald-200">
-          When users turn mobile data ON and enable location permissions, Admin can locate active users and view their last known coordinates in real-time. Regular users cannot access or view other users locations.
+          Real-time delivery-style live map tracking: samtang naglakaw o nagbiyahe ang user nga naka-allow ang Location, makita nimo direkta ang ilang pin nga naglihok sa mapa uban sa ilang trail ug speed.
         </p>
 
         {gpsError && (
-          <div className="p-3 rounded-xl bg-rose-500/20 border border-rose-500/40 text-rose-200 text-xs">
+          <div className="p-3 rounded-xl bg-rose-500/20 border border-rose-500/40 text-rose-800 dark:text-rose-200 text-xs">
             {gpsError}
           </div>
         )}
 
+        <LiveGpsMap
+          locations={gpsLocations}
+          selectedUserId={selectedGpsUserId}
+          onSelectUser={setSelectedGpsUserId}
+          followSelected={followGpsUser}
+          onToggleFollow={setFollowGpsUser}
+          defaultAvatar={defaultAppIcon}
+        />
+
         {gpsLocations.length === 0 ? (
-          <div className="p-6 text-center text-emerald-700 dark:text-emerald-300 text-xs italic bg-emerald-50/50 dark:bg-emerald-950/40 rounded-xl border border-emerald-200 dark:border-emerald-800">
-            No active GPS location pings recorded yet. Users broadcast location when online and location is active.
+          <div className="p-5 text-center text-emerald-700 dark:text-emerald-300 text-xs italic bg-emerald-50/50 dark:bg-emerald-950/40 rounded-xl border border-emerald-200 dark:border-emerald-800">
+            No active GPS location pings recorded yet. Users broadcast live coordinates automatically when online and Location permission is allowed.
           </div>
         ) : (
-          <div className="overflow-x-auto rounded-xl border border-emerald-200 dark:border-emerald-800">
-            <table className="w-full text-left border-collapse text-xs whitespace-nowrap">
-              <thead className="bg-emerald-50 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300 text-[10px] uppercase">
-                <tr>
-                  <th className="p-3">User Name</th>
-                  <th className="p-3">Coordinates (Lat, Lng)</th>
-                  <th className="p-3">Accuracy</th>
-                  <th className="p-3">Last Pinged</th>
-                  <th className="p-3 text-right">Map Link</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-emerald-200 dark:divide-emerald-800 bg-white dark:bg-emerald-950/50">
-                {gpsLocations.map((loc) => (
-                  <tr key={loc.userId} className="hover:bg-emerald-50 dark:hover:bg-emerald-900/40">
-                    <td className="p-3 font-bold text-emerald-950 dark:text-white flex items-center gap-2">
-                      <Navigation className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
-                      <span>{loc.userName}</span>
-                    </td>
-                    <td className="p-3 font-mono text-emerald-900 dark:text-slate-200">
-                      {loc.lat.toFixed(5)}, {loc.lng.toFixed(5)}
-                    </td>
-                    <td className="p-3 font-mono text-emerald-700 dark:text-emerald-300">
-                      {loc.accuracy != null ? `±${Math.round(loc.accuracy)}m` : 'Unknown'}
-                    </td>
-                    <td className="p-3 text-emerald-700 dark:text-emerald-300">
-                      {new Date(loc.updatedAt).toLocaleTimeString()} ({new Date(loc.updatedAt).toLocaleDateString()})
-                    </td>
-                    <td className="p-3 text-right">
-                      <a
-                        href={`https://maps.google.com/?q=${loc.lat},${loc.lng}`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-bold inline-flex items-center gap-1 transition"
-                      >
-                        <ExternalLink className="w-3 h-3" /> View Map
-                      </a>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+            {gpsLocations.map((loc) => {
+              const isSelected = loc.userId === selectedGpsUserId;
+              const ageSec = Math.max(0, Math.floor((Date.now() - new Date(loc.updatedAt).getTime()) / 1000));
+              const speedKmh = loc.speed != null && loc.speed > 0.4 ? Math.round(loc.speed * 3.6) : 0;
+              return (
+                <div
+                  key={loc.userId}
+                  onClick={() => {
+                    setSelectedGpsUserId(loc.userId);
+                    setFollowGpsUser(true);
+                  }}
+                  className={`cursor-pointer p-3 rounded-xl border transition flex items-center justify-between gap-3 ${
+                    isSelected
+                      ? 'bg-emerald-100/90 dark:bg-emerald-800/70 border-amber-400 shadow-md ring-2 ring-amber-400/30'
+                      : 'bg-emerald-50/70 dark:bg-emerald-950/60 border-emerald-200 dark:border-emerald-800 hover:border-emerald-400'
+                  }`}
+                >
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <img
+                      src={loc.avatar || defaultAppIcon}
+                      alt=""
+                      className="w-9 h-9 rounded-full object-cover border-2 border-emerald-400 shrink-0 bg-emerald-950"
+                    />
+                    <div className="min-w-0">
+                      <div className="text-xs font-extrabold text-emerald-950 dark:text-white flex items-center gap-1.5 truncate">
+                        <span className="truncate">{loc.userName}</span>
+                        {ageSec <= 90 && (
+                          <span className="px-1.5 py-0.5 rounded-full bg-emerald-500 text-slate-950 text-[9px] font-black uppercase shrink-0">
+                            {speedKmh > 0 ? `${speedKmh} km/h` : 'LIVE'}
+                          </span>
+                        )}
+                      </div>
+                      <div className="font-mono text-[10px] text-emerald-800 dark:text-emerald-200 truncate">
+                        {loc.lat.toFixed(5)}, {loc.lng.toFixed(5)} {loc.accuracy != null ? `· ±${Math.round(loc.accuracy)}m` : ''}
+                      </div>
+                      <div className="text-[10px] text-emerald-700 dark:text-emerald-300">
+                        Updated {ageSec < 8 ? 'just now' : ageSec < 60 ? `${ageSec}s ago` : new Date(loc.updatedAt).toLocaleTimeString()}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setSelectedGpsUserId(loc.userId);
+                        setFollowGpsUser(true);
+                      }}
+                      className="px-2.5 py-1.5 rounded-lg bg-emerald-400 hover:bg-emerald-300 text-slate-950 text-[10px] font-extrabold inline-flex items-center gap-1 shadow-sm"
+                      title="Follow user on Live Map"
+                    >
+                      <LocateFixed className="w-3 h-3" /> Follow
+                    </button>
+                    <a
+                      href={`https://www.openstreetmap.org/?mlat=${loc.lat}&mlon=${loc.lng}#map=17/${loc.lat}/${loc.lng}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      onClick={(e) => e.stopPropagation()}
+                      className="p-1.5 rounded-lg bg-white dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 text-emerald-800 dark:text-emerald-200 hover:bg-emerald-100"
+                      title="Open in OpenStreetMap"
+                    >
+                      <ExternalLink className="w-3.5 h-3.5" />
+                    </a>
+                  </div>
+                </div>
+              );
+            })}
           </div>
         )}
       </div>

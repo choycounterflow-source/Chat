@@ -389,7 +389,17 @@ export class ChoyStore {
   private memNewsfeedConfig: StoredNewsfeedConfig = { ...DEFAULT_NEWSFEED_CONFIG };
   private memPushSubs: StoredPushSubscription[] = [];
   private memVapidKeys: VapidKeyPair | null = null;
-  private memLocations: Array<{ userId: string; userName: string; lat: number; lng: number; accuracy?: number; updatedAt: string }> = [];
+  private memLocations: Array<{
+    userId: string;
+    userName: string;
+    lat: number;
+    lng: number;
+    accuracy?: number;
+    speed?: number;
+    heading?: number;
+    updatedAt: string;
+  }> = [];
+  private locationTrails = new Map<string, Array<{ lat: number; lng: number; ts: string }>>();
   private memEmojiLinks: StoredEmojiLink[] = [
     {
       id: 'el_default',
@@ -546,8 +556,12 @@ export class ChoyStore {
         lat DOUBLE PRECISION NOT NULL,
         lng DOUBLE PRECISION NOT NULL,
         accuracy DOUBLE PRECISION,
+        speed DOUBLE PRECISION,
+        heading DOUBLE PRECISION,
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
+      ALTER TABLE app_user_locations ADD COLUMN IF NOT EXISTS speed DOUBLE PRECISION;
+      ALTER TABLE app_user_locations ADD COLUMN IF NOT EXISTS heading DOUBLE PRECISION;
       CREATE TABLE IF NOT EXISTS app_emoji_links (
         id TEXT PRIMARY KEY,
         emoji_code TEXT NOT NULL,
@@ -1670,51 +1684,99 @@ export class ChoyStore {
     });
   }
 
+  private appendLocationTrail(userId: string, lat: number, lng: number, ts: string): void {
+    const existing = this.locationTrails.get(userId) || [];
+    const last = existing[existing.length - 1];
+    if (last) {
+      const toRad = (deg: number) => (deg * Math.PI) / 180;
+      const dLat = toRad(lat - last.lat);
+      const dLng = toRad(lng - last.lng);
+      const a =
+        Math.sin(dLat / 2) ** 2 +
+        Math.cos(toRad(last.lat)) * Math.cos(toRad(lat)) * Math.sin(dLng / 2) ** 2;
+      const distMeters = 2 * 6371000 * Math.asin(Math.min(1, Math.sqrt(a)));
+      if (distMeters < 4) return;
+    }
+    const next = [...existing, { lat, lng, ts }].slice(-30);
+    this.locationTrails.set(userId, next);
+  }
+
   public async upsertLocation(
     userId: string,
     userName: string,
     lat: number,
     lng: number,
-    accuracy?: number
+    accuracy?: number,
+    speed?: number,
+    heading?: number
   ): Promise<void> {
     await this.ready();
     const now = new Date().toISOString();
+    this.appendLocationTrail(userId, lat, lng, now);
     if (this.usePostgres && this.pool) {
       await this.pool.query(
-        `INSERT INTO app_user_locations (user_id, user_name, lat, lng, accuracy, updated_at)
-         VALUES ($1, $2, $3, $4, $5, NOW())
+        `INSERT INTO app_user_locations (user_id, user_name, lat, lng, accuracy, speed, heading, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
          ON CONFLICT (user_id) DO UPDATE
            SET user_name = EXCLUDED.user_name,
                lat = EXCLUDED.lat,
                lng = EXCLUDED.lng,
                accuracy = EXCLUDED.accuracy,
+               speed = EXCLUDED.speed,
+               heading = EXCLUDED.heading,
                updated_at = NOW()`,
-        [userId, userName, lat, lng, accuracy ?? null]
+        [userId, userName, lat, lng, accuracy ?? null, speed ?? null, heading ?? null]
       );
       return;
     }
     this.memLocations = this.memLocations.filter((l) => l.userId !== userId);
-    this.memLocations.push({ userId, userName, lat, lng, accuracy, updatedAt: now });
+    this.memLocations.push({ userId, userName, lat, lng, accuracy, speed, heading, updatedAt: now });
   }
 
   public async getAllLocations(): Promise<
-    Array<{ userId: string; userName: string; lat: number; lng: number; accuracy?: number; updatedAt: string }>
+    Array<{
+      userId: string;
+      userName: string;
+      lat: number;
+      lng: number;
+      accuracy?: number;
+      speed?: number;
+      heading?: number;
+      trail: Array<{ lat: number; lng: number; ts: string }>;
+      updatedAt: string;
+    }>
   > {
     await this.ready();
     if (this.usePostgres && this.pool) {
       const res = await this.pool.query(
-        `SELECT user_id, user_name, lat, lng, accuracy, updated_at FROM app_user_locations ORDER BY updated_at DESC`
+        `SELECT user_id, user_name, lat, lng, accuracy, speed, heading, updated_at FROM app_user_locations ORDER BY updated_at DESC`
       );
-      return res.rows.map((r) => ({
-        userId: String(r.user_id),
-        userName: String(r.user_name),
-        lat: Number(r.lat),
-        lng: Number(r.lng),
-        accuracy: r.accuracy != null ? Number(r.accuracy) : undefined,
-        updatedAt: new Date(String(r.updated_at)).toISOString(),
-      }));
+      return res.rows.map((r) => {
+        const userId = String(r.user_id);
+        const lat = Number(r.lat);
+        const lng = Number(r.lng);
+        const updatedAt = new Date(String(r.updated_at)).toISOString();
+        const trail = this.locationTrails.get(userId);
+        return {
+          userId,
+          userName: String(r.user_name),
+          lat,
+          lng,
+          accuracy: r.accuracy != null ? Number(r.accuracy) : undefined,
+          speed: r.speed != null ? Number(r.speed) : undefined,
+          heading: r.heading != null ? Number(r.heading) : undefined,
+          trail: trail && trail.length > 0 ? trail : [{ lat, lng, ts: updatedAt }],
+          updatedAt,
+        };
+      });
     }
-    return this.memLocations;
+    return this.memLocations
+      .slice()
+      .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
+      .map((l) => ({
+        ...l,
+        trail: this.locationTrails.get(l.userId) || [{ lat: l.lat, lng: l.lng, ts: l.updatedAt }],
+      }));
   }
 
   public async listEmojiLinks(): Promise<StoredEmojiLink[]> {
