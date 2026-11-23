@@ -431,6 +431,8 @@ export default function App() {
     location: 'prompt',
   });
   const [isRequestingPermissions, setIsRequestingPermissions] = useState(false);
+  const [showDashboardPermissionModal, setShowDashboardPermissionModal] = useState(false);
+  const [permAttemptedOnce, setPermAttemptedOnce] = useState(false);
   const initialGpsRef = useRef<{ lat: number; lng: number; accuracy?: number } | null>(null);
 
   const isAdmin = currentUser?.role === 'admin';
@@ -2951,44 +2953,64 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (authMode !== 'register' || typeof navigator === 'undefined' || !navigator.permissions?.query) return;
+    if (!currentUser?.id) {
+      setShowDashboardPermissionModal(false);
+      setPermAttemptedOnce(false);
+      return;
+    }
+    const storageKey = `choychat_perm_prompt_v1_${currentUser.id}`;
+    try {
+      if (localStorage.getItem(storageKey) === 'done') {
+        setShowDashboardPermissionModal(false);
+        return;
+      }
+    } catch {
+      // ignore localStorage read errors
+    }
+
     let cancelled = false;
     (async () => {
       try {
-        const [cam, mic, geo] = await Promise.all([
-          navigator.permissions.query({ name: 'camera' as PermissionName }).catch(() => null),
-          navigator.permissions.query({ name: 'microphone' as PermissionName }).catch(() => null),
-          navigator.permissions.query({ name: 'geolocation' as PermissionName }).catch(() => null),
-        ]);
-        if (cancelled) return;
-        setAppPermissions((prev) => ({
-          camera: cam?.state === 'granted' ? 'granted' : cam?.state === 'denied' ? 'denied' : prev.camera,
-          music: mic?.state === 'granted' ? 'granted' : mic?.state === 'denied' ? 'denied' : prev.music,
-          location: geo?.state === 'granted' ? 'granted' : geo?.state === 'denied' ? 'denied' : prev.location,
-        }));
+        if (typeof navigator !== 'undefined' && navigator.permissions?.query) {
+          const [cam, mic, geo] = await Promise.all([
+            navigator.permissions.query({ name: 'camera' as PermissionName }).catch(() => null),
+            navigator.permissions.query({ name: 'microphone' as PermissionName }).catch(() => null),
+            navigator.permissions.query({ name: 'geolocation' as PermissionName }).catch(() => null),
+          ]);
+          if (cancelled) return;
+          const camState = cam?.state === 'granted' ? 'granted' : cam?.state === 'denied' ? 'denied' : 'prompt';
+          const micState = mic?.state === 'granted' ? 'granted' : mic?.state === 'denied' ? 'denied' : 'prompt';
+          const geoState = geo?.state === 'granted' ? 'granted' : geo?.state === 'denied' ? 'denied' : 'prompt';
+          setAppPermissions({ camera: camState, music: micState, location: geoState });
+          if (camState === 'granted' && micState === 'granted' && geoState === 'granted') {
+            try {
+              localStorage.setItem(storageKey, 'done');
+            } catch {
+              // ignore storage errors
+            }
+            setShowDashboardPermissionModal(false);
+            return;
+          }
+        }
       } catch {
-        // ignore unsupported browser queries
+        // ignore unsupported browser permission queries
+      }
+      if (!cancelled) {
+        setPermAttemptedOnce(false);
+        setShowDashboardPermissionModal(true);
       }
     })();
+
     return () => {
       cancelled = true;
     };
-  }, [authMode]);
+  }, [currentUser?.id]);
 
   const handleAuthSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoginError('');
     setAuthSubmitting(true);
     try {
-      if (authMode === 'register') {
-        const needsPrompt =
-          appPermissions.camera === 'prompt' ||
-          appPermissions.music === 'prompt' ||
-          appPermissions.location === 'prompt';
-        if (needsPrompt) {
-          await requestRequiredAppPermissions().catch(() => null);
-        }
-      }
 
       const endpoint = authMode === 'register' ? '/api/auth/register' : '/api/auth/login';
       const body =
@@ -4736,7 +4758,6 @@ export default function App() {
                   onClick={() => {
                     setAuthMode('register');
                     setLoginError('');
-                    void requestRequiredAppPermissions();
                   }}
                   className={`py-2 rounded-lg font-bold flex items-center justify-center gap-1.5 transition ${
                     authMode === 'register' ? 'bg-emerald-400 text-slate-950 shadow' : 'text-emerald-800 dark:text-emerald-200'
@@ -4795,50 +4816,6 @@ export default function App() {
                     </button>
                   </div>
                 </div>
-                {authMode === 'register' && (
-                  <div className="p-3 rounded-xl bg-emerald-50/90 dark:bg-emerald-950/80 border border-emerald-300 dark:border-emerald-700/80 space-y-2">
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-[11px] font-black uppercase tracking-wide text-emerald-900 dark:text-emerald-200 flex items-center gap-1.5">
-                        <ShieldCheck className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
-                        Required App Permissions
-                      </span>
-                      <button
-                        type="button"
-                        disabled={isRequestingPermissions}
-                        onClick={() => void requestRequiredAppPermissions()}
-                        className="px-2 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 dark:bg-emerald-400 dark:hover:bg-emerald-300 text-white dark:text-slate-950 text-[10px] font-bold transition disabled:opacity-60"
-                      >
-                        {isRequestingPermissions ? 'Requesting...' : 'Allow All'}
-                      </button>
-                    </div>
-                    <div className="grid grid-cols-3 gap-1.5">
-                      {[
-                        { key: 'camera', label: 'Camera', icon: <Camera className="w-3 h-3" />, status: appPermissions.camera },
-                        { key: 'music', label: 'Music & Audio', icon: <Music className="w-3 h-3" />, status: appPermissions.music },
-                        { key: 'location', label: 'Location', icon: <MapPin className="w-3 h-3" />, status: appPermissions.location },
-                      ].map((item) => (
-                        <div
-                          key={item.key}
-                          className={`p-1.5 rounded-lg border text-center space-y-1 ${
-                            item.status === 'granted'
-                              ? 'bg-emerald-100/90 dark:bg-emerald-900/70 border-emerald-400 text-emerald-900 dark:text-emerald-100'
-                              : item.status === 'denied'
-                              ? 'bg-rose-50 dark:bg-rose-950/60 border-rose-400 text-rose-700 dark:text-rose-200'
-                              : 'bg-white dark:bg-slate-900 border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-slate-300'
-                          }`}
-                        >
-                          <div className="flex items-center justify-center gap-1 text-[10px] font-bold">
-                            {item.icon}
-                            <span className="truncate">{item.label}</span>
-                          </div>
-                          <div className="text-[9px] font-black uppercase">
-                            {item.status === 'granted' ? '✓ Allowed' : item.status === 'denied' ? '✕ Denied' : '• Required'}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
                 <button
                   type="submit"
                   disabled={authSubmitting}
@@ -10143,6 +10120,173 @@ export default function App() {
               >
                 <X className="w-3.5 h-3.5" />
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ONE-TIME DASHBOARD APP PERMISSION MODAL (AFTER LOGIN) */}
+      {currentUser && showDashboardPermissionModal && (
+        <div
+          className="fixed inset-0 z-50 bg-slate-950/75 backdrop-blur-sm flex items-center justify-center p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="choy-perm-modal-title"
+        >
+          <div className="w-full max-w-md rounded-2xl bg-white dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 shadow-2xl overflow-hidden">
+            <div className="px-4 py-3.5 bg-gradient-to-r from-emerald-600 to-teal-700 text-white flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <ShieldCheck className="w-5 h-5 text-amber-300 shrink-0" />
+                <div>
+                  <h3 id="choy-perm-modal-title" className="text-sm font-extrabold leading-tight">
+                    App Permissions Required to Continue
+                  </h3>
+                  <p className="text-[11px] text-emerald-100">
+                    One-time setup · {currentUser.name}
+                  </p>
+                </div>
+              </div>
+              <span className="px-2 py-0.5 rounded-full bg-amber-400 text-slate-950 text-[10px] font-extrabold uppercase shrink-0">
+                Required
+              </span>
+            </div>
+
+            <div className="p-4 space-y-3.5">
+              <div className="p-3 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-600/50 text-xs text-emerald-950 dark:text-amber-100 space-y-1 leading-relaxed">
+                <p className="font-bold">
+                  Please allow <span className="text-emerald-700 dark:text-amber-300">Camera</span>,{' '}
+                  <span className="text-emerald-700 dark:text-amber-300">Audio / Microphone</span>, and{' '}
+                  <span className="text-emerald-700 dark:text-amber-300">Location</span> to continue using this app and to enable{' '}
+                  <span className="underline decoration-amber-400">Audio &amp; Video Calls</span>.
+                </p>
+                <p className="text-[11px] text-emerald-800 dark:text-emerald-200">
+                  Note: Pindota ang <strong>Allow &amp; Continue</strong> sa ubos aron magamit ang Camera, Audio/Mic, ug Location para sa Audio Call, Video Call, Voice Messages, ug pagpadayon sa app.
+                </p>
+              </div>
+
+              <div className="grid grid-cols-3 gap-2">
+                {[
+                  {
+                    key: 'camera',
+                    label: 'Camera',
+                    sub: 'Video Call & Photo',
+                    icon: <Camera className="w-4 h-4" />,
+                    status: appPermissions.camera,
+                  },
+                  {
+                    key: 'music',
+                    label: 'Audio / Mic',
+                    sub: 'Audio & Video Call',
+                    icon: <Music className="w-4 h-4" />,
+                    status: appPermissions.music,
+                  },
+                  {
+                    key: 'location',
+                    label: 'Location',
+                    sub: 'GPS & Access',
+                    icon: <MapPin className="w-4 h-4" />,
+                    status: appPermissions.location,
+                  },
+                ].map((item) => (
+                  <div
+                    key={item.key}
+                    className={`p-2.5 rounded-xl border text-center space-y-1 ${
+                      item.status === 'granted'
+                        ? 'bg-emerald-100/90 dark:bg-emerald-900/70 border-emerald-400 text-emerald-900 dark:text-emerald-100'
+                        : item.status === 'denied'
+                        ? 'bg-rose-50 dark:bg-rose-950/60 border-rose-400 text-rose-700 dark:text-rose-200'
+                        : 'bg-emerald-50 dark:bg-slate-900 border-emerald-200 dark:border-emerald-800 text-emerald-900 dark:text-slate-200'
+                    }`}
+                  >
+                    <div className="flex justify-center text-emerald-700 dark:text-emerald-300">{item.icon}</div>
+                    <div className="text-[11px] font-extrabold leading-tight">{item.label}</div>
+                    <div className="text-[9px] opacity-80 leading-tight">{item.sub}</div>
+                    <div className="text-[9px] font-black uppercase pt-0.5">
+                      {item.status === 'granted' ? '✓ Allowed' : item.status === 'denied' ? '✕ Blocked' : '• Required'}
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {permAttemptedOnce && (appPermissions.camera === 'denied' || appPermissions.music === 'denied' || appPermissions.location === 'denied') && (
+                <div className="p-2.5 rounded-xl bg-rose-50 dark:bg-rose-950/50 border border-rose-300 dark:border-rose-700 text-[11px] text-rose-800 dark:text-rose-200">
+                  Naay permission nga naka-block sa browser settings. Pwede nimo i-Allow sa browser address bar lock icon para mo-work ang Audio/Video Call, o pindota ang Continue to Dashboard.
+                </div>
+              )}
+
+              <div className="flex flex-col gap-2 pt-1">
+                <button
+                  type="button"
+                  disabled={isRequestingPermissions}
+                  onClick={async () => {
+                    const perms = await requestRequiredAppPermissions();
+                    setPermAttemptedOnce(true);
+                    if (initialGpsRef.current && authToken) {
+                      fetch('/api/choy/gps/ping', {
+                        method: 'POST',
+                        credentials: 'same-origin',
+                        headers: {
+                          'Content-Type': 'application/json',
+                          Authorization: `Bearer ${authToken}`,
+                        },
+                        body: JSON.stringify(initialGpsRef.current),
+                      }).catch(() => {});
+                    }
+                    const allGranted =
+                      perms.camera === 'granted' &&
+                      perms.music === 'granted' &&
+                      perms.location === 'granted';
+                    if (allGranted || permAttemptedOnce) {
+                      try {
+                        localStorage.setItem(`choychat_perm_prompt_v1_${currentUser.id}`, 'done');
+                      } catch {
+                        // ignore storage errors
+                      }
+                      setShowDashboardPermissionModal(false);
+                      showNotice(
+                        allGranted
+                          ? 'Permissions Allowed! Camera, Audio & Video Call, ug Location ready na.'
+                          : 'Dashboard ready. Pwede nimo i-allow ang uban pang permissions sa browser settings kon mag Video/Audio Call.'
+                      );
+                    }
+                  }}
+                  className="w-full py-3 rounded-xl bg-emerald-400 hover:bg-emerald-300 text-slate-950 font-extrabold text-xs shadow-lg flex items-center justify-center gap-2 transition disabled:opacity-60"
+                >
+                  {isRequestingPermissions ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>Requesting Camera, Audio &amp; Location...</span>
+                    </>
+                  ) : permAttemptedOnce ? (
+                    <>
+                      <ShieldCheck className="w-4 h-4" />
+                      <span>Retry Allow All (Camera, Audio &amp; Location)</span>
+                    </>
+                  ) : (
+                    <>
+                      <ShieldCheck className="w-4 h-4" />
+                      <span>Allow &amp; Continue (Camera, Audio &amp; Location)</span>
+                    </>
+                  )}
+                </button>
+
+                {permAttemptedOnce && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      try {
+                        localStorage.setItem(`choychat_perm_prompt_v1_${currentUser.id}`, 'done');
+                      } catch {
+                        // ignore storage errors
+                      }
+                      setShowDashboardPermissionModal(false);
+                    }}
+                    className="w-full py-2 rounded-xl bg-emerald-100 dark:bg-emerald-900/70 hover:bg-emerald-200 dark:hover:bg-emerald-800 text-emerald-900 dark:text-emerald-100 font-bold text-[11px] transition"
+                  >
+                    Continue to Dashboard
+                  </button>
+                )}
+              </div>
             </div>
           </div>
         </div>
