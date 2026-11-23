@@ -116,6 +116,8 @@ interface SecurityStudioProps {
   onAnnouncementsChanged?: (items: StudioAnnouncementItem[]) => void;
   initialModule?: 'home' | 'announcements' | 'newsfeeds' | 'user_pins';
   onConsumeInitialModule?: () => void;
+  adminNewsfeedFilter?: 'all' | StudioNewsfeedChannel;
+  onAdminNewsfeedFilterChange?: (val: 'all' | StudioNewsfeedChannel) => void;
 }
 
 interface StudioNoteEntry {
@@ -242,6 +244,8 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
   onAnnouncementsChanged,
   initialModule,
   onConsumeInitialModule,
+  adminNewsfeedFilter = 'all',
+  onAdminNewsfeedFilterChange,
 }) => {
   // 1. Direct Admin Links
   const [adminLinks, setAdminLinks] = useState(() => {
@@ -3246,6 +3250,44 @@ export const SecurityStudio: React.FC<SecurityStudioProps> = ({
         <p className="text-xs text-emerald-800 dark:text-emerald-200">
           Strictly separates users and search results across 4 choices: <span className="font-bold">{newsfeedATitle}</span>, <span className="font-bold">{newsfeedBTitle}</span>, <span className="font-bold">{newsfeedCTitle}</span>, or <span className="font-bold">B &amp; C</span>. Users in Newsfeed A cannot see or search Newsfeed B/C users, and Newsfeed B/C users cannot see Newsfeed A users.
         </p>
+
+        {onAdminNewsfeedFilterChange && (
+          <div className="p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-800 space-y-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="text-xs font-bold text-emerald-950 dark:text-white flex items-center gap-1.5">
+                <Globe className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+                <span>Admin Newsfeed View Filter</span>
+              </div>
+              <span className="text-[10px] font-semibold text-emerald-700 dark:text-emerald-300">
+                Pilia unsa ang makita sa imong Newsfeed tab
+              </span>
+            </div>
+            <div className="flex flex-wrap items-center gap-1.5">
+              {(
+                [
+                  { id: 'all', label: 'All Channels' },
+                  { id: 'feed_a', label: newsfeedATitle || 'Newsfeed A' },
+                  { id: 'feed_b', label: newsfeedBTitle || 'Newsfeed B' },
+                  { id: 'feed_c', label: newsfeedCTitle || 'Newsfeed C' },
+                  { id: 'feed_bc', label: 'B & C' },
+                ] as const
+              ).map((opt) => (
+                <button
+                  key={opt.id}
+                  type="button"
+                  onClick={() => onAdminNewsfeedFilterChange(opt.id)}
+                  className={`px-3 py-1 rounded-xl text-[11px] font-bold transition ${
+                    adminNewsfeedFilter === opt.id
+                      ? 'bg-emerald-500 text-slate-950 shadow-sm'
+                      : 'bg-white dark:bg-emerald-900/70 text-emerald-800 dark:text-emerald-200 border border-emerald-200 dark:border-emerald-700 hover:bg-emerald-100 dark:hover:bg-emerald-800'
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
 
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-800">
           <div className="space-y-1">

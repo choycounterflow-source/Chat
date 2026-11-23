@@ -5863,81 +5863,6 @@ export default function App() {
           {/* FEED */}
           {activeTab === 'feed' && (
             <div className="max-w-2xl mx-auto space-y-4">
-              {isAdmin && (
-                <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-3.5 shadow-sm space-y-2">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div className="flex items-center gap-1.5 text-xs font-bold text-emerald-950 dark:text-white">
-                      <Globe className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
-                      <span>Admin Newsfeed Filter</span>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => setActiveTab('admin_newsfeeds')}
-                      className="px-2.5 py-1 rounded-xl text-[11px] font-bold bg-indigo-600 hover:bg-indigo-500 text-white transition"
-                    >
-                      Newsfeed Setup
-                    </button>
-                  </div>
-                  <div className="flex flex-wrap items-center gap-1.5">
-                    <button
-                      type="button"
-                      onClick={() => setAdminNewsfeedFilter('all')}
-                      className={`px-3 py-1 rounded-xl text-[11px] font-bold transition ${
-                        adminNewsfeedFilter === 'all'
-                          ? 'bg-emerald-500 text-slate-950 shadow-sm'
-                          : 'bg-emerald-50 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-200 border border-emerald-200 dark:border-emerald-700 hover:bg-emerald-100 dark:hover:bg-emerald-800'
-                      }`}
-                    >
-                      All Channels
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setAdminNewsfeedFilter('feed_a')}
-                      className={`px-3 py-1 rounded-xl text-[11px] font-bold transition ${
-                        adminNewsfeedFilter === 'feed_a'
-                          ? 'bg-emerald-500 text-slate-950 shadow-sm'
-                          : 'bg-emerald-50 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-200 border border-emerald-200 dark:border-emerald-700 hover:bg-emerald-100 dark:hover:bg-emerald-800'
-                      }`}
-                    >
-                      {newsfeedConfig.feedATitle}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setAdminNewsfeedFilter('feed_b')}
-                      className={`px-3 py-1 rounded-xl text-[11px] font-bold transition ${
-                        adminNewsfeedFilter === 'feed_b'
-                          ? 'bg-emerald-500 text-slate-950 shadow-sm'
-                          : 'bg-emerald-50 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-200 border border-emerald-200 dark:border-emerald-700 hover:bg-emerald-100 dark:hover:bg-emerald-800'
-                      }`}
-                    >
-                      {newsfeedConfig.feedBTitle}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setAdminNewsfeedFilter('feed_c')}
-                      className={`px-3 py-1 rounded-xl text-[11px] font-bold transition ${
-                        adminNewsfeedFilter === 'feed_c'
-                          ? 'bg-emerald-500 text-slate-950 shadow-sm'
-                          : 'bg-emerald-50 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-200 border border-emerald-200 dark:border-emerald-700 hover:bg-emerald-100 dark:hover:bg-emerald-800'
-                      }`}
-                    >
-                      {newsfeedConfig.feedCTitle}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setAdminNewsfeedFilter('feed_bc')}
-                      className={`px-3 py-1 rounded-xl text-[11px] font-bold transition ${
-                        adminNewsfeedFilter === 'feed_bc'
-                          ? 'bg-emerald-500 text-slate-950 shadow-sm'
-                          : 'bg-emerald-50 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-200 border border-emerald-200 dark:border-emerald-700 hover:bg-emerald-100 dark:hover:bg-emerald-800'
-                      }`}
-                    >
-                      B &amp; C
-                    </button>
-                  </div>
-                </div>
-              )}
-
               {/* MOVING ANNOUNCEMENT & REMINDER SLIDE BANNER */}
               {visibleAnnouncements.length > 0 ? (() => {
                 const safeIdx = bannerSlideIndex % visibleAnnouncements.length;
@@ -6112,55 +6037,51 @@ export default function App() {
                 </div>
               ) : null}
 
-              <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-4 shadow space-y-3">
-                <div className="flex flex-wrap items-center gap-2 border-b border-emerald-200 dark:border-emerald-800 pb-2 text-xs font-bold">
-                  <button
-                    type="button"
-                    onClick={() => setNewPostCategory('feed')}
-                    className={`flex items-center gap-2 px-3.5 py-2 rounded-xl transition ${
-                      newPostCategory === 'feed'
-                        ? 'bg-gradient-to-r from-emerald-400 to-teal-400 text-slate-950 font-extrabold shadow-md'
-                        : 'text-emerald-800 dark:text-emerald-200 bg-emerald-100/90 dark:bg-emerald-950/80 hover:bg-emerald-200/80 dark:hover:bg-emerald-800'
-                    }`}
-                  >
-                    <Home className="w-3.5 h-3.5" /> Post Feed
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setNewPostCategory('myday')}
-                    className={`flex items-center gap-2 px-3.5 py-2 rounded-xl transition ${
-                      newPostCategory === 'myday'
-                        ? 'bg-gradient-to-r from-emerald-400 to-teal-400 text-slate-950 font-extrabold shadow-md'
-                        : 'text-emerald-800 dark:text-emerald-200 bg-emerald-100/90 dark:bg-emerald-950/80 hover:bg-emerald-200/80 dark:hover:bg-emerald-800'
-                    }`}
-                  >
-                    <Sparkles className="w-3.5 h-3.5" /> Story (My Day)
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setActiveTab('messages')}
-                    className="flex items-center gap-2 px-3.5 py-2 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-700 text-white ml-auto hover:brightness-110 transition shadow"
-                  >
-                    <MessageSquare className="w-3.5 h-3.5" /> Message Chat
-                  </button>
-                </div>
+              <div className="bg-white dark:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-700/50 rounded-2xl p-3 shadow space-y-2.5">
+                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-emerald-200 dark:border-emerald-800 pb-2 text-xs font-bold">
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => setNewPostCategory('feed')}
+                      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl transition ${
+                        newPostCategory === 'feed'
+                          ? 'bg-gradient-to-r from-emerald-400 to-teal-400 text-slate-950 font-extrabold shadow-md'
+                          : 'text-emerald-800 dark:text-emerald-200 bg-emerald-100/90 dark:bg-emerald-950/80 hover:bg-emerald-200/80 dark:hover:bg-emerald-800'
+                      }`}
+                    >
+                      <Home className="w-3.5 h-3.5" /> Post Feed
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setNewPostCategory('myday')}
+                      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl transition ${
+                        newPostCategory === 'myday'
+                          ? 'bg-gradient-to-r from-emerald-400 to-teal-400 text-slate-950 font-extrabold shadow-md'
+                          : 'text-emerald-800 dark:text-emerald-200 bg-emerald-100/90 dark:bg-emerald-950/80 hover:bg-emerald-200/80 dark:hover:bg-emerald-800'
+                      }`}
+                    >
+                      <Sparkles className="w-3.5 h-3.5" /> Story (My Day)
+                    </button>
+                  </div>
 
-                <form onSubmit={handleCreatePost} className="space-y-2.5">
                   {isAdmin && (
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="text-[11px] font-bold text-emerald-800 dark:text-emerald-200">Target Newsfeed (Admin):</span>
+                    <label className="flex items-center gap-1.5 text-[11px] font-bold text-emerald-800 dark:text-emerald-200">
+                      <span className="whitespace-nowrap">Target Newsfeed:</span>
                       <select
                         value={newPostNewsfeed}
                         onChange={(e) => setNewPostNewsfeed(e.target.value as SelectableNewsfeed)}
-                        className="p-1.5 rounded-xl bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 text-emerald-950 dark:text-white text-xs font-bold"
+                        className="px-2 py-1 rounded-xl bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 text-emerald-950 dark:text-white text-[11px] font-bold"
                       >
                         <option value="feed_a">{newsfeedConfig.feedATitle}</option>
                         <option value="feed_b">{newsfeedConfig.feedBTitle}</option>
                         <option value="feed_c">{newsfeedConfig.feedCTitle}</option>
                         <option value="feed_bc">B &amp; C ({newsfeedConfig.feedBTitle} &amp; {newsfeedConfig.feedCTitle})</option>
                       </select>
-                    </div>
+                    </label>
                   )}
+                </div>
+
+                <form onSubmit={handleCreatePost}>
                   <input
                     type="file"
                     ref={postFileInputRef}
@@ -6168,65 +6089,68 @@ export default function App() {
                     className="hidden"
                     onChange={handlePostFileSelect}
                   />
-                  <textarea
-                    rows={2}
-                    placeholder="Share an update across all devices..."
-                    value={newPostText}
-                    onChange={(e) => setNewPostText(e.target.value)}
-                    className="w-full p-2.5 bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 rounded-xl text-xs text-emerald-950 dark:text-white focus:outline-none resize-none"
-                  ></textarea>
+                  <div className="bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 rounded-xl overflow-hidden focus-within:border-emerald-500 dark:focus-within:border-emerald-400 transition">
+                    <textarea
+                      rows={2}
+                      placeholder="Share an update across all devices..."
+                      value={newPostText}
+                      onChange={(e) => setNewPostText(e.target.value)}
+                      className="w-full px-3 pt-2.5 pb-1.5 bg-transparent text-xs text-emerald-950 dark:text-white placeholder-emerald-700/60 dark:placeholder-emerald-300/60 focus:outline-none resize-none"
+                    ></textarea>
 
-                  {newPostMedia && (
-                    <div className="relative rounded-xl overflow-hidden bg-emerald-50 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-700 p-2">
+                    {newPostMedia && (
+                      <div className="relative mx-2.5 mb-2 rounded-lg overflow-hidden bg-white dark:bg-slate-950/60 border border-emerald-300 dark:border-emerald-700 p-1.5">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setNewPostMedia('');
+                            setNewPostMediaName('');
+                            setNewPostType('text');
+                          }}
+                          className="absolute top-2 right-2 z-10 px-2 py-0.5 rounded-lg bg-white/95 dark:bg-slate-950/85 border border-red-400/60 text-red-700 dark:text-red-300 hover:bg-red-50 dark:hover:text-white text-[11px] font-bold shadow-sm"
+                          title="Remove attachment"
+                        >
+                          ✕
+                        </button>
+                        {newPostType === 'image' ? (
+                          <img
+                            src={newPostMedia}
+                            alt="Selected attachment"
+                            className="max-h-48 w-full object-contain rounded-lg"
+                          />
+                        ) : (
+                          <video
+                            src={newPostMedia}
+                            controls
+                            playsInline
+                            className="max-h-48 w-full rounded-lg bg-white dark:bg-slate-950"
+                          />
+                        )}
+                        {newPostMediaName && (
+                          <div className="text-[10px] text-emerald-700 dark:text-emerald-300 mt-1 truncate px-1">{newPostMediaName}</div>
+                        )}
+                      </div>
+                    )}
+
+                    <div className="px-2.5 py-1.5 border-t border-emerald-200/80 dark:border-emerald-800/80 bg-white/40 dark:bg-emerald-900/30 flex items-center justify-between gap-2">
                       <button
                         type="button"
-                        onClick={() => {
-                          setNewPostMedia('');
-                          setNewPostMediaName('');
-                          setNewPostType('text');
-                        }}
-                        className="absolute top-2.5 right-2.5 z-10 px-2 py-0.5 rounded-lg bg-white/95 dark:bg-slate-950/85 border border-red-400/60 text-red-700 dark:text-red-300 hover:bg-red-50 dark:hover:text-white text-[11px] font-bold shadow-sm"
-                        title="Remove attachment"
+                        disabled={isProcessingPostMedia}
+                        onClick={() => postFileInputRef.current?.click()}
+                        className="px-2.5 py-1 rounded-lg bg-white/90 dark:bg-emerald-900/80 border border-emerald-300 dark:border-emerald-700 text-emerald-800 dark:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-800 font-bold text-[11px] inline-flex items-center gap-1.5 transition disabled:opacity-60"
                       >
-                        ✕
+                        <ImageIcon className="w-3.5 h-3.5 text-emerald-700 dark:text-emerald-400" />
+                        <Plus className="w-3 h-3 text-emerald-700 dark:text-emerald-400 -ml-1" />
+                        <span>{isProcessingPostMedia ? 'Loading...' : 'Image / Video'}</span>
                       </button>
-                      {newPostType === 'image' ? (
-                        <img
-                          src={newPostMedia}
-                          alt="Selected attachment"
-                          className="max-h-56 w-full object-contain rounded-lg bg-emerald-100/70 dark:bg-slate-950/60"
-                        />
-                      ) : (
-                        <video
-                          src={newPostMedia}
-                          controls
-                          playsInline
-                          className="max-h-56 w-full rounded-lg bg-white dark:bg-slate-950"
-                        />
-                      )}
-                      {newPostMediaName && (
-                        <div className="text-[10px] text-emerald-700 dark:text-emerald-300 mt-1.5 truncate px-1">{newPostMediaName}</div>
-                      )}
+                      <button
+                        type="submit"
+                        disabled={isProcessingPostMedia || (!newPostText.trim() && !newPostMedia.trim())}
+                        className="px-3.5 py-1 bg-emerald-400 hover:bg-emerald-300 text-slate-950 font-bold text-xs rounded-lg shadow disabled:opacity-50 transition"
+                      >
+                        Publish
+                      </button>
                     </div>
-                  )}
-
-                  <div className="flex flex-wrap justify-between items-center gap-2">
-                    <button
-                      type="button"
-                      disabled={isProcessingPostMedia}
-                      onClick={() => postFileInputRef.current?.click()}
-                      className="px-3.5 py-2 rounded-xl bg-emerald-50 dark:bg-emerald-950 border border-emerald-500/60 text-emerald-800 dark:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-800 hover:text-emerald-950 dark:hover:text-white font-bold text-xs flex items-center gap-1.5 transition shadow-sm disabled:opacity-60"
-                    >
-                      <Plus className="w-4 h-4 text-emerald-700 dark:text-emerald-400" />
-                      <span>{isProcessingPostMedia ? 'Loading...' : 'Add + Image / Video'}</span>
-                    </button>
-                    <button
-                      type="submit"
-                      disabled={isProcessingPostMedia || (!newPostText.trim() && !newPostMedia.trim())}
-                      className="px-4 py-2 bg-emerald-400 hover:bg-emerald-300 text-slate-950 font-bold text-xs rounded-xl shadow disabled:opacity-50"
-                    >
-                      Publish
-                    </button>
                   </div>
                 </form>
               </div>
@@ -7820,63 +7744,16 @@ export default function App() {
                           </button>
                         </div>
                       )}
-                      <form onSubmit={handleSendMessage} className="flex flex-wrap sm:flex-nowrap items-center gap-2">
-                        <div className="order-2 sm:order-1 flex items-center gap-1.5 shrink-0">
-                          <button
-                            type="button"
-                            disabled={isUploadingMsgMedia || isSendingMsg}
-                            onClick={() => msgImageInputRef.current?.click()}
-                            className="p-2 sm:p-2.5 rounded-xl bg-emerald-100/80 dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 text-emerald-700 dark:text-emerald-300 hover:text-emerald-950 dark:hover:text-white hover:bg-emerald-100 dark:hover:bg-emerald-800 transition shrink-0 disabled:opacity-50"
-                            title="Send Photo / Image"
-                          >
-                            {isUploadingMsgMedia ? <Loader2 className="w-4 h-4 animate-spin" /> : <ImageIcon className="w-4 h-4" />}
-                          </button>
-                          <button
-                            type="button"
-                            disabled={isUploadingMsgMedia || isSendingMsg}
-                            onClick={() => msgFileInputRef.current?.click()}
-                            className="p-2 sm:p-2.5 rounded-xl bg-emerald-100/80 dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 text-emerald-700 dark:text-emerald-300 hover:text-emerald-950 dark:hover:text-white hover:bg-emerald-100 dark:hover:bg-emerald-800 transition shrink-0 disabled:opacity-50"
-                            title="Attach Video, Audio, or File"
-                          >
-                            <Plus className="w-4 h-4" />
-                          </button>
-                          <button
-                            type="button"
-                            disabled={isProcessingAudio || isUploadingMsgMedia || isSendingMsg}
-                            onClick={startAudioRecording}
-                            className="p-2 sm:p-2.5 rounded-xl bg-emerald-100/80 dark:bg-emerald-900 border border-emerald-300 dark:border-emerald-700 text-emerald-700 dark:text-emerald-300 hover:text-emerald-950 dark:hover:text-white hover:bg-emerald-100 dark:hover:bg-emerald-800 transition shrink-0 disabled:opacity-50"
-                            title="Record voice message"
-                          >
-                            <Mic className="w-4 h-4" />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setShowMsgLinkInput(!showMsgLinkInput)}
-                            className={`p-2 sm:p-2.5 rounded-xl border transition shrink-0 ${
-                              showMsgLinkInput
-                                ? 'bg-cyan-400 text-slate-950 border-cyan-300'
-                                : 'bg-emerald-100/80 dark:bg-emerald-900 border-emerald-300 dark:border-emerald-700 text-cyan-700 dark:text-cyan-300 hover:text-emerald-950 dark:hover:text-white hover:bg-emerald-100 dark:hover:bg-emerald-800'
-                            }`}
-                            title="Attach synced Video/Image URL"
-                          >
-                            <Link2 className="w-4 h-4" />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setShowMsgEmojiPicker((prev) => !prev)}
-                            className={`p-2 sm:p-2.5 rounded-xl border transition shrink-0 ${
-                              showMsgEmojiPicker
-                                ? 'bg-emerald-400 text-slate-950 border-emerald-300'
-                                : 'bg-emerald-100/80 dark:bg-emerald-900 border-emerald-300 dark:border-emerald-700 text-emerald-700 dark:text-emerald-300 hover:text-emerald-950 dark:hover:text-white hover:bg-emerald-100 dark:hover:bg-emerald-800'
-                            }`}
-                            title={showMsgEmojiPicker ? 'Hide emojis' : 'Open emojis'}
-                            aria-label={showMsgEmojiPicker ? 'Hide emojis' : 'Open emojis'}
-                            aria-expanded={showMsgEmojiPicker}
-                          >
-                            <Smile className="w-4 h-4" />
-                          </button>
-                        </div>
-                        <div className="order-1 sm:order-2 flex items-center gap-2 w-full sm:w-auto sm:flex-1 min-w-0">
+                      <form onSubmit={handleSendMessage}>
+                        <div
+                          className={`border rounded-2xl overflow-hidden transition ${
+                            msgBgMode === 'black'
+                              ? 'bg-neutral-900 border-neutral-700 focus-within:border-amber-400'
+                              : msgBgMode === 'white'
+                              ? 'bg-white border-slate-300 focus-within:border-emerald-600'
+                              : 'bg-emerald-100/80 dark:bg-emerald-900 border-emerald-300 dark:border-emerald-700 focus-within:border-amber-500 dark:focus-within:border-amber-300/80'
+                          }`}
+                        >
                           <input
                             type="text"
                             translate="no"
@@ -7891,21 +7768,112 @@ export default function App() {
                             }
                             value={msgInput}
                             onChange={(e) => setMsgInput(e.target.value)}
-                            className={`notranslate flex-1 min-w-0 px-3 py-2.5 border rounded-xl text-sm sm:text-xs focus:outline-none ${
+                            className={`notranslate w-full px-3 pt-2.5 pb-1.5 bg-transparent text-sm sm:text-xs focus:outline-none ${
                               msgBgMode === 'black'
-                                ? 'bg-neutral-900 border-neutral-700 text-white placeholder-neutral-400 focus:border-amber-400'
+                                ? 'text-white placeholder-neutral-400'
                                 : msgBgMode === 'white'
-                                ? 'bg-white border-slate-300 text-black placeholder-slate-500 focus:border-emerald-600'
-                                : 'bg-emerald-100/80 dark:bg-emerald-900 border-emerald-300 dark:border-emerald-700 text-emerald-950 dark:text-white placeholder-emerald-600/60 dark:placeholder-emerald-400 focus:border-amber-500 dark:focus:border-amber-300/80'
+                                ? 'text-black placeholder-slate-500'
+                                : 'text-emerald-950 dark:text-white placeholder-emerald-600/60 dark:placeholder-emerald-400'
                             }`}
                           />
-                          <button
-                            type="submit"
-                            disabled={isProcessingAudio || isUploadingMsgMedia || isSendingMsg || (!msgInput.trim() && !msgMediaUrl)}
-                            className="px-4 py-2.5 bg-emerald-400 text-slate-950 font-bold text-xs rounded-xl shadow hover:bg-emerald-300 transition shrink-0 disabled:opacity-50"
+                          <div
+                            className={`px-2 py-1.5 flex items-center justify-between gap-2 border-t ${
+                              msgBgMode === 'black'
+                                ? 'border-neutral-800 bg-neutral-950/60'
+                                : msgBgMode === 'white'
+                                ? 'border-slate-200 bg-slate-50/80'
+                                : 'border-emerald-200/80 dark:border-emerald-800/80 bg-white/35 dark:bg-emerald-950/35'
+                            }`}
                           >
-                            {isSendingMsg ? 'Sending...' : 'Send'}
-                          </button>
+                            <div className="flex items-center gap-1 min-w-0">
+                              <button
+                                type="button"
+                                disabled={isUploadingMsgMedia || isSendingMsg}
+                                onClick={() => msgImageInputRef.current?.click()}
+                                className={`p-1.5 rounded-lg transition shrink-0 disabled:opacity-50 ${
+                                  msgBgMode === 'black'
+                                    ? 'text-neutral-200 hover:bg-neutral-800'
+                                    : msgBgMode === 'white'
+                                    ? 'text-slate-700 hover:bg-slate-200'
+                                    : 'text-emerald-700 dark:text-emerald-300 hover:bg-emerald-200/70 dark:hover:bg-emerald-800'
+                                }`}
+                                title="Send Photo / Image"
+                              >
+                                {isUploadingMsgMedia ? <Loader2 className="w-4 h-4 animate-spin" /> : <ImageIcon className="w-4 h-4" />}
+                              </button>
+                              <button
+                                type="button"
+                                disabled={isUploadingMsgMedia || isSendingMsg}
+                                onClick={() => msgFileInputRef.current?.click()}
+                                className={`p-1.5 rounded-lg transition shrink-0 disabled:opacity-50 ${
+                                  msgBgMode === 'black'
+                                    ? 'text-neutral-200 hover:bg-neutral-800'
+                                    : msgBgMode === 'white'
+                                    ? 'text-slate-700 hover:bg-slate-200'
+                                    : 'text-emerald-700 dark:text-emerald-300 hover:bg-emerald-200/70 dark:hover:bg-emerald-800'
+                                }`}
+                                title="Attach Video, Audio, or File"
+                              >
+                                <Plus className="w-4 h-4" />
+                              </button>
+                              <button
+                                type="button"
+                                disabled={isProcessingAudio || isUploadingMsgMedia || isSendingMsg}
+                                onClick={startAudioRecording}
+                                className={`p-1.5 rounded-lg transition shrink-0 disabled:opacity-50 ${
+                                  msgBgMode === 'black'
+                                    ? 'text-neutral-200 hover:bg-neutral-800'
+                                    : msgBgMode === 'white'
+                                    ? 'text-slate-700 hover:bg-slate-200'
+                                    : 'text-emerald-700 dark:text-emerald-300 hover:bg-emerald-200/70 dark:hover:bg-emerald-800'
+                                }`}
+                                title="Record voice message"
+                              >
+                                <Mic className="w-4 h-4" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setShowMsgLinkInput(!showMsgLinkInput)}
+                                className={`p-1.5 rounded-lg transition shrink-0 ${
+                                  showMsgLinkInput
+                                    ? 'bg-cyan-400 text-slate-950'
+                                    : msgBgMode === 'black'
+                                    ? 'text-cyan-300 hover:bg-neutral-800'
+                                    : msgBgMode === 'white'
+                                    ? 'text-cyan-700 hover:bg-slate-200'
+                                    : 'text-cyan-700 dark:text-cyan-300 hover:bg-emerald-200/70 dark:hover:bg-emerald-800'
+                                }`}
+                                title="Attach synced Video/Image URL"
+                              >
+                                <Link2 className="w-4 h-4" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setShowMsgEmojiPicker((prev) => !prev)}
+                                className={`p-1.5 rounded-lg transition shrink-0 ${
+                                  showMsgEmojiPicker
+                                    ? 'bg-emerald-400 text-slate-950'
+                                    : msgBgMode === 'black'
+                                    ? 'text-neutral-200 hover:bg-neutral-800'
+                                    : msgBgMode === 'white'
+                                    ? 'text-slate-700 hover:bg-slate-200'
+                                    : 'text-emerald-700 dark:text-emerald-300 hover:bg-emerald-200/70 dark:hover:bg-emerald-800'
+                                }`}
+                                title={showMsgEmojiPicker ? 'Hide emojis' : 'Open emojis'}
+                                aria-label={showMsgEmojiPicker ? 'Hide emojis' : 'Open emojis'}
+                                aria-expanded={showMsgEmojiPicker}
+                              >
+                                <Smile className="w-4 h-4" />
+                              </button>
+                            </div>
+                            <button
+                              type="submit"
+                              disabled={isProcessingAudio || isUploadingMsgMedia || isSendingMsg || (!msgInput.trim() && !msgMediaUrl)}
+                              className="px-3.5 py-1.5 bg-emerald-400 text-slate-950 font-bold text-xs rounded-xl shadow hover:bg-emerald-300 transition shrink-0 disabled:opacity-50"
+                            >
+                              {isSendingMsg ? 'Sending...' : 'Send'}
+                            </button>
+                          </div>
                         </div>
                       </form>
                     </div>
@@ -8493,6 +8461,42 @@ export default function App() {
                   Only the Admin sees and controls Newsfeed setup. Assign each user to one of 4 choices: <span className="font-bold">{newsfeedConfig.feedATitle}</span>, <span className="font-bold">{newsfeedConfig.feedBTitle}</span>, <span className="font-bold">{newsfeedConfig.feedCTitle}</span>, or <span className="font-bold">B &amp; C</span>. Users in Newsfeed A cannot see or search Newsfeed B/C users.
                 </p>
 
+                <div className="p-3.5 rounded-xl bg-emerald-50 dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-800 space-y-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-xs font-bold text-emerald-950 dark:text-white flex items-center gap-1.5">
+                      <Globe className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+                      Admin Newsfeed View Filter
+                    </span>
+                    <span className="text-[10px] font-semibold text-emerald-700 dark:text-emerald-300">
+                      Filter kung unsa ang makita sa imong Newsfeed tab
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {(
+                      [
+                        { id: 'all', label: 'All Channels' },
+                        { id: 'feed_a', label: newsfeedConfig.feedATitle },
+                        { id: 'feed_b', label: newsfeedConfig.feedBTitle },
+                        { id: 'feed_c', label: newsfeedConfig.feedCTitle },
+                        { id: 'feed_bc', label: 'B & C' },
+                      ] as const
+                    ).map((opt) => (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        onClick={() => setAdminNewsfeedFilter(opt.id)}
+                        className={`px-3 py-1 rounded-xl text-[11px] font-bold transition ${
+                          adminNewsfeedFilter === opt.id
+                            ? 'bg-emerald-500 text-slate-950 shadow-sm'
+                            : 'bg-white dark:bg-emerald-900/70 text-emerald-800 dark:text-emerald-200 border border-emerald-200 dark:border-emerald-700 hover:bg-emerald-100 dark:hover:bg-emerald-800'
+                        }`}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
                 <form
                   onSubmit={handleSaveAdminNewsfeedTitles}
                   className="grid grid-cols-1 sm:grid-cols-3 gap-3 p-3.5 rounded-xl bg-emerald-50 dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-800"
@@ -8651,6 +8655,8 @@ export default function App() {
               onAnnouncementsChanged={setAnnouncements}
               initialModule={securityInitialModule}
               onConsumeInitialModule={() => setSecurityInitialModule('home')}
+              adminNewsfeedFilter={adminNewsfeedFilter}
+              onAdminNewsfeedFilterChange={setAdminNewsfeedFilter}
             />
           )}
 
