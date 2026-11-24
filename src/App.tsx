@@ -4231,6 +4231,24 @@ export default function App() {
     }
   };
 
+  const handleDeleteMessage = async (msg: Message) => {
+    if (!currentUser) return;
+    if (msg.isLocalOnly) {
+      setLocalMessages((prev) => prev.filter((m) => m.id !== msg.id));
+      showNotice('Message deleted locally.');
+      return;
+    }
+    try {
+      await apiFetch(`/api/choy/messages/${encodeURIComponent(msg.id)}`, {
+        method: 'DELETE',
+      });
+      showNotice('Message deleted successfully.');
+      await fetchSyncedState();
+    } catch (err) {
+      showNotice(err instanceof Error ? err.message : 'Failed to delete message');
+    }
+  };
+
   const openForwardDialog = (msg: Message) => {
     setForwardingMessage(msg);
     setForwardSearch('');
@@ -7720,6 +7738,18 @@ export default function App() {
                               <Forward className="w-3 h-3" />
                               <span>Forward</span>
                             </button>
+
+                            {(currentUser && (m.senderId === currentUser.id || currentUser.role === 'admin' || currentUser.phone === '09361223978' || currentUser.phone === 'choycounterflow@gmail.com')) && (
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteMessage(m)}
+                                className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded bg-rose-500/10 hover:bg-rose-500/20 text-rose-600 dark:text-rose-400 border border-rose-500/30 transition"
+                                title="Delete message"
+                              >
+                                <Trash2 className="w-3 h-3" />
+                                <span>Delete</span>
+                              </button>
+                            )}
                           </div>
                         )}
                       </div>

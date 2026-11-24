@@ -1440,37 +1440,27 @@ export class ChoyStore {
     return item;
   }
 
-  public async addReaction(messageId: string, emoji: string): Promise<StoredMessage | null> {
+  public async deleteMessage(messageId: string, userId: string, isAdminUser: boolean): Promise<boolean> {
     await this.ready();
-    const cleanEmoji = emoji.slice(0, 16);
     if (this.usePostgres && this.pool) {
       const existing = await this.pool.query('SELECT * FROM app_messages WHERE id = $1 LIMIT 1', [messageId]);
-      if (!existing.rowCount) return null;
-      const cur: string[] = Array.isArray(existing.rows[0].reactions) ? existing.rows[0].reactions : [];
-      if (cur.length >= 20) return null;
-      const next = [...cur, cleanEmoji];
-      await this.pool.query('UPDATE app_messages SET reactions = $1::jsonb WHERE id = $2', [
-        JSON.stringify(next),
-        messageId,
-      ]);
-      const r = existing.rows[0];
-      return {
-        id: r.id,
-        senderId: r.sender_id,
-        senderName: r.sender_name,
-        roomId: r.room_id,
-        text: r.text || '',
-        mediaUrl: r.media_url || undefined,
-        mediaType: r.media_type,
-        reactions: next,
-        createdAt: new Date(r.created_at).toISOString(),
-      };
+      if (!existing.rowCount) return false;
+      const row = existing.rows[0];
+      if (!isAdminUser && row.sender_id !== userId) {
+        return false;
+      }
+      await this.pool.query('DELETE FROM app_messages WHERE id = $1', [messageId]);
+      return true;
     }
-    const found = this.memMessages.find((m) => m.id === messageId);
-    if (!found || found.reactions.length >= 20) return null;
-    found.reactions = [...found.reactions, cleanEmoji];
+    const idx = this.memMessages.findIndex((m) => m.id === messageId);
+    if (idx === -1) return false;
+    const item = this.memMessages[idx];
+    if (!isAdminUser && item.senderId !== userId) {
+      return false;
+    }
+    this.memMessages.splice(idx, 1);
     await this.persistMemory();
-    return found;
+    return true;
   }
 
   // ---- LEDGER & LEADERBOARD ----

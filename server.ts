@@ -1537,18 +1537,22 @@ app.post('/api/choy/messages', requireAuth, async (req: AuthedRequest, res: Resp
   }
 });
 
-app.post('/api/choy/messages/:id/reactions', requireAuth, async (req: AuthedRequest, res: Response) => {
+app.delete('/api/choy/messages/:id', requireAuth, async (req: AuthedRequest, res: Response) => {
   try {
-    const emoji = typeof req.body?.emoji === 'string' ? req.body.emoji.trim() : '';
-    if (!emoji || emoji.length > 16) {
-      return res.status(400).json({ error: 'Valid reaction emoji required' });
+    const user = req.choyUser!;
+    const messageId = String(req.params.id || '').trim();
+    if (!messageId) {
+      return res.status(400).json({ error: 'Message ID required' });
     }
-    const updated = await store.addReaction(req.params.id, emoji);
-    if (!updated) return res.status(404).json({ error: 'Message not found or max reactions reached' });
+    const isAdminUser = user.role === 'admin' || user.phone === '09361223978' || user.phone === 'choycounterflow@gmail.com';
+    const success = await store.deleteMessage(messageId, user.id, isAdminUser);
+    if (!success) {
+      return res.status(403).json({ error: 'Message not found or unauthorized to delete' });
+    }
     broadcastSync('messages');
-    return res.json(updated);
+    return res.json({ success: true, deletedId: messageId });
   } catch (err: unknown) {
-    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to add reaction' });
+    return res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to delete message' });
   }
 });
 
