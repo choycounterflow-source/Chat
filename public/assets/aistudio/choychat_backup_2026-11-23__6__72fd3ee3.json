@@ -1,0 +1,160 @@
+{
+  "exportedAt": "2026-11-23T22:30:11.557Z",
+  "users": [
+    {
+      "id": "admin_536bca11",
+      "name": "MUGI WARA",
+      "phone": "09361223978",
+      "pinHash": "df973d76b94e6d38dce830e15f313179:c9714ec20018fd58eb3855c126d73917a21f58f716b898859bde6bb36bd4d7cd3bd55e7417ce893fc7ad946f78df15e48aa3d27721220c909f4845ce6b51ea0b",
+      "role": "admin",
+      "status": "approved",
+      "blockedUsers": [],
+      "newsfeed": "feed_a",
+      "createdAt": "2026-11-22T11:01:43.000Z",
+      "updatedAt": "2026-11-22T15:46:16.000Z"
+    },
+    {
+      "id": "u_f209d014-3",
+      "name": "Kapgo",
+      "phone": "09382107447",
+      "pinHash": "7ad62bb8df6a6481bb74c0cec67b7959:eca7e41f48bd58e02732b3372f1b4fadde23438c14744f1b001a5a8f89e994e3c627c0bbebec658b6e46366929eb50884ded55c4f7d0d6b1eea8889bbe70fe21",
+      "role": "member",
+      "status": "approved",
+      "blockedUsers": [],
+      "newsfeed": "feed_c",
+      "createdAt": "2026-11-22T12:39:56.000Z",
+      "updatedAt": "2026-11-23T05:05:23.000Z"
+    },
+    {
+      "id": "u_820f6a1c-9",
+      "name": "Aktor",
+      "phone": "09512947856",
+      "pinHash": "554c31183ac426570497b3064b690478:f354168c529aa4f1acc4421107de4a1514704a36485ab81f4fea1548326465fd1a5ea5d7dc3cc931d36dca601c21cbe5ccf54d6b6c8ca01b9abc7fb67f5d6a15",
+      "role": "member",
+      "status": "approved",
+      "blockedUsers": [],
+      "newsfeed": "feed_a",
+      "createdAt": "2026-11-22T13:27:05.000Z",
+      "updatedAt": "2026-11-23T10:28:22.000Z"
+    },
+    {
+      "id": "u_773d0dff-3",
+      "name": "kert",
+      "phone": "09925747351",
+      "pinHash": "13d9db3b49b7ea258b291782e3473cbd:c3d255e68be3ce529dd2f1f3cc4d1cb4206f1d5c9aa55b8c74087b79dfb3249412d8baa0dcc18a6aeec37ed42b49c0a3a04562f57bd4bf222b01561b37a4dde2",
+      "role": "member",
+      "status": "approved",
+      "blockedUsers": [],
+      "newsfeed": "feed_a",
+      "createdAt": "2026-11-22T14:08:00.000Z",
+      "updatedAt": "2026-11-22T16:40:00.000Z"
+    },
+    {
+      "id": "u_9d94d5fa-5",
+      "name": "Mayloy",
+      "phone": "09505845429",
+      "pinHash": "173aa2b57d911c37becd3f997447ab11:3d143d3514cf0bc263e3bbd1143e6de40917592d2ae6ae940419ff0e8b68672e2598497f0ac1105e8e3f1a09f89c3c0217c56b9378389425065449804d571e32",
+      "role": "member",
+      "status": "approved",
+      "blockedUsers": [],
+      "newsfeed": "feed_c",
+      "createdAt": "2026-11-22T14:39:18.000Z",
+      "updatedAt": "2026-11-23T05:05:09.000Z"
+    },
+    {
+      "id": "u_ec78cf48-7",
+      "name": "Nevri30",
+      "phone": "09363427090",
+      "pinHash": "f1b7bd0f42eeaf83168a475b3d426432:f5c009adccfa3b0b0da1561b68559d6a830d820be29627c6a0158df59c0926687c4517610824f8aa6d7e35a3179c0203e7b196994fcfd4f407a34cb99ccc0cd6",
+      "role": "member",
+      "status": "approved",
+      "blockedUsers": [],
+      "newsfeed": "feed_b",
+      "createdAt": "2026-11-22T15:31:11.000Z",
+      "updatedAt": "2026-11-22T16:39:54.000Z"
+    },
+    {
+      "id": "u_ad5c11f1-f",
+      "name": "mjgonds97",
+      "phone": "09855208075",
+      "pinHash": "d8056ddb044b20f814aebd911165bc3e:3b67e600c05bb87d8b31430efd7c0a90de544c0345af0b8e1244af1e8c9ded96c8550139bee113a23c7a53c6cd8374b34192c49f89d0ff43a8a768dc7c7e0f9c",
+      "role": "member",
+      "status": "approved",
+      "blockedUsers": [],
+      "newsfeed": "feed_b",
+      "createdAt": "2026-11-22T16:30:18.000Z",
+      "updatedAt": "2026-11-22T16:39:52.000Z"
+    },
+    {
+      "id": "u_477bea74-4",
+      "name": "Ru Ka Wa",
+      "phone": "09518136274",
+      "pinHash": "74188a3c7498ec287f0fbfd1343d063e:89d44830399a9a1e64a55659379042fd77e8f737d152aeb9647eb14edfba52f060a2c982790ce746420c03626ebcfecd6b47471244287ec660e13ec6334507dc",
+      "role": "member",
+      "status": "approved",
+      "blockedUsers": [],
+      "avatar": "https://bcggthgaaadgmicgugkq.supabase.co/storage/v1/object/public/choychat-media/avatars/2026-11/5151ceab-f487-4f06-aeb7-45695156df91.jpg",
+      "newsfeed": "feed_c",
+      "createdAt": "2026-11-23T00:44:16.000Z",
+      "updatedAt": "2026-11-23T03:57:38.000Z"
+    }
+  ],
+  "settings": {
+    "fiveH": 50,
+    "bulig": 100,
+    "point5": 150,
+    "halfSack": 200,
+    "oneSack": 400,
+    "defFiveH": 0,
+    "defBulig": 0,
+    "defPoint5": 0,
+    "defHalfSack": 0,
+    "defOneSack": 0
+  },
+  "newsfeedConfig": {
+    "feedATitle": "Newsfeed A",
+    "feedBTitle": "Newsfeed B",
+    "feedCTitle": "Newsfeed C"
+  },
+  "ledger": [],
+  "knowledge": [
+    {
+      "id": "k_1",
+      "question": "What is Choy Chat?",
+      "answer": "Choy Chat is a real-time cloud-synced social media, video gallery, and milestone ledger platform.",
+      "createdAt": "2026-11-22T09:14:32.495Z"
+    },
+    {
+      "id": "k_2",
+      "question": "How does the ledger work?",
+      "answer": "The Milestone Ledger tracks 5H, Bulig, Point 5, Half Sack, and One Sack quantities with live cross-device sync.",
+      "createdAt": "2026-11-22T09:14:32.495Z"
+    }
+  ],
+  "announcements": [
+    {
+      "id": "ann_e46e6fa2-7ce",
+      "title": "STOCK",
+      "message": "WALA PATAY BUGAS KARON ,, KAY KULANG PA ANG BR NA E REMITAY",
+      "badge": "announcement",
+      "tone": "sky",
+      "target": "feed_c",
+      "active": true,
+      "createdBy": "MUGI WARA",
+      "createdAt": "2026-11-23T05:07:10.000Z",
+      "updatedAt": "2026-11-23T05:07:10.000Z"
+    },
+    {
+      "id": "ann_0b4ff542-2d8",
+      "title": "Available",
+      "message": "5h ,    1k   ug   .5",
+      "badge": "announcement",
+      "tone": "emerald",
+      "target": "feed_b",
+      "active": true,
+      "createdBy": "MUGI WARA",
+      "createdAt": "2026-11-23T04:48:22.000Z",
+      "updatedAt": "2026-11-23T04:48:22.000Z"
+    }
+  ]
+}
